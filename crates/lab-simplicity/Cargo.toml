@@ -1,0 +1,25 @@
+[package]
+name = "lab-simplicity"
+description = "P2 C0: SimplicityHL RGB-anchor covenants on Liquid regtest (Path A)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+# Path A pins — see docs/P2_SIMPLICITY.md
+simplicityhl = "0.6"
+simplicity-lang = "0.8"
+
+[[bin]]
+name = "lab-simp"
+path = "src/bin/lab_simp.rs"
+
+[dev-dependencies]
+tempfile = "3"

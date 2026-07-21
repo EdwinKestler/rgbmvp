@@ -1,8 +1,9 @@
 # P2 plan — Simplicity seal covenants & backed assets
 
-**Status:** R0 complete · C0 implementation next  
+**Status:** R0 complete · **C0 closed** · C1 next  
 **Date:** 2026-07-21  
 **Depends on:** P0 (RGB on Liquid) · P1 closed ([P1_CLOSED.md](./P1_CLOSED.md))  
+**C0 evidence:** [C0_CLOSED.md](./C0_CLOSED.md)  
 **Scenarios:** [SCENARIOS.md](./SCENARIOS.md) C0–C5 · pins/ADR [P2_SIMPLICITY.md](./P2_SIMPLICITY.md) · stack [STACK.md](./STACK.md)
 
 ---
@@ -289,6 +290,7 @@ If vendoring `.simf` or driver code, preserve original license headers (MIT/Apac
 | 2026-07-21 | **simplicityhl 0.6** · **simplicity-lang 0.8** | Path A; crates.io verified |
 | 2026-07-21 | Path A for C0 (not `lwk_simplicity` 0.18 / hl 0.5) | ADR-002 |
 | 2026-07-21 | C0 opret shape; tapret later | ADR-003 |
+| 2026-07-21 | **C0 closed** on regtest | demo_c0_simplicity.sh; consensus −26 strip-anchor |
 | _TBD_ | Public testnet C0 yes/no | After feature probe |
 
 ---
@@ -296,7 +298,8 @@ If vendoring `.simf` or driver code, preserve original license headers (MIT/Apac
 ## Next concrete actions
 
 1. ~~R0: Docker Elements Simplicity + pin SimplicityHL; write `docs/P2_SIMPLICITY.md`.~~ **Done**  
-2. Scaffold `crates/lab-simplicity` and wire empty CLI `covenant` help.  
-3. Port C0 program; prove positive + strip-anchor negative on regtest.  
-4. Expose status on `/v1` + demo board.  
-5. Only then IFA/BFA + C3 audit page.
+2. ~~Scaffold `crates/lab-simplicity` + CLI.~~ **Done** (`lab-simp`, `rgbmvp covenant`)  
+3. ~~Port C0 program; prove positive + strip-anchor negative on regtest.~~ **Done** — [C0_CLOSED.md](./C0_CLOSED.md)  
+4. C1 mint-gate (lock vault) on regtest.  
+5. Optional: `/v1/covenant/*` + demo board chip.  
+6. C3 BFA audit when IFA schemas land.

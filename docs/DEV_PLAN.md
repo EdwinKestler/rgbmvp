@@ -56,7 +56,7 @@ Product shape: **CLI + small web verifier**, browser-ready `/v1`, full ladder in
 | Refund path | **CLI done** (`refund-btc` / `refund-lq`) |
 | P1 | **CLOSED** — [`P1_CLOSED.md`](./P1_CLOSED.md) |
 | Demo v0 | Read-only `/demo` board |
-| Next | **P2 C0** after R0 (Docker + pins in [`P2_SIMPLICITY.md`](./P2_SIMPLICITY.md)) |
+| Next | **P2 C1** mint-gate ([`C0_CLOSED.md`](./C0_CLOSED.md) done) |
 
 ### Sudo requirements
 

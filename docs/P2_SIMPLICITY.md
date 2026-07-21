@@ -152,16 +152,14 @@ ELEMENTS_RPC_PASSWORD=pass
 
 ---
 
-## C0 implementation checklist (next)
+## C0 implementation checklist
 
-After R0, C0 work:
+1. ~~Scaffold `crates/lab-simplicity` (`simplicityhl` 0.6, `simplicity-lang` 0.8).~~  
+2. ~~`lab-simp` address/spend + `rgbmvp covenant address|demo`.~~  
+3. ~~Integration: fund leaf 0xbe → A/B/C proofs — [C0_CLOSED.md](./C0_CLOSED.md).~~  
+4. Optional later: `/v1/covenant/*` + demo board.
 
-1. Scaffold `crates/lab-simplicity` with pinned deps (`simplicityhl` 0.6, `simplicity-lang` 0.8).  
-2. `address` / `spend` CLI (or `rgbmvp covenant …`) mirroring spike `simp`.  
-3. Integration test: fund under leaf 0xbe → spend-ok → spend-strip-anchor fails.  
-4. Wire `/v1/covenant/*` status only after local CLI is green.
-
-Do **not** start C1 mint-gate until C0 consensus reject is demonstrated.
+**C0 closed 2026-07-21.** C1 mint-gate is next.
 
 ---
 

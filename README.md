@@ -126,7 +126,7 @@ cp .env.example .env
 | **P0** | RGB on Liquid Testnet | Done |
 | **P1** | BTC ↔ Liquid HTLC twin swap | **Closed** — [P1_CLOSED.md](docs/P1_CLOSED.md) |
 | **Demo v0** | Read-only `/demo` board | Done |
-| **P2** | Simplicity seal covenants | Next (research) |
+| **P2** | Simplicity seal covenants | **C0 closed** (regtest) · C1+ next |
 | **P3** | Full browser wallet UI | Later |
 
 ---
@@ -146,6 +146,7 @@ cp .env.example .env
 | [docs/P1_CLOSED.md](docs/P1_CLOSED.md) | P1 scope, live evidence, refund notes |
 | [docs/P2_PLAN.md](docs/P2_PLAN.md) | P2 Simplicity seal covenants — plan & milestones |
 | [docs/P2_SIMPLICITY.md](docs/P2_SIMPLICITY.md) | P2 R0 pins, Docker regtest, ADR |
+| [docs/C0_CLOSED.md](docs/C0_CLOSED.md) | C0 Simplicity anchor covenant (regtest proof) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, `/v1` API, privacy |
 | [docs/SCENARIOS.md](docs/SCENARIOS.md) | Scenario ladder |
 | [docs/STACK.md](docs/STACK.md) | LWK, RGB, toolchain |
@@ -158,12 +159,14 @@ cp .env.example .env
 ## Layout
 
 ```text
-crates/     lab-core, lab-chain (LWK), lab-btc, lab-rgb, lab-api, lab-cli
+crates/     lab-core, lab-chain, lab-btc, lab-rgb, lab-simplicity, lab-api, lab-cli
 vendor/     rgb-consensus WitnessTx patch (Apache-2.0)
+programs/   SimplicityHL `.simf` (C0 rgb_anchor)
 web/        index.html (verify/swap) · demo.html (read-only board)
 fixtures/   testnet wallet roles (public BIP39 / BTC address only)
-docs/       architecture, scenarios, P1 closure
-scripts/    bootstrap_testnet_wallets.sh, project_memory.py
+docs/       architecture, scenarios, P1/C0 closure, P2 plan
+scripts/    bootstrap, project_memory, regtest_simplicity, demo_c0_simplicity
+docker/     Elements 23.3 Simplicity regtest conf
 ```
 
 ---

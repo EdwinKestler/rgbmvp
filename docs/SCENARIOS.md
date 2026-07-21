@@ -128,13 +128,14 @@ BTC RGB anchor (earlier): [`2a573998…1806`](https://blockstream.info/testnet/t
 ## Phase P2 — Programmable seals & backed assets
 
 **Plan:** [`P2_PLAN.md`](./P2_PLAN.md) (regtest-first, C0 + C3 = lab closed).  
-**R0 pins / Docker / ADR:** [`P2_SIMPLICITY.md`](./P2_SIMPLICITY.md) (`./scripts/regtest_simplicity.sh up`).
+**R0 pins / Docker / ADR:** [`P2_SIMPLICITY.md`](./P2_SIMPLICITY.md) (`./scripts/regtest_simplicity.sh up`).  
+**C0 closed:** [`C0_CLOSED.md`](./C0_CLOSED.md) · `./scripts/demo_c0_simplicity.sh`.
 
 **Goal:** exercise Simplicity + backed-mint patterns that differentiate Liquid.
 
 | ID | Scenario | Surfaces | Pass criteria |
 |----|----------|----------|---------------|
-| C0 | Simplicity `preimage ∧ opret-shaped anchor` | CLI, regtest (testnet if available) | Compliant spend OK; strip-anchor spend rejected by consensus |
+| C0 | Simplicity `preimage ∧ opret-shaped anchor` | CLI, regtest | **CLOSED** — compliant OK; strip-anchor consensus reject (−26 jet assertion) |
 | C1 | Mint-gate (lock vault) | CLI, CI | Permissionless mint only with backing lock + gate recursion |
 | C2 | Mint-gate burn variant | CLI, CI | OP_RETURN burn as backing + anchor |
 | C3 | BFA schema + audit | CLI, Web audit page | Over-mint fails audit; honest history passes; no oracle |

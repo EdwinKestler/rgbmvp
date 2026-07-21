@@ -56,7 +56,29 @@ enum Commands {
         #[arg(long, env = "LABD_BIND")]
         bind: Option<String>,
     },
+    /// P2 Simplicity covenants (C0: RGB-anchor seal)
+    Covenant {
+        #[command(subcommand)]
+        cmd: CovenantCmd,
+    },
     ApiRoot,
+}
+
+#[derive(Subcommand, Debug)]
+enum CovenantCmd {
+    /// Compile C0 rgb_anchor program → taproot address (leaf 0xbe)
+    Address {
+        /// SHA256(preimage) as 32-byte hex (param EXPECTED_HASH)
+        #[arg(long)]
+        hash: String,
+        #[arg(long)]
+        program: Option<PathBuf>,
+    },
+    /// End-to-end C0 demo on Elements Simplicity regtest
+    Demo {
+        #[arg(long, default_value = "scripts/demo_c0_simplicity.sh")]
+        script: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1044,6 +1066,31 @@ fn run() -> Result<()> {
             let bind = bind.unwrap_or_else(|| cfg.labd_bind.clone());
             serve_labd(&cfg, &bind)?;
         }
+        Commands::Covenant { cmd } => match cmd {
+            CovenantCmd::Address { hash, program } => {
+                let path = program.unwrap_or_else(lab_simplicity::resolve_rgb_anchor_program);
+                let src = fs::read_to_string(&path)
+                    .with_context(|| format!("read {}", path.display()))?;
+                let args = lab_simplicity::args_expected_hash_json(&hash)?;
+                let compiled = lab_simplicity::compile_src(&src, &args)?;
+                let info = lab_simplicity::address_info(&compiled)?;
+                println!("{}", serde_json::to_string_pretty(&info)?);
+            }
+            CovenantCmd::Demo { script } => {
+                anyhow::ensure!(
+                    script.is_file(),
+                    "demo script missing: {} (run from repo root)",
+                    script.display()
+                );
+                let status = std::process::Command::new("bash")
+                    .arg(&script)
+                    .status()
+                    .with_context(|| format!("run {}", script.display()))?;
+                if !status.success() {
+                    anyhow::bail!("demo exited with {status}");
+                }
+            }
+        },
         Commands::ApiRoot => {
             println!("{}", serde_json::to_string_pretty(&lab_api::root_json())?);
         }

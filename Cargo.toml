@@ -7,6 +7,7 @@ members = [
     "crates/lab-cli",
     "crates/lab-rgb",
     "crates/lab-btc",
+    "crates/lab-simplicity",
     "vendor/rgb-consensus-patched",
 ]
 
@@ -37,6 +38,7 @@ lab-chain = { path = "crates/lab-chain" }
 lab-api = { path = "crates/lab-api" }
 lab-rgb = { path = "crates/lab-rgb" }
 lab-btc = { path = "crates/lab-btc" }
+lab-simplicity = { path = "crates/lab-simplicity" }
 hex = "0.4"
 bitcoin = { version = "0.32", features = ["std", "serde"] }
 # elements version: keep aligned with LWK 0.18 (0.25.x)

@@ -18,6 +18,7 @@ lab-chain.workspace = true
 lab-core.workspace = true
 lab-rgb.workspace = true
 lab-btc.workspace = true
+lab-simplicity.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
