@@ -1,4 +1,4 @@
-//! P2 C0 — SimplicityHL RGB-anchor covenant driver (Path A).
+//! P2 SimplicityHL covenant driver (Path A) — C0 anchor + C1 mint-gate.
 //!
 //! Adapted from kaleidoswap/rgb-on-liquid-spike `spike-simplicity` (MIT OR Apache-2.0).
 //! Pins: simplicityhl 0.6 · simplicity-lang 0.8 · tapleaf 0xbe · opret-shaped vout0.
@@ -37,6 +37,126 @@ pub fn resolve_rgb_anchor_program() -> PathBuf {
         return bundled;
     }
     repo_rgb_anchor_program()
+}
+
+/// Bundled C1 mint-gate program.
+pub fn bundled_mint_gate_program() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("programs/mint_gate_covenant.simf")
+}
+
+pub fn resolve_mint_gate_program() -> PathBuf {
+    let bundled = bundled_mint_gate_program();
+    if bundled.is_file() {
+        return bundled;
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../programs/simplicity/mint_gate_covenant.simf")
+}
+
+/// Byte-reverse a hex asset id (display order → consensus / jet order).
+pub fn reverse_hex_bytes(hex_str: &str) -> Result<String> {
+    let s = hex_str.trim().trim_start_matches("0x");
+    let bytes = hex::decode(s).context("hex decode for reverse")?;
+    let rev: Vec<u8> = bytes.into_iter().rev().collect();
+    Ok(hex::encode(rev))
+}
+
+/// SHA256 of a scriptPubKey (hex) → vault hash param.
+pub fn sha256_spk_hex(spk_hex: &str) -> Result<String> {
+    use elements::hashes::{sha256, Hash};
+    let bytes = hex::decode(spk_hex.trim().trim_start_matches("0x")).context("spk hex")?;
+    Ok(hex::encode(sha256::Hash::hash(&bytes).as_byte_array()))
+}
+
+/// Mint-gate `param::` JSON: VAULT_SPK_HASH, BACKING_ASSET (LE), TRANCHE.
+pub fn mint_gate_args_json(
+    vault_spk_hash_hex: &str,
+    backing_asset_le_hex: &str,
+    tranche: u64,
+) -> Result<String> {
+    let v = normalize_hex32(vault_spk_hash_hex)?;
+    let a = normalize_hex32(backing_asset_le_hex)?;
+    // simplicityhl expects u64 param values as JSON *strings* (not numbers).
+    Ok(serde_json::json!({
+        "VAULT_SPK_HASH": { "value": format!("0x{v}"), "type": "u256" },
+        "BACKING_ASSET": { "value": format!("0x{a}"), "type": "u256" },
+        "TRANCHE": { "value": tranche.to_string(), "type": "u64" }
+    })
+    .to_string())
+}
+
+/// Deterministic demo keypair: `sk = SHA256(label)` (regtest only).
+pub fn demo_keypair(label: &str) -> Result<(secp256k1::SecretKey, secp256k1::PublicKey)> {
+    use elements::hashes::{sha256, Hash};
+    let secp = secp256k1::Secp256k1::new();
+    let sk_bytes = sha256::Hash::hash(label.as_bytes());
+    let sk = secp256k1::SecretKey::from_slice(sk_bytes.as_ref())
+        .context("label hashed to an invalid secret key")?;
+    let pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
+    Ok((sk, pk))
+}
+
+/// P2WPKH scriptPubKey for a compressed pubkey.
+pub fn p2wpkh_spk(pk: &secp256k1::PublicKey) -> Vec<u8> {
+    use elements::hashes::{hash160, Hash};
+    let h = hash160::Hash::hash(&pk.serialize());
+    let mut spk = Vec::with_capacity(22);
+    spk.push(0x00);
+    spk.push(0x14);
+    spk.extend_from_slice(h.as_ref());
+    spk
+}
+
+fn p2wpkh_script_code(pk: &secp256k1::PublicKey) -> Vec<u8> {
+    use elements::hashes::{hash160, Hash};
+    let h = hash160::Hash::hash(&pk.serialize());
+    let mut sc = Vec::with_capacity(25);
+    sc.extend_from_slice(&[0x76, 0xa9, 0x14]);
+    sc.extend_from_slice(h.as_ref());
+    sc.extend_from_slice(&[0x88, 0xac]);
+    sc
+}
+
+/// Demo P2WPKH address + spk for a label.
+pub fn demo_address_info(label: &str) -> Result<serde_json::Value> {
+    let (_, pk) = demo_keypair(label)?;
+    let btc_pk = elements::bitcoin::PublicKey::new(pk);
+    let addr = elements::Address::p2wpkh(&btc_pk, None, &elements::AddressParams::ELEMENTS);
+    Ok(serde_json::json!({
+        "label": label,
+        "address": addr.to_string(),
+        "spk_hex": hex::encode(p2wpkh_spk(&pk)),
+    }))
+}
+
+fn sign_p2wpkh_inputs(
+    tx: &mut elements::Transaction,
+    inputs: &[(usize, u64)],
+    sk: &secp256k1::SecretKey,
+    pk: &secp256k1::PublicKey,
+) {
+    use elements::confidential::Value;
+    use elements::hashes::Hash as _;
+    use elements::sighash::SighashCache;
+    use elements::{EcdsaSighashType, Script};
+
+    let secp = secp256k1::Secp256k1::new();
+    let script_code = Script::from(p2wpkh_script_code(pk));
+    let mut sigs = Vec::new();
+    for &(index, value_sat) in inputs {
+        let sighash = SighashCache::new(&*tx).segwitv0_sighash(
+            index,
+            &script_code,
+            Value::Explicit(value_sat),
+            EcdsaSighashType::All,
+        );
+        let msg = secp256k1::Message::from_digest(sighash.to_byte_array());
+        let mut sig = secp.sign_ecdsa(&msg, sk).serialize_der().to_vec();
+        sig.push(EcdsaSighashType::All as u8);
+        sigs.push((index, vec![sig, pk.serialize().to_vec()]));
+    }
+    for (index, w) in sigs {
+        tx.input[index].witness.script_witness = w;
+    }
 }
 
 /// RGB `opret` shape: `OP_RETURN OP_PUSHBYTES_32 <payload>`.
@@ -275,6 +395,170 @@ pub fn build_spend(req: &SpendRequest) -> Result<String> {
     Ok(hex::encode(elements::encode::serialize(&tx)))
 }
 
+/// C1 mint-gate spend request.
+#[derive(Debug, Clone)]
+pub struct MintSpendRequest {
+    pub program_path: PathBuf,
+    pub args_json: String,
+    /// 32-byte hex MPC/opret root (no 0x required).
+    pub anchor_payload_hex: String,
+    pub gate_txid: String,
+    pub gate_vout: u32,
+    pub gate_value_sat: u64,
+    pub asset_txid: String,
+    pub asset_vout: u32,
+    pub fee_txid: String,
+    pub fee_vout: u32,
+    pub fee_input_sat: u64,
+    pub key_label: String,
+    pub vault_spk_hex: String,
+    /// Display-order asset id (same as `issueasset` / dumpassetlabels style).
+    pub backing_asset: String,
+    pub tranche: u64,
+    pub recipient_spk_hex: String,
+    pub recipient_sat: u64,
+    pub fee_sat: u64,
+    pub lbtc_asset: String,
+    pub genesis_hash: String,
+    /// `none` | `drop-anchor` | `wrong-amount` | `no-recreate`
+    pub tamper: String,
+}
+
+/// Build + satisfy + sign a C1 mint-gate spend; returns raw tx hex.
+pub fn build_mint_spend(req: &MintSpendRequest) -> Result<String> {
+    use elements::confidential::{Asset, Nonce, Value};
+    use elements::{
+        AssetId, OutPoint, Script, Sequence, Transaction, TxIn, TxInWitness, TxOut, TxOutWitness,
+    };
+
+    let src = std::fs::read_to_string(&req.program_path)
+        .with_context(|| format!("read {}", req.program_path.display()))?;
+    let compiled = compile_src(&src, &req.args_json)?;
+    let parts = taproot_parts(&compiled)?;
+    let (sk, pk) = demo_keypair(&req.key_label)?;
+    let funding_spk = Script::from(p2wpkh_spk(&pk));
+
+    let payload_hex = req.anchor_payload_hex.trim().trim_start_matches("0x");
+    let payload = hex::decode(payload_hex).context("anchor payload hex")?;
+    anyhow::ensure!(payload.len() == 32, "anchor payload must be 32 bytes");
+    let mut opret = Vec::with_capacity(34);
+    opret.push(0x6a);
+    opret.push(0x20);
+    opret.extend_from_slice(&payload);
+
+    let lbtc: AssetId = req.lbtc_asset.parse().context("lbtc asset id")?;
+    let backing: AssetId = req.backing_asset.parse().context("backing asset id")?;
+    let genesis: elements::BlockHash = req.genesis_hash.parse().context("genesis hash")?;
+    let vault = hex::decode(req.vault_spk_hex.trim()).context("vault spk hex")?;
+    let recipient = hex::decode(req.recipient_spk_hex.trim()).context("recipient spk hex")?;
+
+    let change_sat = req
+        .fee_input_sat
+        .checked_sub(req.recipient_sat + req.fee_sat)
+        .context("fee input too small for recipient + fee")?;
+
+    let mk_in = |txid_s: &str, vout: u32| -> Result<TxIn> {
+        Ok(TxIn {
+            previous_output: OutPoint::new(txid_s.parse()?, vout),
+            is_pegin: false,
+            script_sig: Script::new(),
+            sequence: Sequence::from_consensus(0xffff_fffd),
+            asset_issuance: Default::default(),
+            witness: TxInWitness::default(),
+        })
+    };
+    let out = |asset: AssetId, sat: u64, spk: Script| TxOut {
+        asset: Asset::Explicit(asset),
+        value: Value::Explicit(sat),
+        nonce: Nonce::Null,
+        script_pubkey: spk,
+        witness: TxOutWitness::default(),
+    };
+
+    let mut tx = Transaction {
+        version: 2,
+        lock_time: elements::LockTime::ZERO,
+        input: vec![
+            mk_in(&req.gate_txid, req.gate_vout)?,
+            mk_in(&req.asset_txid, req.asset_vout)?,
+            mk_in(&req.fee_txid, req.fee_vout)?,
+        ],
+        output: vec![
+            out(lbtc, 0, Script::from(opret)),                     // 0: anchor
+            out(backing, req.tranche, Script::from(vault)),        // 1: vault
+            out(lbtc, req.recipient_sat, Script::from(recipient)), // 2: recipient seal
+            out(lbtc, req.gate_value_sat, parts.spk.clone()),      // 3: next gate
+            out(lbtc, change_sat, funding_spk.clone()),            // 4: change
+            out(lbtc, req.fee_sat, Script::new()),                 // 5: fee
+        ],
+    };
+
+    let utxos = vec![
+        ElementsUtxo {
+            script_pubkey: parts.spk.clone(),
+            asset: Asset::Explicit(lbtc),
+            value: Value::Explicit(req.gate_value_sat),
+        },
+        ElementsUtxo {
+            script_pubkey: funding_spk.clone(),
+            asset: Asset::Explicit(backing),
+            value: Value::Explicit(req.tranche),
+        },
+        ElementsUtxo {
+            script_pubkey: funding_spk.clone(),
+            asset: Asset::Explicit(lbtc),
+            value: Value::Explicit(req.fee_input_sat),
+        },
+    ];
+    let env = ElementsEnv::new(
+        Arc::new(tx.clone()),
+        utxos,
+        0,
+        parts.cmr,
+        parts.control_block.clone(),
+        None,
+        genesis,
+    );
+
+    let witness_values: WitnessValues = serde_json::from_str(&format!(
+        r#"{{ "ANCHOR_PAYLOAD": {{ "value": "0x{payload_hex}", "type": "u256" }} }}"#
+    ))
+    .context("witness values")?;
+    let satisfied = compiled
+        .satisfy_with_env(witness_values, Some(&env))
+        .map_err(|e| anyhow::anyhow!("satisfy: {e}"))?;
+    let (prog_bytes, wit_bytes) = satisfied.redeem().to_vec_with_witness();
+
+    match req.tamper.as_str() {
+        "none" => {}
+        "drop-anchor" => tx.output[0].script_pubkey = funding_spk.clone(),
+        "no-recreate" => tx.output[3].script_pubkey = funding_spk.clone(),
+        "wrong-amount" => {
+            anyhow::ensure!(req.tranche > 0, "tranche must be > 0 for wrong-amount");
+            tx.output[1].value = Value::Explicit(req.tranche - 1);
+            tx.output
+                .push(out(backing, 1, funding_spk.clone()));
+        }
+        other => bail!("unknown tamper mode: {other}"),
+    }
+
+    tx.input[0].witness.script_witness = vec![
+        wit_bytes,
+        prog_bytes,
+        parts.leaf_script.clone().into_bytes(),
+        parts.control_block.serialize(),
+    ];
+
+    sign_p2wpkh_inputs(
+        &mut tx,
+        &[(1, req.tranche), (2, req.fee_input_sat)],
+        &sk,
+        &pk,
+    );
+
+    Ok(hex::encode(elements::encode::serialize(&tx)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,5 +614,29 @@ mod tests {
         let a = taproot_parts(&compile_with_hash(HASH_A)).unwrap();
         let b = taproot_parts(&compile_with_hash(HASH_B)).unwrap();
         assert_ne!(a.address.to_string(), b.address.to_string());
+    }
+
+    #[test]
+    fn reverse_hex_bytes_roundtrip_length() {
+        let a = "b2e15d0d7a0c94e4e2ce0fe6e8691b9e451377f6e46e8045a86f7c4b5d4f0f23";
+        let r = reverse_hex_bytes(a).unwrap();
+        assert_eq!(r.len(), 64);
+        assert_eq!(reverse_hex_bytes(&r).unwrap(), a);
+    }
+
+    #[test]
+    fn mint_gate_compiles_and_params_affect_cmr() {
+        let vault = "aa".repeat(32);
+        let asset = "bb".repeat(32);
+        let args1 = mint_gate_args_json(&vault, &asset, 250_000).unwrap();
+        let args2 = mint_gate_args_json(&vault, &asset, 100_000).unwrap();
+        let src = std::fs::read_to_string(bundled_mint_gate_program()).unwrap();
+        let c1 = compile_src(&src, &args1).expect("mint gate compiles");
+        let c2 = compile_src(&src, &args2).expect("mint gate compiles");
+        assert_eq!(c1.commit().cmr(), compile_src(&src, &args1).unwrap().commit().cmr());
+        assert_ne!(c1.commit().cmr(), c2.commit().cmr());
+        let parts = taproot_parts(&c1).unwrap();
+        assert_eq!(parts.control_block.leaf_version.as_u8(), 0xbe);
+        assert!(parts.address.to_string().starts_with("ert1p"));
     }
 }

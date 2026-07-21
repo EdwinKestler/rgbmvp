@@ -129,14 +129,15 @@ BTC RGB anchor (earlier): [`2a573998…1806`](https://blockstream.info/testnet/t
 
 **Plan:** [`P2_PLAN.md`](./P2_PLAN.md) (regtest-first, C0 + C3 = lab closed).  
 **R0 pins / Docker / ADR:** [`P2_SIMPLICITY.md`](./P2_SIMPLICITY.md) (`./scripts/regtest_simplicity.sh up`).  
-**C0 closed:** [`C0_CLOSED.md`](./C0_CLOSED.md) · `./scripts/demo_c0_simplicity.sh`.
+**C0 closed:** [`C0_CLOSED.md`](./C0_CLOSED.md) · `./scripts/demo_c0_simplicity.sh`.  
+**C1 closed:** [`C1_CLOSED.md`](./C1_CLOSED.md) · `./scripts/demo_c1_mint_gate.sh`.
 
 **Goal:** exercise Simplicity + backed-mint patterns that differentiate Liquid.
 
 | ID | Scenario | Surfaces | Pass criteria |
 |----|----------|----------|---------------|
 | C0 | Simplicity `preimage ∧ opret-shaped anchor` | CLI, regtest | **CLOSED** — compliant OK; strip-anchor consensus reject (−26 jet assertion) |
-| C1 | Mint-gate (lock vault) | CLI, CI | Permissionless mint only with backing lock + gate recursion |
+| C1 | Mint-gate (lock vault) | CLI, regtest | **CLOSED** — 2 chained mints; drop-anchor / wrong-amount / no-recreate reject |
 | C2 | Mint-gate burn variant | CLI, CI | OP_RETURN burn as backing + anchor |
 | C3 | BFA schema + audit | CLI, Web audit page | Over-mint fails audit; honest history passes; no oracle |
 | C4 | Time-locked staking covenant | CLI, CI | Early unstake rejected; principal returns to staker after maturity |

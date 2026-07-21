@@ -3,8 +3,9 @@
 | File | Scenario | Role |
 |------|----------|------|
 | `rgb_anchor_covenant.simf` | **C0** | `preimage(H) ∧ opret-shaped output 0` |
+| `mint_gate_covenant.simf` | **C1** | opret + vault tranche + gate recursion |
 
-Further programs (mint-gate, burn, staking) land with C1+; do not invent semantics here.
+Further programs (burn, staking) land with C2+; do not invent semantics here.
 
 **Toolchain pins and ADR:** [`docs/P2_SIMPLICITY.md`](../../docs/P2_SIMPLICITY.md)
 

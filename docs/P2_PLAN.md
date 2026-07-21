@@ -1,9 +1,9 @@
 # P2 plan — Simplicity seal covenants & backed assets
 
-**Status:** R0 complete · **C0 closed** · C1 next  
+**Status:** R0 complete · **C0 + C1 closed** · C3 (BFA audit) next  
 **Date:** 2026-07-21  
 **Depends on:** P0 (RGB on Liquid) · P1 closed ([P1_CLOSED.md](./P1_CLOSED.md))  
-**C0 evidence:** [C0_CLOSED.md](./C0_CLOSED.md)  
+**Evidence:** [C0_CLOSED.md](./C0_CLOSED.md) · [C1_CLOSED.md](./C1_CLOSED.md)  
 **Scenarios:** [SCENARIOS.md](./SCENARIOS.md) C0–C5 · pins/ADR [P2_SIMPLICITY.md](./P2_SIMPLICITY.md) · stack [STACK.md](./STACK.md)
 
 ---
@@ -291,7 +291,8 @@ If vendoring `.simf` or driver code, preserve original license headers (MIT/Apac
 | 2026-07-21 | Path A for C0 (not `lwk_simplicity` 0.18 / hl 0.5) | ADR-002 |
 | 2026-07-21 | C0 opret shape; tapret later | ADR-003 |
 | 2026-07-21 | **C0 closed** on regtest | demo_c0_simplicity.sh; consensus −26 strip-anchor |
-| _TBD_ | Public testnet C0 yes/no | After feature probe |
+| 2026-07-21 | **C1 closed** on regtest | demo_c1_mint_gate.sh; 2 mints + 3 negatives |
+| _TBD_ | Public testnet C0/C1 yes/no | After feature probe |
 
 ---
 
@@ -300,6 +301,7 @@ If vendoring `.simf` or driver code, preserve original license headers (MIT/Apac
 1. ~~R0: Docker Elements Simplicity + pin SimplicityHL; write `docs/P2_SIMPLICITY.md`.~~ **Done**  
 2. ~~Scaffold `crates/lab-simplicity` + CLI.~~ **Done** (`lab-simp`, `rgbmvp covenant`)  
 3. ~~Port C0 program; prove positive + strip-anchor negative on regtest.~~ **Done** — [C0_CLOSED.md](./C0_CLOSED.md)  
-4. C1 mint-gate (lock vault) on regtest.  
-5. Optional: `/v1/covenant/*` + demo board chip.  
-6. C3 BFA audit when IFA schemas land.
+4. ~~C1 mint-gate (lock vault) on regtest.~~ **Done** — [C1_CLOSED.md](./C1_CLOSED.md)  
+5. Optional C2 burn variant.  
+6. C3 BFA schema + audit (P2 lab-closed needs C0+C3).  
+7. Optional: `/v1/covenant/*` + demo board chip.
