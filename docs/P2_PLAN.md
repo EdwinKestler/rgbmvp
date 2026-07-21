@@ -1,9 +1,9 @@
 # P2 plan — Simplicity seal covenants & backed assets
 
-**Status:** R0 complete · **C0 + C1 closed** · C3 (BFA audit) next  
+**Status:** **P2 CLOSED** (C0+C3; C1 delivered as stretch)  
 **Date:** 2026-07-21  
 **Depends on:** P0 (RGB on Liquid) · P1 closed ([P1_CLOSED.md](./P1_CLOSED.md))  
-**Evidence:** [C0_CLOSED.md](./C0_CLOSED.md) · [C1_CLOSED.md](./C1_CLOSED.md)  
+**Closure:** [P2_CLOSED.md](./P2_CLOSED.md) · [C0_CLOSED.md](./C0_CLOSED.md) · [C1_CLOSED.md](./C1_CLOSED.md) · [C3_CLOSED.md](./C3_CLOSED.md)  
 **Scenarios:** [SCENARIOS.md](./SCENARIOS.md) C0–C5 · pins/ADR [P2_SIMPLICITY.md](./P2_SIMPLICITY.md) · stack [STACK.md](./STACK.md)
 
 ---
@@ -292,16 +292,14 @@ If vendoring `.simf` or driver code, preserve original license headers (MIT/Apac
 | 2026-07-21 | C0 opret shape; tapret later | ADR-003 |
 | 2026-07-21 | **C0 closed** on regtest | demo_c0_simplicity.sh; consensus −26 strip-anchor |
 | 2026-07-21 | **C1 closed** on regtest | demo_c1_mint_gate.sh; 2 mints + 3 negatives |
-| _TBD_ | Public testnet C0/C1 yes/no | After feature probe |
+| 2026-07-21 | **C3 closed** + **P2 closed** | demo_c3_bfa_audit.sh; honest/over-mint/lie |
+| _TBD_ | Public testnet C0/C1/C3 yes/no | After feature probe |
 
 ---
 
 ## Next concrete actions
 
-1. ~~R0: Docker Elements Simplicity + pin SimplicityHL; write `docs/P2_SIMPLICITY.md`.~~ **Done**  
-2. ~~Scaffold `crates/lab-simplicity` + CLI.~~ **Done** (`lab-simp`, `rgbmvp covenant`)  
-3. ~~Port C0 program; prove positive + strip-anchor negative on regtest.~~ **Done** — [C0_CLOSED.md](./C0_CLOSED.md)  
-4. ~~C1 mint-gate (lock vault) on regtest.~~ **Done** — [C1_CLOSED.md](./C1_CLOSED.md)  
-5. Optional C2 burn variant.  
-6. C3 BFA schema + audit (P2 lab-closed needs C0+C3).  
-7. Optional: `/v1/covenant/*` + demo board chip.
+1. ~~R0–C3 / P2 closed.~~ See [P2_CLOSED.md](./P2_CLOSED.md).  
+2. Optional C2 burn / C4 stake.  
+3. Optional `/v1/audit/*` + demo board chip.  
+4. **P3** browser UI on shared `/v1`.

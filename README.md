@@ -126,7 +126,7 @@ cp .env.example .env
 | **P0** | RGB on Liquid Testnet | Done |
 | **P1** | BTC ↔ Liquid HTLC twin swap | **Closed** — [P1_CLOSED.md](docs/P1_CLOSED.md) |
 | **Demo v0** | Read-only `/demo` board | Done |
-| **P2** | Simplicity seal covenants | **C0+C1 closed** (regtest) · C3 next |
+| **P2** | Simplicity + BFA audit | **Closed** (C0+C3; C1 stretch) |
 | **P3** | Full browser wallet UI | Later |
 
 ---
@@ -148,6 +148,8 @@ cp .env.example .env
 | [docs/P2_SIMPLICITY.md](docs/P2_SIMPLICITY.md) | P2 R0 pins, Docker regtest, ADR |
 | [docs/C0_CLOSED.md](docs/C0_CLOSED.md) | C0 Simplicity anchor covenant (regtest proof) |
 | [docs/C1_CLOSED.md](docs/C1_CLOSED.md) | C1 mint-gate vault + recursion (regtest proof) |
+| [docs/C3_CLOSED.md](docs/C3_CLOSED.md) | C3 BFA schema + full-history audit |
+| [docs/P2_CLOSED.md](docs/P2_CLOSED.md) | P2 phase closure (C0+C3) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, `/v1` API, privacy |
 | [docs/SCENARIOS.md](docs/SCENARIOS.md) | Scenario ladder |
 | [docs/STACK.md](docs/STACK.md) | LWK, RGB, toolchain |

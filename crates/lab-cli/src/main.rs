@@ -61,7 +61,77 @@ enum Commands {
         #[command(subcommand)]
         cmd: CovenantCmd,
     },
+    /// P2 C3 BFA (backed fungible asset) issue / mint plan / audit
+    Bfa {
+        #[command(subcommand)]
+        cmd: BfaCmd,
+    },
     ApiRoot,
+}
+
+#[derive(Subcommand, Debug)]
+enum BfaCmd {
+    /// Issue BFA genesis (prints contract_id + terms echo)
+    Issue {
+        #[arg(long, default_value = "LiquidRgbUSD")]
+        name: String,
+        #[arg(long, default_value = "LRUSD")]
+        ticker: String,
+        #[arg(long, default_value_t = 1_000_000)]
+        max_supply: u64,
+        /// Gate seal outpoint txid:vout
+        #[arg(long)]
+        gate_seal: String,
+        /// Canonical terms: elements-backing:v1;vault=…;asset=…;rate=n/d
+        #[arg(long)]
+        backing: String,
+        #[arg(long, default_value = "elements-regtest")]
+        chain: String,
+    },
+    /// Plan a BFA mint transition (tapret address + opid JSON)
+    MintPlan {
+        #[arg(long, default_value = "LiquidRgbUSD")]
+        name: String,
+        #[arg(long, default_value = "LRUSD")]
+        ticker: String,
+        #[arg(long, default_value_t = 1_000_000)]
+        max_supply: u64,
+        #[arg(long)]
+        backing: String,
+        #[arg(long)]
+        genesis_gate: String,
+        #[arg(long)]
+        gate_seal: String,
+        #[arg(long)]
+        mint: u64,
+        #[arg(long)]
+        recipient_seal: String,
+        #[arg(long)]
+        new_gate_seal: String,
+        #[arg(long)]
+        consume_opid: Option<String>,
+        #[arg(long)]
+        allowance: Option<u64>,
+        #[arg(long, default_value = lab_rgb::DEMO_INTERNAL_XONLY_HEX)]
+        internal_key: String,
+        #[arg(long, default_value_t = 12_648_430)]
+        entropy: u64,
+        #[arg(long, default_value = "elements-regtest")]
+        chain: String,
+    },
+    /// Full-history audit from JSON history file
+    Audit {
+        #[arg(long)]
+        history: PathBuf,
+        /// Fetch missing witness txs via regtest_simplicity.sh cli
+        #[arg(long, default_value_t = true)]
+        fetch_rpc: bool,
+    },
+    /// End-to-end C3 demo script
+    Demo {
+        #[arg(long, default_value = "scripts/demo_c3_bfa_audit.sh")]
+        script: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1096,6 +1166,98 @@ fn run() -> Result<()> {
                 }
             }
             CovenantCmd::DemoC1 { script } => {
+                anyhow::ensure!(
+                    script.is_file(),
+                    "demo script missing: {} (run from repo root)",
+                    script.display()
+                );
+                let status = std::process::Command::new("bash")
+                    .arg(&script)
+                    .status()
+                    .with_context(|| format!("run {}", script.display()))?;
+                if !status.success() {
+                    anyhow::bail!("demo exited with {status}");
+                }
+            }
+        },
+        Commands::Bfa { cmd } => match cmd {
+            BfaCmd::Issue {
+                name,
+                ticker,
+                max_supply,
+                gate_seal,
+                backing,
+                chain,
+            } => {
+                let json = lab_rgb::bfa::issue_json(
+                    &name, &ticker, max_supply, &gate_seal, &backing, &chain,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            }
+            BfaCmd::MintPlan {
+                name,
+                ticker,
+                max_supply,
+                backing,
+                genesis_gate,
+                gate_seal,
+                mint,
+                recipient_seal,
+                new_gate_seal,
+                consume_opid,
+                allowance,
+                internal_key,
+                entropy,
+                chain,
+            } => {
+                let json = lab_rgb::bfa::plan_mint_json(
+                    &name,
+                    &ticker,
+                    max_supply,
+                    &backing,
+                    &genesis_gate,
+                    &gate_seal,
+                    mint,
+                    &recipient_seal,
+                    &new_gate_seal,
+                    consume_opid.as_deref(),
+                    allowance,
+                    &internal_key,
+                    entropy,
+                    &chain,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            }
+            BfaCmd::Audit {
+                history,
+                fetch_rpc,
+            } => {
+                let s = fs::read_to_string(&history)
+                    .with_context(|| format!("read {}", history.display()))?;
+                let hist: lab_rgb::bfa::BfaHistory = serde_json::from_str(&s)?;
+                let fetch = |txid: &str| -> Result<String> {
+                    if !fetch_rpc {
+                        anyhow::bail!("no witness_tx_hex for {txid} and --fetch-rpc disabled");
+                    }
+                    let out = std::process::Command::new("./scripts/regtest_simplicity.sh")
+                        .args(["cli", "getrawtransaction", txid])
+                        .output()
+                        .context("regtest_simplicity.sh cli getrawtransaction")?;
+                    if !out.status.success() {
+                        anyhow::bail!(
+                            "getrawtransaction failed: {}",
+                            String::from_utf8_lossy(&out.stderr)
+                        );
+                    }
+                    Ok(String::from_utf8(out.stdout)?.trim().to_string())
+                };
+                let result = lab_rgb::bfa::audit_history(&hist, &fetch)?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+                if !result.ok {
+                    anyhow::bail!("{}", result.summary);
+                }
+            }
+            BfaCmd::Demo { script } => {
                 anyhow::ensure!(
                     script.is_file(),
                     "demo script missing: {} (run from repo root)",

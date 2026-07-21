@@ -56,7 +56,7 @@ Product shape: **CLI + small web verifier**, browser-ready `/v1`, full ladder in
 | Refund path | **CLI done** (`refund-btc` / `refund-lq`) |
 | P1 | **CLOSED** — [`P1_CLOSED.md`](./P1_CLOSED.md) |
 | Demo v0 | Read-only `/demo` board |
-| Next | **P2 C3** BFA audit ([`C0_CLOSED.md`](./C0_CLOSED.md) · [`C1_CLOSED.md`](./C1_CLOSED.md) done) |
+| Next | **P3** browser UI ([`P2_CLOSED.md`](./P2_CLOSED.md) done) |
 
 ### Sudo requirements
 

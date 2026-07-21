@@ -3,8 +3,10 @@
 //! Adapted from kaleidoswap/rgb-on-liquid-spike against vendored `rgb-consensus`
 //! with the `WitnessTx` patch.
 
+pub mod bfa;
 pub mod htlc;
 pub mod liquid_dbc;
+pub mod mint;
 pub mod mpc;
 pub mod patched_anchor;
 pub mod rgb20;
@@ -45,7 +47,10 @@ fn default_liquid_chain() -> String {
 
 pub fn parse_chain_net(s: &str) -> Result<ChainNet> {
     match s.trim().to_ascii_lowercase().as_str() {
-        "liquid-testnet" | "liquid_testnet" | "tl" => Ok(ChainNet::LiquidTestnet),
+        "liquid-testnet" | "liquid_testnet" | "tl" | "elements-regtest" | "liquid-regtest" => {
+            // RGB genesis stamp: Elements regtest demos use LiquidTestnet id.
+            Ok(ChainNet::LiquidTestnet)
+        }
         "bitcoin-testnet" | "bitcoin-testnet3" | "testnet" | "testnet3" | "tb" | "tb3" => {
             Ok(ChainNet::BitcoinTestnet3)
         }

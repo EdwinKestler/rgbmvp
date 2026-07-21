@@ -130,7 +130,9 @@ BTC RGB anchor (earlier): [`2a573998…1806`](https://blockstream.info/testnet/t
 **Plan:** [`P2_PLAN.md`](./P2_PLAN.md) (regtest-first, C0 + C3 = lab closed).  
 **R0 pins / Docker / ADR:** [`P2_SIMPLICITY.md`](./P2_SIMPLICITY.md) (`./scripts/regtest_simplicity.sh up`).  
 **C0 closed:** [`C0_CLOSED.md`](./C0_CLOSED.md) · `./scripts/demo_c0_simplicity.sh`.  
-**C1 closed:** [`C1_CLOSED.md`](./C1_CLOSED.md) · `./scripts/demo_c1_mint_gate.sh`.
+**C1 closed:** [`C1_CLOSED.md`](./C1_CLOSED.md) · `./scripts/demo_c1_mint_gate.sh`.  
+**C3 closed:** [`C3_CLOSED.md`](./C3_CLOSED.md) · `./scripts/demo_c3_bfa_audit.sh`.  
+**P2 closed:** [`P2_CLOSED.md`](./P2_CLOSED.md) (C0+C3 definition of done).
 
 **Goal:** exercise Simplicity + backed-mint patterns that differentiate Liquid.
 
@@ -139,7 +141,7 @@ BTC RGB anchor (earlier): [`2a573998…1806`](https://blockstream.info/testnet/t
 | C0 | Simplicity `preimage ∧ opret-shaped anchor` | CLI, regtest | **CLOSED** — compliant OK; strip-anchor consensus reject (−26 jet assertion) |
 | C1 | Mint-gate (lock vault) | CLI, regtest | **CLOSED** — 2 chained mints; drop-anchor / wrong-amount / no-recreate reject |
 | C2 | Mint-gate burn variant | CLI, CI | OP_RETURN burn as backing + anchor |
-| C3 | BFA schema + audit | CLI, Web audit page | Over-mint fails audit; honest history passes; no oracle |
+| C3 | BFA schema + audit | CLI, regtest | **CLOSED** — honest pass; over-mint fail; lie fails anchor |
 | C4 | Time-locked staking covenant | CLI, CI | Early unstake rejected; principal returns to staker after maturity |
 | C5 | (Stretch) LiquiDEX / native asset swap | docs | Optional comparison: Liquid native atomic swap vs RGB twin swap |
 
