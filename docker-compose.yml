@@ -1,0 +1,89 @@
+# rgbmvp regtest stack (P2 R0+)
+#
+# Default: Elements 23.3 with Simplicity force-activated (C0+ covenants).
+# Optional profiles:
+#   rgb-regtest  — Elements 23.2.4 (no Simplicity) for plain RGB regtest
+#   btc-regtest  — bitcoind regtest (P1-style BTC leg offline)
+#
+#   ./scripts/regtest_simplicity.sh up
+#   ./scripts/regtest_simplicity.sh status
+#   ./scripts/regtest_simplicity.sh down
+#
+# Docs: docs/P2_SIMPLICITY.md
+
+services:
+  elementsd-simplicity:
+    image: ghcr.io/vulpemventures/elements:23.3.0
+    container_name: rgbmvp-elementsd-simplicity
+    restart: unless-stopped
+    ports:
+      - "7042:7042"
+    volumes:
+      - ./docker/elements-simplicity.conf:/home/elements/.elements/elements.conf:ro
+      - elementsd-simplicity-data:/home/elements/.elements
+    command:
+      - -conf=/home/elements/.elements/elements.conf
+      - -datadir=/home/elements/.elements
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - elements-cli -chain=elementsregtest -rpcuser=user -rpcpassword=pass -rpcport=7042 getblockchaininfo > /dev/null 2>&1
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 8s
+
+  elementsd:
+    profiles: ["rgb-regtest"]
+    image: ghcr.io/vulpemventures/elements:23.2.4
+    container_name: rgbmvp-elementsd
+    restart: unless-stopped
+    ports:
+      - "7041:7041"
+    volumes:
+      - ./docker/elements.conf:/home/elements/.elements/elements.conf:ro
+      - elementsd-data:/home/elements/.elements
+    command:
+      - -conf=/home/elements/.elements/elements.conf
+      - -datadir=/home/elements/.elements
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - elements-cli -chain=elementsregtest -rpcuser=user -rpcpassword=pass -rpcport=7041 getblockchaininfo > /dev/null 2>&1
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 8s
+
+  bitcoind:
+    profiles: ["btc-regtest"]
+    image: bitcoin/bitcoin:28.0
+    container_name: rgbmvp-bitcoind
+    restart: unless-stopped
+    ports:
+      - "18543:18443"
+    command:
+      - -regtest
+      - -server
+      - -txindex
+      - -fallbackfee=0.0002
+      - -rpcuser=user
+      - -rpcpassword=pass
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -printtoconsole
+    volumes:
+      - bitcoind-data:/home/bitcoin/.bitcoin
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getblockchaininfo > /dev/null 2>&1
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 8s
+
+volumes:
+  elementsd-simplicity-data:
+  elementsd-data:
+  bitcoind-data:

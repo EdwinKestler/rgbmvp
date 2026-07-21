@@ -145,6 +145,7 @@ cp .env.example .env
 |-----|---------|
 | [docs/P1_CLOSED.md](docs/P1_CLOSED.md) | P1 scope, live evidence, refund notes |
 | [docs/P2_PLAN.md](docs/P2_PLAN.md) | P2 Simplicity seal covenants — plan & milestones |
+| [docs/P2_SIMPLICITY.md](docs/P2_SIMPLICITY.md) | P2 R0 pins, Docker regtest, ADR |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, `/v1` API, privacy |
 | [docs/SCENARIOS.md](docs/SCENARIOS.md) | Scenario ladder |
 | [docs/STACK.md](docs/STACK.md) | LWK, RGB, toolchain |

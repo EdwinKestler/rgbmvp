@@ -99,12 +99,16 @@ For a minimal public demo, labd may **embed** LWK libraries and hide the second 
 
 ### Simplicity + lending note
 
-`lwk_simplicity` integrates **SimplicityHL** and optional **simplicity-lending** contracts. That is Blockstream’s production direction for programmable Liquid. Our P2 scenarios can either:
+`lwk_simplicity` integrates **SimplicityHL** and optional **simplicity-lending** contracts. That is Blockstream’s production direction for programmable Liquid.
 
-- wrap LWK simplicity helpers for standard programs, or  
-- keep spike-style custom RGB-anchor covenants and only use LWK for tx building/signing.
+**P2 R0 decision (see [P2_SIMPLICITY.md](./P2_SIMPLICITY.md) ADR-002):**
 
-Decision deferred to P2 after P0 verification works; document the choice in scenarios `C0+`.
+| Path | Pin | Use |
+|------|-----|-----|
+| **A (C0 default)** | `simplicityhl` **0.6** + `simplicity-lang` **0.8** | Spike-faithful RGB anchor covenants in `lab-simplicity` |
+| **B (later)** | `lwk_simplicity` **0.18** → simplicityhl **0.5** | Packaging / lending helpers after C0 green |
+
+Regtest node: Elements **23.3.0**, `evbparams=simplicity:-1:::`, RPC **:7042** (`./scripts/regtest_simplicity.sh up`).
 
 ### Boltz note
 

@@ -1,9 +1,9 @@
 # P2 plan — Simplicity seal covenants & backed assets
 
-**Status:** Planned (research → regtest → optional public testnet)  
+**Status:** R0 complete · C0 implementation next  
 **Date:** 2026-07-21  
 **Depends on:** P0 (RGB on Liquid) · P1 closed ([P1_CLOSED.md](./P1_CLOSED.md))  
-**Scenarios:** [SCENARIOS.md](./SCENARIOS.md) C0–C5 · stack notes [STACK.md](./STACK.md)
+**Scenarios:** [SCENARIOS.md](./SCENARIOS.md) C0–C5 · pins/ADR [P2_SIMPLICITY.md](./P2_SIMPLICITY.md) · stack [STACK.md](./STACK.md)
 
 ---
 
@@ -284,15 +284,18 @@ If vendoring `.simf` or driver code, preserve original license headers (MIT/Apac
 | Date | Decision | Notes |
 |------|----------|-------|
 | 2026-07-21 | Plan written; regtest-first; C0 opret MVP; Path A default | Post–P1_CLOSED |
-| _TBD_ | Elements + SimplicityHL exact versions | After R0 |
-| _TBD_ | Path A vs B final | After `lwk_simplicity` probe |
+| 2026-07-21 | **R0 complete** — pins + Docker + ADR | See [P2_SIMPLICITY.md](./P2_SIMPLICITY.md) |
+| 2026-07-21 | Elements **23.3.0** + `evbparams=simplicity:-1:::` | Image `ghcr.io/vulpemventures/elements:23.3.0`, RPC **:7042** |
+| 2026-07-21 | **simplicityhl 0.6** · **simplicity-lang 0.8** | Path A; crates.io verified |
+| 2026-07-21 | Path A for C0 (not `lwk_simplicity` 0.18 / hl 0.5) | ADR-002 |
+| 2026-07-21 | C0 opret shape; tapret later | ADR-003 |
 | _TBD_ | Public testnet C0 yes/no | After feature probe |
 
 ---
 
 ## Next concrete actions
 
-1. R0: Docker Elements Simplicity + pin SimplicityHL; write `docs/P2_SIMPLICITY.md`.  
+1. ~~R0: Docker Elements Simplicity + pin SimplicityHL; write `docs/P2_SIMPLICITY.md`.~~ **Done**  
 2. Scaffold `crates/lab-simplicity` and wire empty CLI `covenant` help.  
 3. Port C0 program; prove positive + strip-anchor negative on regtest.  
 4. Expose status on `/v1` + demo board.  
