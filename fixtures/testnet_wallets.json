@@ -1,0 +1,31 @@
+{
+  "network": "liquid-testnet",
+  "warning": "TESTNET ONLY. These BIP39 phrases are public fixtures for reproducible automated tests. Never use them on mainnet. Never send real value.",
+  "version": 1,
+  "wallets": [
+    {
+      "role": "alice",
+      "name": "alice",
+      "purpose": "RGB issuer / sender (primary lab actor)",
+      "mnemonic": "legal winner thank year wave sausage worth useful legal winner thank yellow"
+    },
+    {
+      "role": "bob",
+      "name": "bob",
+      "purpose": "RGB receiver / counterparty",
+      "mnemonic": "letter advice cage absurd amount doctor acoustic avoid letter advice cage above"
+    },
+    {
+      "role": "carol",
+      "name": "carol",
+      "purpose": "Third party / web-verifier observer / extra hop",
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+    },
+    {
+      "role": "maker",
+      "name": "maker",
+      "purpose": "P1 swap maker bot inventory (Liquid leg)",
+      "mnemonic": "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong"
+    }
+  ]
+}

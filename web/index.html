@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>rgbmvp — verifier &amp; swap status</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color: #e8eef7; background: #0b1220; }
+    body { max-width: 760px; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
+    h1 { font-size: 1.35rem; margin-bottom: 0.25rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
+    .card { background: #141e33; border: 1px solid #243352; border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0; }
+    label { display: block; font-size: 0.85rem; color: #9fb0cc; margin-top: 0.6rem; }
+    input, button, select {
+      width: 100%; box-sizing: border-box; margin-top: 0.25rem;
+      background: #0b1220; color: #e8eef7; border: 1px solid #334866; border-radius: 6px; padding: 0.55rem 0.7rem;
+    }
+    button { cursor: pointer; background: #2a6df4; border: none; font-weight: 600; margin-top: 0.85rem; }
+    button:hover { filter: brightness(1.08); }
+    button.secondary { background: #243352; }
+    .ok { color: #3ddc97; } .bad { color: #ff6b6b; } .muted { color: #9fb0cc; font-size: 0.9rem; }
+    pre { white-space: pre-wrap; word-break: break-word; font-size: 0.78rem; background: #0b1220; padding: 0.75rem; border-radius: 6px; max-height: 280px; overflow: auto; }
+    a { color: #7eb6ff; }
+    nav { display: flex; gap: 0.5rem; margin: 1rem 0 0.25rem; flex-wrap: wrap; }
+    nav button { width: auto; margin: 0; padding: 0.4rem 0.85rem; font-size: 0.9rem; }
+    nav button.active { outline: 2px solid #7eb6ff; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .steps { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.75rem 0; }
+    .step {
+      font-size: 0.75rem; padding: 0.35rem 0.55rem; border-radius: 999px;
+      border: 1px solid #334866; color: #9fb0cc;
+    }
+    .step.done { background: #163528; border-color: #2a6b4a; color: #3ddc97; }
+    .phase { font-size: 1.1rem; font-weight: 700; margin: 0.4rem 0; }
+    .links a { display: inline-block; margin-right: 0.75rem; margin-top: 0.35rem; font-size: 0.88rem; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    @media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <h1>rgbmvp lab UI</h1>
+  <p class="muted">Testnet only. CLI holds keys; this page only reads public status and verifies anchors.
+    <a href="/demo">Demo board (read-only balances)</a></p>
+
+  <div class="card">
+    <div id="health" class="muted">Checking /v1/health…</div>
+  </div>
+
+  <nav>
+    <button type="button" class="secondary active" data-tab="swap">Swap status</button>
+    <button type="button" class="secondary" data-tab="verify">RGB verify</button>
+  </nav>
+
+  <div id="panel-swap" class="panel active">
+    <div class="card">
+      <h2>Atomic swap status</h2>
+      <p class="muted">Load a session created by <code>rgbmvp swap init --id …</code>. Preimage is never shown here.</p>
+      <label>Swap id</label>
+      <input id="swap-id" placeholder="p1-live" />
+      <div class="row">
+        <button type="button" id="swap-load">Load status</button>
+        <button type="button" class="secondary" id="swap-list">List swaps</button>
+      </div>
+      <div id="swap-summary" style="margin-top:1rem"></div>
+      <div class="steps" id="swap-steps"></div>
+      <div class="links" id="swap-links"></div>
+      <pre id="swap-out"></pre>
+    </div>
+  </div>
+
+  <div id="panel-verify" class="panel">
+    <div class="card">
+      <h2>RGB transfer verifier</h2>
+      <p class="muted">Paste plan id + anchor txid from <code>rgbmvp rgb transfer</code>.</p>
+      <label>Plan id</label>
+      <input id="plan" placeholder="tRGB-… or bRGB-…" />
+      <label>Anchor txid</label>
+      <input id="txid" placeholder="hex txid" />
+      <button type="button" id="go">Verify</button>
+      <div id="summary" style="margin-top:1rem"></div>
+      <pre id="out"></pre>
+    </div>
+  </div>
+
+  <div class="card muted">
+    CLI swap: <code>swap init|fund-btc|fund-lq|claim-lq|claim-btc|status</code><br/>
+    API: <code>GET /v1/swap/{id}</code> · <code>GET /v1/swaps</code> · <code>POST /v1/rgb/verify</code>
+  </div>
+
+  <script>
+    function $(id) { return document.getElementById(id); }
+
+    document.querySelectorAll('nav button').forEach(btn => {
+      btn.onclick = () => {
+        document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        $('panel-' + btn.dataset.tab).classList.add('active');
+      };
+    });
+
+    async function refreshHealth() {
+      try {
+        const r = await fetch('/v1/health');
+        const j = await r.json();
+        const b = j.body || j;
+        $('health').innerHTML = `Network <strong>${b.network || '?'}</strong> · status
+          <span class="${b.status==='ready'?'ok':'bad'}">${b.status}</span>
+          · rgb_ready=${b.rgb_ready} · phase=${b.phase}`;
+      } catch (e) {
+        $('health').textContent = 'Health check failed: ' + e;
+      }
+    }
+
+    function renderSwap(s) {
+      const phase = s.phase || '?';
+      const done = phase === 'done';
+      $('swap-summary').innerHTML = `
+        <div class="phase ${done ? 'ok' : ''}">phase: ${phase}</div>
+        <div class="muted">hash <code>${(s.hash_hex||'').slice(0,16)}…</code>
+          · CSV ${s.csv_delay}
+          · ${s.alice_btc_wallet || '?'} ↔ ${s.bob_lq_wallet || '?'}</div>
+        <div class="muted" style="margin-top:0.4rem">
+          BTC HTLC: <code>${s.htlc_btc?.address || '—'}</code><br/>
+          LQ HTLC: <code>${s.htlc_lq?.address || '—'}</code>
+        </div>`;
+
+      const stepsEl = $('swap-steps');
+      stepsEl.innerHTML = '';
+      (s.steps || []).forEach(st => {
+        const d = document.createElement('span');
+        d.className = 'step' + (st.done ? ' done' : '');
+        d.textContent = st.id + (st.done ? ' ✓' : '');
+        stepsEl.appendChild(d);
+      });
+
+      const linksEl = $('swap-links');
+      linksEl.innerHTML = '';
+      const L = s.links || {};
+      const labels = [
+        ['btc_fund', 'BTC fund'],
+        ['lq_fund', 'LQ fund'],
+        ['lq_claim', 'LQ claim'],
+        ['btc_claim', 'BTC claim'],
+      ];
+      labels.forEach(([k, lab]) => {
+        if (L[k]) {
+          const a = document.createElement('a');
+          a.href = L[k];
+          a.target = '_blank';
+          a.rel = 'noopener';
+          a.textContent = lab;
+          linksEl.appendChild(a);
+        }
+      });
+
+      $('swap-out').textContent = JSON.stringify(s, null, 2);
+    }
+
+    async function loadSwap() {
+      const id = $('swap-id').value.trim();
+      if (!id) { $('swap-out').textContent = 'enter a swap id'; return; }
+      $('swap-out').textContent = '…';
+      try {
+        const r = await fetch('/v1/swap/' + encodeURIComponent(id));
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.statusText);
+        renderSwap(j);
+        // keep id in URL for shareability
+        const u = new URL(location.href);
+        u.searchParams.set('swap', id);
+        history.replaceState(null, '', u);
+      } catch (e) {
+        $('swap-summary').innerHTML = `<span class="bad">${e}</span>`;
+        $('swap-steps').innerHTML = '';
+        $('swap-links').innerHTML = '';
+        $('swap-out').textContent = String(e);
+      }
+    }
+
+    $('swap-load').onclick = loadSwap;
+    $('swap-list').onclick = async () => {
+      try {
+        const r = await fetch('/v1/swaps');
+        const j = await r.json();
+        const ids = j.swaps || [];
+        $('swap-out').textContent = JSON.stringify(j, null, 2);
+        $('swap-summary').innerHTML = ids.length
+          ? `<span class="muted">Click an id:</span> ` + ids.map(id =>
+              `<a href="?swap=${encodeURIComponent(id)}" data-id="${id}">${id}</a>`).join(' · ')
+          : '<span class="muted">No swaps under .rgbmvp/swaps/</span>';
+        $('swap-summary').querySelectorAll('a[data-id]').forEach(a => {
+          a.onclick = (ev) => {
+            ev.preventDefault();
+            $('swap-id').value = a.dataset.id;
+            loadSwap();
+          };
+        });
+      } catch (e) {
+        $('swap-out').textContent = String(e);
+      }
+    };
+
+    $('go').onclick = async () => {
+      const plan_id = $('plan').value.trim();
+      const txid = $('txid').value.trim();
+      $('out').textContent = '…';
+      $('summary').textContent = '';
+      try {
+        const r = await fetch('/v1/rgb/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plan_id, txid })
+        });
+        const j = await r.json();
+        $('out').textContent = JSON.stringify(j, null, 2);
+        const res = j.result || j;
+        const ok = res.status === 'valid';
+        $('summary').innerHTML = ok
+          ? `<span class="ok">VALID</span> · <a href="${(res.explorer_url||'#')}" target="_blank">explorer</a>`
+          : `<span class="bad">${res.status || 'error'}</span>`;
+      } catch (e) {
+        $('out').textContent = String(e);
+      }
+    };
+
+    // deep-link ?swap=p1-live
+    const params = new URLSearchParams(location.search);
+    if (params.get('swap')) {
+      $('swap-id').value = params.get('swap');
+      loadSwap();
+    }
+
+    refreshHealth();
+  </script>
+</body>
+</html>

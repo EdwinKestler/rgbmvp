@@ -1,0 +1,26 @@
+{
+  "network": "bitcoin-testnet",
+  "warning": "TESTNET ONLY. Private keys must live in .env (BTC_TESTNET_WIF), never in git. This file lists public addresses and roles for automation.",
+  "version": 1,
+  "wallets": [
+    {
+      "role": "btc-alice",
+      "name": "btc-alice",
+      "purpose": "Bitcoin testnet seal/funding key for RGB twin swaps (Alice BTC leg)",
+      "address": "tb1q85aadpqgzjgrgp69gf2ejf0883yx7s9wy85h4p",
+      "script_type": "p2wpkh",
+      "env_wif": "BTC_TESTNET_WIF",
+      "env_address": "BTC_TESTNET_ADDRESS"
+    }
+  ],
+  "funding": {
+    "status_checked": "2026-07-21",
+    "note": "Funded for P1 slice A (~189026 sats confirmed). Re-check with: rgbmvp btc balance --name btc-alice",
+    "explorer": "https://blockstream.info/testnet/address/tb1q85aadpqgzjgrgp69gf2ejf0883yx7s9wy85h4p",
+    "example_utxo": "84a6faf0616613221eaf7e24c8ccb95721597b3158ea479c7e522a6e0c9676a6:1",
+    "faucets": [
+      "https://bitcoinfaucet.uo1.net/",
+      "https://coinfaucet.eu/en/btc-testnet/"
+    ]
+  }
+}

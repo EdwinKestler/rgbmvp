@@ -1,0 +1,17 @@
+[package]
+name = "lab-btc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bitcoin testnet wallet helpers (WIF, Esplora) for P1 RGB twin swaps"
+
+[dependencies]
+anyhow.workspace = true
+lab-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+hex.workspace = true
+dotenvy.workspace = true
+bitcoin = { version = "0.32", features = ["std", "serde"] }
+lab-rgb.workspace = true

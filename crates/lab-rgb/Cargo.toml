@@ -1,0 +1,28 @@
+[package]
+name = "lab-rgb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RGB helpers (NIA issue/transfer, tapret, HTLC, WitnessTx verify)"
+
+[dependencies]
+anyhow.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+bech32 = "0.11"
+amplify = "=4.8.1"
+sha2 = "0.10"
+bitcoin = { version = "0.32", features = ["std", "rand-std"] }
+elements = "0.25"
+
+# Pin rc.10 to match vendored WitnessTx patch (do not float to rc.11).
+rgb-consensus = { version = "=0.11.1-rc.10" }
+rgb-ops = { version = "=0.11.1-rc.10" }
+rgb-schemas = { version = "=0.11.1-rc.10" }
+rgb-strict-encoding = { version = "=1.0.1" }
+rgb-strict-types = { version = "=1.0.1" }
+
+[dev-dependencies]
+hex.workspace = true

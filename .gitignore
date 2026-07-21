@@ -1,0 +1,123 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.python-version
+
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+# Keep workspace lockfile in git once committed; ignore probe crates
+/tmp/
+
+# Environment and secrets — never commit real values
+.env
+.env.local
+.env.*.local
+.env.secrets
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.mnemonic
+*.seed
+credentials*
+secrets*
+**/secrets/
+**/private/
+
+# Wallet / lab local state (seeds, descriptors with keys, consignments with private data)
+.lwk/
+.rgbmvp/
+data/
+state/
+wallets/
+consignments/
+proofs/
+*.wallet
+*.rgbc
+*.consignment
+# Local generated registry (addresses only); fixtures/testnet_wallets.json is committed
+fixtures/wallet_registry.local.json
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.history/
+
+# Logs, caches, temp
+*.log
+logs/
+tmp/
+temp/
+.cache/
+*.tmp
+.direnv/
+
+# Coverage / reports
+coverage/
+reports/
+*.cover
+
+# Databases / local persistence
+*.db
+*.sqlite
+*.sqlite3
+
+# Archives / binaries (local artifacts)
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.bin
+*.exe
+*.dll
+*.dylib
+*.o
+*.a
+
+# Local desktop wallets / AppImages (do not commit multi‑MB binaries)
+*.AppImage
+SideSwap.AppImage
+SideSwap*.AppImage
+*.AppImage.zsync
+
+
+# Node / web (when added)
+node_modules/
+web/dist/
+web/build/
+.npm/
+.next/
+.turbo/
+
+# Docker (if added later — keep ignore patterns ready)
+docker-compose.override.yml
+*.dockerignore.local

@@ -1,0 +1,18 @@
+[package]
+name = "lab-chain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Liquid chain adapters (LWK wallet, Esplora/Electrum probes) for rgbmvp"
+
+[dependencies]
+anyhow.workspace = true
+lab-core.workspace = true
+lab-rgb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+lwk_wollet.workspace = true
+lwk_signer.workspace = true
+lwk_common.workspace = true
+elements = "0.25"

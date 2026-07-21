@@ -1,0 +1,11 @@
+[package]
+name = "lab-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "rgbmvp HTTP API types and helpers (labd /v1)"
+
+[dependencies]
+lab-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
