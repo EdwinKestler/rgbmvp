@@ -41,4 +41,4 @@ If claim already happened, refund correctly fails.
 ## Next track
 
 1. **Demo v0** — read-only `/demo` board (balances + activity).  
-2. **P2 research** — Simplicity seal covenants (see `docs/SCENARIOS.md` C0+).  
+2. **P2 research** — Simplicity seal covenants — full plan: [`P2_PLAN.md`](./P2_PLAN.md) (scenarios C0+ in [`SCENARIOS.md`](./SCENARIOS.md)).

@@ -142,8 +142,9 @@ Detailed scenario IDs: [SCENARIOS.md](./SCENARIOS.md).
 
 ### Step 4 — Phase P2 programmable seals
 
-1. Simplicity anchor covenant (C0); mint-gate / BFA / staking (C1–C4) per SCENARIOS.
-2. Prefer regtest CI first; public testnet if tooling allows.
+1. Follow **[`P2_PLAN.md`](./P2_PLAN.md)** (R0 → C0 → C1/C3; C0+C3 = lab closed).
+2. Simplicity anchor covenant (C0); mint-gate / BFA / staking (C1–C4) per SCENARIOS.
+3. Prefer regtest CI first; public testnet if tooling allows.
 
 ---
 
