@@ -1797,8 +1797,8 @@ fn handle_swap_init_post(
     let session = swap::init_swap(
         &id,
         csv_delay,
-        alice_btc,
-        bob_lq,
+        &alice_btc,
+        &bob_lq,
         btc_contract,
         lq_contract,
     )?;
