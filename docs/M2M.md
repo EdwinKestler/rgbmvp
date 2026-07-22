@@ -18,6 +18,9 @@ This document is structured for **machine parsing**: goals, invariants, workflow
 | `networks_ci` | Elements regtest (Simplicity), optional bitcoind regtest |
 | `mainnet` | forbidden unless explicit human flag + review |
 | `phase_status` | P0 done · P1 closed · P2 closed · P3 closed (see `docs/*_CLOSED.md`) |
+| `next_strategy` | Protocol completeness on localhost/testnet first; public demo only after U4 (`docs/ROADMAP_NEXT.md`) |
+| `next_protocol` | S3 RGB-wrapped claim (CLI); C2 burn; C4 after research freeze |
+| `public_hosting` | Blocked until U4 acceptance gate |
 | `binary` | `cargo build -p lab-cli` → `./target/debug/rgbmvp` |
 | `api_prefix` | `/v1` |
 | `data_dir` | `.rgbmvp/` (gitignored runtime state) |

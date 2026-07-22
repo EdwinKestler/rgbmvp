@@ -73,6 +73,7 @@ API catalog: `GET /v1`.
 
 ## Next track
 
+- **S3** RGB-wrapped claim (CLI, testnet/localhost) — see [`ROADMAP_NEXT.md`](./ROADMAP_NEXT.md)  
+- **U4** public-hosting security gate — **required before any Internet bind** (not a reopening of this P3 close)  
 - Optional U3 hardware / external signer docs  
-- Optional RGB-wrapped claim polish (CLI first)  
-- Public demo hosting only after security review  
+- C2 burn / C4 staking after ADRs (regtest)

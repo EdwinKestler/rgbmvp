@@ -56,7 +56,7 @@ Product shape: **CLI + small web verifier**, browser-ready `/v1`, full ladder in
 | Refund path | **CLI done** (`refund-btc` / `refund-lq`) |
 | P1 | **CLOSED** — [`P1_CLOSED.md`](./P1_CLOSED.md) |
 | Demo v0 | Read-only `/demo` board |
-| Next | Optional U3 / RGB-wrapped claim polish ([`P3_CLOSED.md`](./P3_CLOSED.md) done) |
+| Next | **S3 RGB-wrapped claim** (protocol first, localhost) — [`ROADMAP_NEXT.md`](./ROADMAP_NEXT.md); U4 before any public demo |
 
 ### Sudo requirements
 

@@ -106,11 +106,12 @@ BTC fixture: [`fixtures/testnet_btc.json`](../fixtures/testnet_btc.json).
 | S0 (LQ twin) | Available via P0 Liquid path (`alice`/`bob`) |
 | S1 HTLC addresses | **Done** — dual HTLC (BTC claimer=bob, LQ claimer=alice) |
 | S2 fund both | **Live** — `swap fund-btc` + `swap fund-lq` |
-| S3 claim | **Live** — Alice `claim-lq` then Bob `claim-btc` → **phase=done** |
-| S4 coordinator | CLI session under `.rgbmvp/swaps/` |
+| S2 claim (value HTLC) | **Live** — Alice `claim-lq` then Bob `claim-btc` → **phase=done** (Script HTLC only) |
+| S3 RGB-wrapped claim | **Pending** — preimage + close HTLC-bound RGB seal + re-anchor + verify (see [ROADMAP_NEXT.md](./ROADMAP_NEXT.md)) |
+| S4 coordinator | CLI session under `.rgbmvp/swaps/` (+ P3 guided UI) |
 | S2 refund | **CLI done** — `swap refund-btc` / `swap refund-lq` (CSV mature) |
 | S5 round-trip | Deferred |
-| P1 closure | **CLOSED** — see [`P1_CLOSED.md`](./P1_CLOSED.md) |
+| P1 closure | **CLOSED** for **value** HTLC path — [`P1_CLOSED.md`](./P1_CLOSED.md); S3 was always deferred there |
 
 **HTLC live path (`p1-live`, 2026-07-21):**
 

@@ -40,5 +40,7 @@ If claim already happened, refund correctly fails.
 
 ## Next track
 
-1. **Demo v0** — read-only `/demo` board (balances + activity).  
-2. **P2 research** — Simplicity seal covenants — full plan: [`P2_PLAN.md`](./P2_PLAN.md) (scenarios C0+ in [`SCENARIOS.md`](./SCENARIOS.md)).
+Historical: Demo v0 + P2 + P3 lab console are **done** (see their `*_CLOSED.md` docs).
+
+**Protocol completeness (current):** RGB-wrapped claim **S3** and related work —  
+[`ROADMAP_NEXT.md`](./ROADMAP_NEXT.md) (**localhost / testnet first**; public Internet only after **U4**).

@@ -8,7 +8,7 @@ Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/
 |--|--|
 | **Purpose** | Prove RGB-on-Liquid, twin HTLC swaps, Simplicity/BFA seals, and a safe local browser console |
 | **Networks** | Liquid Testnet · Bitcoin Testnet (P1) · Elements regtest (P2) · **no mainnet** |
-| **Status** | **P0–P3 closed** · headless kit + lab console |
+| **Status** | **P0–P3 closed** · next: **S3** protocol on localhost · public demo only after **U4** ([ROADMAP_NEXT](docs/ROADMAP_NEXT.md)) |
 | **UI** | Issue / transfer / verify / guided swap · `/demo` board · BFA audit (**no browser keys**) |
 
 ### Documentation (start here)
