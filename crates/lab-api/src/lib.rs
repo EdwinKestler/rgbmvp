@@ -1,6 +1,4 @@
-//! HTTP `/v1` surface helpers.
-//!
-//! Phase 0: pure JSON helpers only (no server bind yet). P0 will add `labd` serve.
+//! HTTP `/v1` surface helpers and route catalog (P3 lab console).
 
 use lab_core::HealthReport;
 use serde_json::{json, Value};
@@ -14,27 +12,59 @@ pub fn health_json(report: &HealthReport) -> Value {
     })
 }
 
-/// Placeholder root document for future static web verifier.
+/// Route catalog for browsers and agents (`GET /v1`).
 pub fn root_json() -> Value {
     json!({
         "product": lab_core::PRODUCT,
         "api": lab_core::API_VERSION,
-        "phase": "p0",
-        "message": "RGB Liquid Testnet Lab — P0 RGB issue/transfer/verify enabled (testnet only).",
+        "phase": "p3",
+        "message": "RGB Liquid Testnet Lab — browser lab console (P3). Keys stay on labd; UI is thin.",
+        "security": {
+            "browser_seeds": false,
+            "preimage_redacted_on_swap_get": true,
+            "model": "operator-lab-console"
+        },
         "endpoints": {
-            "health": "/v1/health",
-            "networks": "/v1/networks",
+            "catalog": "GET /v1",
+            "health": "GET /v1/health",
+            "networks": "GET /v1/networks",
             "verify": "POST /v1/rgb/verify",
             "proofs": "GET /v1/proofs/{id}",
             "swap": "GET /v1/swap/{id}",
-            "swaps": "GET /v1/swaps"
+            "swaps": "GET /v1/swaps",
+            "demo_wallets": "GET /v1/demo/wallets",
+            "demo_activity": "GET /v1/demo/activity",
+            "audit_bfa": "POST /v1/audit/bfa",
+            "phases": "GET /v1/phases"
+        },
+        "pages": {
+            "console": "/",
+            "demo_board": "/demo",
+            "audit": "/audit",
+            "docs_p3": "docs/P3_PLAN.md"
         },
         "cli": [
             "rgbmvp net status",
-            "rgbmvp wallet create|address|balance|utxos",
-            "rgbmvp rgb issue|invoice|transfer|verify",
-            "rgbmvp swap init|fund-btc|fund-lq|claim-lq|claim-btc|status",
+            "rgbmvp wallet address|balance",
+            "rgbmvp rgb issue|transfer|verify",
+            "rgbmvp swap init|status|fund-*|claim-*",
+            "rgbmvp bfa audit --history …",
+            "rgbmvp covenant demo|demo-c1",
             "rgbmvp serve"
+        ]
+    })
+}
+
+/// Ladder phase chips for the demo board / console.
+pub fn phases_json() -> Value {
+    json!({
+        "phases": [
+            {"id": "0", "name": "Foundations", "status": "done"},
+            {"id": "P0", "name": "RGB on Liquid", "status": "done"},
+            {"id": "P1", "name": "HTLC twin swap", "status": "closed", "doc": "docs/P1_CLOSED.md"},
+            {"id": "P2", "name": "Simplicity + BFA", "status": "closed", "doc": "docs/P2_CLOSED.md",
+             "slices": ["C0", "C1", "C3"]},
+            {"id": "P3", "name": "Browser lab console", "status": "in_progress", "doc": "docs/P3_PLAN.md"}
         ]
     })
 }

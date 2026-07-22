@@ -151,7 +151,9 @@ BTC RGB anchor (earlier): [`2a573998…1806`](https://blockstream.info/testnet/t
 
 ## Phase P3 — Browser UI (after API is stable)
 
-Not a new consensus phase—**UX only**.
+Not a new consensus phase—**UX only**.  
+**Plan:** [`P3_PLAN.md`](./P3_PLAN.md) (ADRs accepted; monorepo).  
+**Headless kit:** [`HEADLESS.md`](./HEADLESS.md).
 
 | ID | Scenario | Pass criteria |
 |----|----------|---------------|

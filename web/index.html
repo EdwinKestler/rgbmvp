@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>rgbmvp — verifier &amp; swap status</title>
+  <title>rgbmvp — lab console</title>
   <style>
     :root { font-family: system-ui, sans-serif; color: #e8eef7; background: #0b1220; }
     body { max-width: 760px; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
@@ -39,12 +39,17 @@
   </style>
 </head>
 <body>
-  <h1>rgbmvp lab UI</h1>
-  <p class="muted">Testnet only. CLI holds keys; this page only reads public status and verifies anchors.
-    <a href="/demo">Demo board (read-only balances)</a></p>
+  <h1>rgbmvp lab console</h1>
+  <p class="muted">Testnet only. <strong>No seeds in the browser</strong> — keys stay on labd / CLI (P3 operator-lab model).</p>
+  <nav class="site" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.75rem 0;font-size:0.9rem">
+    <a href="/" style="color:#7eb6ff">Console</a>
+    <a href="/demo" style="color:#7eb6ff">Board</a>
+    <a href="/audit" style="color:#7eb6ff">BFA audit</a>
+  </nav>
 
   <div class="card">
     <div id="health" class="muted">Checking /v1/health…</div>
+    <div id="phases" class="muted" style="margin-top:0.5rem"></div>
   </div>
 
   <nav>
@@ -84,16 +89,16 @@
   </div>
 
   <div class="card muted">
-    CLI swap: <code>swap init|fund-btc|fund-lq|claim-lq|claim-btc|status</code><br/>
-    API: <code>GET /v1/swap/{id}</code> · <code>GET /v1/swaps</code> · <code>POST /v1/rgb/verify</code>
+    CLI: <code>swap …</code> · <code>rgb …</code> · <code>bfa audit</code> · <code>covenant demo</code><br/>
+    API: <code>GET /v1</code> · <code>GET /v1/swap/{id}</code> · <code>POST /v1/rgb/verify</code> · <code>POST /v1/audit/bfa</code>
   </div>
 
   <script>
     function $(id) { return document.getElementById(id); }
 
-    document.querySelectorAll('nav button').forEach(btn => {
+    document.querySelectorAll('nav:not(.site) button').forEach(btn => {
       btn.onclick = () => {
-        document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('nav:not(.site) button').forEach(b => b.classList.remove('active'));
         document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
         btn.classList.add('active');
         $('panel-' + btn.dataset.tab).classList.add('active');
@@ -111,6 +116,14 @@
       } catch (e) {
         $('health').textContent = 'Health check failed: ' + e;
       }
+      try {
+        const p = await fetch('/v1/phases').then(r => r.json());
+        const chips = (p.phases || []).map(x => {
+          const c = x.status === 'closed' || x.status === 'done' ? 'ok' : 'muted';
+          return `<span class="${c}" style="margin-right:0.65rem">${x.id}: ${x.status}</span>`;
+        }).join('');
+        $('phases').innerHTML = chips || '';
+      } catch (_) { /* optional */ }
     }
 
     function renderSwap(s) {

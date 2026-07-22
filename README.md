@@ -127,7 +127,7 @@ cp .env.example .env
 | **P1** | BTC ↔ Liquid HTLC twin swap | **Closed** — [P1_CLOSED.md](docs/P1_CLOSED.md) |
 | **Demo v0** | Read-only `/demo` board | Done |
 | **P2** | Simplicity + BFA audit | **Closed** (C0+C3; C1 stretch) |
-| **P3** | Full browser wallet UI | Later |
+| **P3** | Browser lab console | **In progress** — [P3_PLAN.md](docs/P3_PLAN.md) |
 
 ---
 
@@ -150,6 +150,8 @@ cp .env.example .env
 | [docs/C1_CLOSED.md](docs/C1_CLOSED.md) | C1 mint-gate vault + recursion (regtest proof) |
 | [docs/C3_CLOSED.md](docs/C3_CLOSED.md) | C3 BFA schema + full-history audit |
 | [docs/P2_CLOSED.md](docs/P2_CLOSED.md) | P2 phase closure (C0+C3) |
+| [docs/P3_PLAN.md](docs/P3_PLAN.md) | P3 browser lab console plan + ADRs |
+| [docs/HEADLESS.md](docs/HEADLESS.md) | Protocol kit without UI (monorepo) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, `/v1` API, privacy |
 | [docs/SCENARIOS.md](docs/SCENARIOS.md) | Scenario ladder |
 | [docs/STACK.md](docs/STACK.md) | LWK, RGB, toolchain |

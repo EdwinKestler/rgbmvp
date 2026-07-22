@@ -44,16 +44,21 @@
 </head>
 <body>
   <h1>rgbmvp demo board</h1>
-  <p class="muted">Read-only lab overview. Keys and send/swap actions stay in the CLI.</p>
+  <p class="muted">Read-only lab overview. Keys and send/swap actions stay in the CLI (P3 operator-lab model).</p>
   <div class="banner">
-    <strong>Demo v0</strong> — balances + activity only. No browser sends or animations.
-    Protocol P1 closed (incl. refund CLI). Simplicity research is next.
+    <strong>Lab board</strong> — balances + activity only. No browser seeds or sends.
+    P0+P1+P2 closed · P3 console in progress · <a href="/audit">BFA audit</a>
   </div>
+  <nav style="display:flex;gap:0.65rem;flex-wrap:wrap;margin:0.5rem 0;font-size:0.9rem">
+    <a href="/">Console</a>
+    <a href="/demo">Board</a>
+    <a href="/audit">BFA audit</a>
+  </nav>
   <div class="bar">
     <button type="button" id="refresh">Refresh</button>
-    <a href="/">Verifier &amp; swap status UI</a>
     <span class="muted" id="stamp"></span>
   </div>
+  <div id="phases" class="muted" style="margin-bottom:0.75rem"></div>
   <div id="err"></div>
 
   <h2>Wallets</h2>
@@ -80,12 +85,20 @@
       $('err').textContent = '';
       $('stamp').textContent = '…';
       try {
-        const [w, a] = await Promise.all([
+        const [w, a, ph] = await Promise.all([
           fetch('/v1/demo/wallets').then(r => r.json()),
           fetch('/v1/demo/activity').then(r => r.json()),
+          fetch('/v1/phases').then(r => r.json()).catch(() => ({ phases: [] })),
         ]);
         if (w.error) throw new Error(w.error);
         if (a.error) throw new Error(a.error);
+        const pe = $('phases');
+        if (pe) {
+          pe.innerHTML = (ph.phases || []).map(x => {
+            const ok = x.status === 'closed' || x.status === 'done';
+            return `<span style="margin-right:0.75rem;color:${ok ? '#3ddc97' : '#9fb0cc'}">${x.id} ${x.name}: <strong>${x.status}</strong></span>`;
+          }).join('');
+        }
 
         const wg = $('wallets');
         wg.innerHTML = '';

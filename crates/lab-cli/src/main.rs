@@ -1282,16 +1282,19 @@ fn run() -> Result<()> {
 fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
     let listener = TcpListener::bind(bind).with_context(|| format!("bind {bind}"))?;
     eprintln!("labd listening on http://{bind}");
-    eprintln!("  GET  /                 web UI (verify + swap status)");
+    eprintln!("  GET  /                 lab console (verify + swap)");
+    eprintln!("  GET  /demo             read-only board");
+    eprintln!("  GET  /audit            BFA audit UI");
+    eprintln!("  GET  /v1               API catalog");
     eprintln!("  GET  /v1/health");
+    eprintln!("  GET  /v1/phases");
     eprintln!("  GET  /v1/networks");
     eprintln!("  GET  /v1/proofs/{{id}}");
-    eprintln!("  GET  /v1/swap/{{id}}     swap status (preimage redacted)");
-    eprintln!("  GET  /v1/swaps          list swap ids");
-    eprintln!("  GET  /demo              read-only wallet board");
-    eprintln!("  GET  /v1/demo/wallets");
-    eprintln!("  GET  /v1/demo/activity");
-    eprintln!("  POST /v1/rgb/verify  JSON {{plan_id|plan, txid}}");
+    eprintln!("  GET  /v1/swap/{{id}}     (preimage redacted)");
+    eprintln!("  GET  /v1/swaps");
+    eprintln!("  GET  /v1/demo/wallets|activity");
+    eprintln!("  POST /v1/rgb/verify");
+    eprintln!("  POST /v1/audit/bfa     BFA history JSON");
 
     let web_dir = PathBuf::from("web");
     let store = RgbStore::new(&cfg.data_dir);
@@ -1316,7 +1319,14 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
         let path_raw = parts.next().unwrap_or("/");
         let path = path_raw.split('?').next().unwrap_or(path_raw);
 
-        let (status, content_type, body) = if method == "GET"
+        // CORS preflight for browser tools
+        let (status, content_type, body) = if method == "OPTIONS" {
+            (
+                "204 No Content",
+                "text/plain",
+                Vec::new(),
+            )
+        } else if method == "GET"
             && (path == "/" || path == "/index.html")
         {
             let html = fs::read_to_string(web_dir.join("index.html")).unwrap_or_else(|_| {
@@ -1329,6 +1339,17 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
                 "<html><body><h1>/demo</h1><p>missing web/demo.html</p></body></html>".into()
             });
             ("200 OK", "text/html; charset=utf-8", html.into_bytes())
+        } else if method == "GET" && (path == "/audit" || path == "/audit.html") {
+            let html = fs::read_to_string(web_dir.join("audit.html")).unwrap_or_else(|_| {
+                "<html><body><h1>/audit</h1><p>missing web/audit.html</p></body></html>".into()
+            });
+            ("200 OK", "text/html; charset=utf-8", html.into_bytes())
+        } else if method == "GET" && path == "/v1" {
+            let j = serde_json::to_vec_pretty(&lab_api::root_json()).unwrap();
+            ("200 OK", "application/json", j)
+        } else if method == "GET" && path == "/v1/phases" {
+            let j = serde_json::to_vec_pretty(&lab_api::phases_json()).unwrap();
+            ("200 OK", "application/json", j)
         } else if method == "GET" && path == "/v1/health" {
             let report = lab_chain::network_status(cfg).unwrap_or_else(|e| {
                 let mut r = lab_core::HealthReport::phase0_base(cfg.network);
@@ -1432,19 +1453,41 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
                 Err(e) => (
                     "400 Bad Request",
                     "application/json",
-                    serde_json::to_vec(&serde_json::json!({"error": e.to_string()})).unwrap(),
+                    serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
+                ),
+            }
+        } else if method == "POST" && path == "/v1/audit/bfa" {
+            let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(req.len());
+            let body_str = &req[body_start..];
+            match handle_bfa_audit_post(body_str) {
+                Ok(v) => {
+                    let code = if v.ok {
+                        "200 OK"
+                    } else {
+                        "422 Unprocessable Entity"
+                    };
+                    (
+                        code,
+                        "application/json",
+                        serde_json::to_vec_pretty(&v).unwrap(),
+                    )
+                }
+                Err(e) => (
+                    "400 Bad Request",
+                    "application/json",
+                    serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
                 ),
             }
         } else {
             (
                 "404 Not Found",
                 "application/json",
-                br#"{"error":"not found"}"#.to_vec(),
+                br#"{"error":"not found","status":"error"}"#.to_vec(),
             )
         };
 
         let resp = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n\r\n",
             body.len()
         );
         let _ = stream.write_all(resp.as_bytes());
@@ -1658,4 +1701,23 @@ fn handle_verify_post(
         "stored": path.display().to_string(),
         "result": result,
     }))
+}
+
+/// POST /v1/audit/bfa — body is a BfaHistory JSON document (see docs/C3_CLOSED.md).
+fn handle_bfa_audit_post(body: &str) -> Result<lab_rgb::bfa::BfaAuditResult> {
+    let hist: lab_rgb::bfa::BfaHistory =
+        serde_json::from_str(body).context("BFA history JSON")?;
+    let fetch = |txid: &str| -> Result<String> {
+        // Prefer embedded witness_tx_hex; if missing, try Elements regtest RPC helper.
+        let out = std::process::Command::new("./scripts/regtest_simplicity.sh")
+            .args(["cli", "getrawtransaction", txid])
+            .output();
+        match out {
+            Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+            _ => anyhow::bail!(
+                "no witness_tx_hex for {txid} and regtest fetch failed (embed hex in history)"
+            ),
+        }
+    };
+    lab_rgb::bfa::audit_history(&hist, &fetch)
 }

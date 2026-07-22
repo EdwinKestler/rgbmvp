@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>rgbmvp — BFA audit</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color: #e8eef7; background: #0b1220; }
+    body { max-width: 900px; margin: 1.5rem auto; padding: 0 1rem; line-height: 1.45; }
+    h1 { font-size: 1.35rem; margin-bottom: 0.2rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
+    .muted { color: #9fb0cc; font-size: 0.9rem; }
+    .card { background: #141e33; border: 1px solid #243352; border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0; }
+    a { color: #7eb6ff; }
+    nav { display: flex; gap: 0.65rem; flex-wrap: wrap; margin: 0.75rem 0 1rem; font-size: 0.9rem; }
+    nav a { text-decoration: none; padding: 0.35rem 0.65rem; border-radius: 6px; border: 1px solid #334866; background: #141e33; }
+    nav a.active { outline: 2px solid #7eb6ff; }
+    textarea, button, input[type=file] {
+      width: 100%; box-sizing: border-box; margin-top: 0.35rem;
+      background: #0b1220; color: #e8eef7; border: 1px solid #334866; border-radius: 6px; padding: 0.55rem 0.7rem;
+    }
+    button { cursor: pointer; background: #2a6df4; border: none; font-weight: 600; margin-top: 0.75rem; }
+    button:hover { filter: brightness(1.08); }
+    .ok { color: #3ddc97; } .bad { color: #ff6b6b; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 0.75rem; }
+    th, td { text-align: left; padding: 0.4rem 0.35rem; border-bottom: 1px solid #243352; }
+    th { color: #9fb0cc; }
+    pre { white-space: pre-wrap; word-break: break-word; font-size: 0.75rem; background: #0b1220; padding: 0.75rem; border-radius: 6px; max-height: 240px; overflow: auto; }
+    .banner {
+      background: #1a2438; border: 1px solid #334866; color: #9fb0cc;
+      padding: 0.65rem 0.85rem; border-radius: 8px; margin: 0.5rem 0; font-size: 0.88rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>BFA audit</h1>
+  <p class="muted">Upload or paste a BFA history JSON (see <code>docs/C3_CLOSED.md</code>). No oracle — seal, anchor, vault checks.</p>
+  <nav>
+    <a href="/">Console</a>
+    <a href="/demo">Board</a>
+    <a href="/audit" class="active">Audit</a>
+  </nav>
+  <div class="banner">
+    Prefer histories with embedded <code>witness_tx_hex</code> (as produced by <code>demo_c3_bfa_audit.sh</code>).
+    Labd will try Elements regtest RPC only as a fallback.
+  </div>
+  <div class="card">
+    <h2>History</h2>
+    <label class="muted">File</label>
+    <input type="file" id="file" accept="application/json,.json" />
+    <label class="muted">Or paste JSON</label>
+    <textarea id="body" rows="12" placeholder='{"name":"LiquidRgbUSD","ticker":"LRUSD", ... "mints":[...]}'></textarea>
+    <button type="button" id="go">Run audit</button>
+    <div id="summary" style="margin-top:1rem"></div>
+    <table id="tbl" style="display:none">
+      <thead><tr><th>#</th><th>Seal</th><th>Anchor</th><th>Backing</th><th>Detail</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <pre id="raw"></pre>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    $('file').addEventListener('change', async (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      $('body').value = await f.text();
+    });
+    $('go').onclick = async () => {
+      const text = $('body').value.trim();
+      $('summary').textContent = 'Running…';
+      $('tbl').style.display = 'none';
+      $('raw').textContent = '';
+      try {
+        const res = await fetch('/v1/audit/bfa', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: text
+        });
+        const j = await res.json();
+        $('raw').textContent = JSON.stringify(j, null, 2);
+        if (j.error) {
+          $('summary').innerHTML = '<span class="bad">' + (j.error || 'error') + '</span>';
+          return;
+        }
+        const ok = j.ok;
+        $('summary').innerHTML = ok
+          ? '<span class="ok">' + (j.summary || 'audit OK') + '</span> · contract <code>' + (j.contract_id || '') + '</code>'
+          : '<span class="bad">' + (j.summary || 'audit FAILED') + '</span> · contract <code>' + (j.contract_id || '') + '</code>';
+        const tb = $('tbl').querySelector('tbody');
+        tb.innerHTML = '';
+        (j.mints || []).forEach((m) => {
+          const tr = document.createElement('tr');
+          const flag = (b) => b ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>';
+          tr.innerHTML = '<td>' + m.mint_index + '</td><td>' + flag(m.seal_ok) + '</td><td>'
+            + flag(m.anchor_ok) + '</td><td>' + flag(m.backing_ok) + '</td><td class="muted">'
+            + (m.detail || '') + '</td>';
+          tb.appendChild(tr);
+        });
+        $('tbl').style.display = 'table';
+      } catch (err) {
+        $('summary').innerHTML = '<span class="bad">' + err + '</span>';
+      }
+    };
+  </script>
+</body>
+</html>
