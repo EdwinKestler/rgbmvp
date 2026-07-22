@@ -1282,23 +1282,18 @@ fn run() -> Result<()> {
 fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
     let listener = TcpListener::bind(bind).with_context(|| format!("bind {bind}"))?;
     eprintln!("labd listening on http://{bind}");
-    eprintln!("  GET  /                 lab console (verify + swap)");
+    eprintln!("  GET  /                 lab console (Issue · Transfer · Verify · Swap)");
     eprintln!("  GET  /demo             read-only board");
     eprintln!("  GET  /audit            BFA audit UI");
     eprintln!("  GET  /v1               API catalog");
-    eprintln!("  GET  /v1/health");
-    eprintln!("  GET  /v1/phases");
-    eprintln!("  GET  /v1/networks");
-    eprintln!("  GET  /v1/proofs/{{id}}");
-    eprintln!("  GET  /v1/swap/{{id}}     (preimage redacted)");
-    eprintln!("  GET  /v1/swaps");
-    eprintln!("  GET  /v1/demo/wallets|activity");
+    eprintln!("  GET  /v1/health · /v1/phases · /v1/networks");
+    eprintln!("  GET  /v1/proofs/{{id}} · /v1/swaps · /v1/swap/{{id}}");
+    eprintln!("  GET  /v1/demo/wallets · /v1/demo/activity");
+    eprintln!("  GET  /v1/rgb/contracts · /v1/rgb/plans/{{id}}");
+    eprintln!("  POST /v1/rgb/issue     (lab fixture wallets; no browser keys)");
+    eprintln!("  POST /v1/rgb/transfer  (plan; optional broadcast)");
     eprintln!("  POST /v1/rgb/verify");
-    eprintln!("  POST /v1/rgb/issue     lab fixture wallets (server-side keys)");
-    eprintln!("  POST /v1/rgb/transfer  plan (+ optional broadcast)");
-    eprintln!("  GET  /v1/rgb/contracts");
-    eprintln!("  GET  /v1/rgb/plans/{{id}}");
-    eprintln!("  POST /v1/audit/bfa     BFA history JSON");
+    eprintln!("  POST /v1/audit/bfa");
 
     let web_dir = PathBuf::from("web");
     let store = RgbStore::new(&cfg.data_dir);
