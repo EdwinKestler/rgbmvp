@@ -161,12 +161,12 @@
           <input id="swap-csv" type="number" value="6" />
         </div>
         <div>
-          <label>Alice BTC wallet</label>
-          <input id="swap-alice" value="btc-alice" />
+          <label>Alice BTC wallet <span class="muted">(name, not address)</span></label>
+          <input id="swap-alice" value="btc-alice" placeholder="btc-alice" />
         </div>
       </div>
-      <label>Bob Liquid wallet</label>
-      <input id="swap-bob" value="bob" />
+      <label>Bob Liquid wallet <span class="muted">(name, e.g. bob — not tlq1…)</span></label>
+      <input id="swap-bob" value="bob" placeholder="bob" />
       <div class="row">
         <button type="button" id="swap-init">Init swap</button>
         <button type="button" class="secondary" id="swap-load">Refresh status</button>

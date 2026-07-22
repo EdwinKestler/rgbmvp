@@ -1733,6 +1733,31 @@ fn swap_guide(s: &lab_rgb::swap::SwapSession) -> String {
     "Almost done — refresh status.".into()
 }
 
+/// Map a pasted address to the lab wallet *name* when possible.
+fn resolve_btc_wallet_name(s: &str) -> String {
+    let t = s.trim();
+    if t == "btc-alice"
+        || t.eq_ignore_ascii_case("alice-btc")
+        || t == "tb1q85aadpqgzjgrgp69gf2ejf0883yx7s9wy85h4p"
+    {
+        return "btc-alice".into();
+    }
+    // If user pasted a bech32 address, they almost always meant btc-alice in this lab.
+    if t.starts_with("tb1") || t.starts_with("bc1") {
+        return "btc-alice".into();
+    }
+    t.to_string()
+}
+
+fn resolve_lq_wallet_name(s: &str) -> String {
+    let t = s.trim();
+    if t.starts_with("tlq1") || t.starts_with("el1") || t.starts_with("lq1") {
+        // Liquid addresses are not wallet names — default counterparty is bob.
+        return "bob".into();
+    }
+    t.to_string()
+}
+
 fn handle_swap_init_post(
     cfg: &Config,
     store: &SwapStore,
@@ -1745,14 +1770,16 @@ fn handle_swap_init_post(
         .context("id required")?
         .to_string();
     let csv_delay = v.get("csv_delay").and_then(|x| x.as_u64()).unwrap_or(6) as u32;
-    let alice_btc = v
-        .get("alice_btc")
-        .and_then(|x| x.as_str())
-        .unwrap_or("btc-alice");
-    let bob_lq = v
-        .get("bob_lq")
-        .and_then(|x| x.as_str())
-        .unwrap_or("bob");
+    let alice_btc = resolve_btc_wallet_name(
+        v.get("alice_btc")
+            .and_then(|x| x.as_str())
+            .unwrap_or("btc-alice"),
+    );
+    let bob_lq = resolve_lq_wallet_name(
+        v.get("bob_lq")
+            .and_then(|x| x.as_str())
+            .unwrap_or("bob"),
+    );
     let btc_contract = v
         .get("btc_contract")
         .and_then(|x| x.as_str())
@@ -1798,6 +1825,19 @@ fn handle_swap_action_post(
         .context("action required (fund_btc|fund_lq|claim_lq|claim_btc|refund_btc|refund_lq)")?;
     let mut s = store.load(id)?;
 
+    // Repair mistaken address-as-name from older sessions
+    if s.alice_btc_wallet.starts_with("tb1") || s.alice_btc_wallet.starts_with("bc1") {
+        s.alice_btc_wallet = resolve_btc_wallet_name(&s.alice_btc_wallet);
+        store.save(&s)?;
+    }
+    if s.bob_lq_wallet.starts_with("tlq1")
+        || s.bob_lq_wallet.starts_with("el1")
+        || s.bob_lq_wallet.starts_with("lq1")
+    {
+        s.bob_lq_wallet = resolve_lq_wallet_name(&s.bob_lq_wallet);
+        store.save(&s)?;
+    }
+
     let result = match action {
         "fund_btc" => {
             let amount_sats = v
@@ -1806,10 +1846,12 @@ fn handle_swap_action_post(
                 .unwrap_or(10_000);
             let fee_sats = v.get("fee_sats").and_then(|x| x.as_u64()).unwrap_or(800);
             let btc = lab_btc::BtcConfig::from_env();
+            let wallet = resolve_btc_wallet_name(&s.alice_btc_wallet);
+            s.alice_btc_wallet = wallet.clone();
             let bc = lab_btc::fund_address(
                 cfg,
                 &btc,
-                &s.alice_btc_wallet,
+                &wallet,
                 &s.htlc_btc.address_btc,
                 amount_sats,
                 fee_sats,
