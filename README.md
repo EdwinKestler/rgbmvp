@@ -15,6 +15,7 @@ Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/
 
 | Reader | Document |
 |--------|----------|
+| **Community manifesto** — vision, innovation, use cases | **[docs/MANIFESTO.md](docs/MANIFESTO.md)** |
 | **Humans** — why this exists and how to use it | **[docs/PURPOSE_AND_USAGE.md](docs/PURPOSE_AND_USAGE.md)** |
 | **Agents / AI** — goals, invariants, Redis project memory | **[docs/M2M.md](docs/M2M.md)** · [AGENTS.md](AGENTS.md) |
 | Architecture · scenarios · stack | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [SCENARIOS](docs/SCENARIOS.md) · [STACK](docs/STACK.md) |

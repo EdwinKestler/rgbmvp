@@ -1,6 +1,7 @@
 # Purpose and usage (humans)
 
 This document explains **what `rgbmvp` is for**, **what it is not**, and **how a person uses it**.  
+For the community vision and real-world use cases, see **[MANIFESTO.md](./MANIFESTO.md)**.  
 For a short quickstart, see the root [README.md](../README.md).  
 For AI/agent workflows (including Redis project memory), see [M2M.md](./M2M.md).
 

@@ -7,7 +7,7 @@ authoritative source of truth.**
 ## Machine entry (preferred)
 
 1. **[docs/M2M.md](docs/M2M.md)** — goals, invariants, `/v1` map, project-memory protocol  
-2. **[docs/PURPOSE_AND_USAGE.md](docs/PURPOSE_AND_USAGE.md)** — human purpose (read for product intent)  
+2. **[docs/PURPOSE_AND_USAGE.md](docs/PURPOSE_AND_USAGE.md)** — human purpose · **[docs/MANIFESTO.md](docs/MANIFESTO.md)** — community vision  
 3. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/SCENARIOS.md](docs/SCENARIOS.md) · [docs/STACK.md](docs/STACK.md)
 
 Phase closures: [P1_CLOSED](docs/P1_CLOSED.md) · [P2_CLOSED](docs/P2_CLOSED.md) · [P3_CLOSED](docs/P3_CLOSED.md).  
