@@ -534,7 +534,8 @@ pub fn fetch_tx_hex(btc: &BtcConfig, txid: &str) -> Result<String> {
 pub fn pick_largest_utxo(cfg: &Config, btc: &BtcConfig, name: &str) -> Result<BtcUtxo> {
     utxos(cfg, btc, name)?
         .into_iter()
-        .find(|x| x.value_sats >= 5000)
+        .filter(|x| x.value_sats >= 5000)
+        .max_by_key(|x| x.value_sats)
         .ok_or_else(|| anyhow::anyhow!("no UTXO ≥ 5000 sats in {name}"))
 }
 

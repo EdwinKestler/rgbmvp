@@ -303,6 +303,17 @@ enum BtcCmd {
         #[arg(long, default_value = "btc-alice")]
         name: String,
     },
+    /// Send sats from a named BTC wallet to an address (testnet only)
+    Send {
+        #[arg(long, default_value = "btc-alice")]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        amount_sats: u64,
+        #[arg(long, default_value_t = 500)]
+        fee_sats: u64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -919,42 +930,103 @@ fn run() -> Result<()> {
                 } => {
                     let mut s = store.load(&id)?;
                     let do_wrap = rgb_wrap || s.rgb_wrap;
-                    let bc = lab_chain::send_lbtc(
-                        &cfg,
-                        &s.bob_lq_wallet,
-                        &s.htlc_lq.address_liquid_unconf,
-                        amount_sats,
-                    )?;
-                    // Resolve actual vout from explorer (LWK may not put HTLC at vout 0).
-                    let (ftxid, fvout, fval) = lab_chain::find_address_utxo(
+                    // Prefer an existing HTLC UTXO (retry after wrap failure, or manual fund).
+                    // Critical for S3: value fund must not re-spend the RGB issue seal.
+                    let existing = lab_chain::find_address_utxo(
                         &cfg,
                         &s.htlc_lq.address_liquid_unconf,
                         amount_sats.saturating_sub(1),
                     )
-                    .unwrap_or((bc.txid.clone(), 0, amount_sats));
+                    .ok();
+                    let (bc_val, ftxid, fvout, fval, reused) = if let Some((tx, vo, va)) = existing {
+                        (
+                            serde_json::json!({
+                                "txid": tx,
+                                "note": "reused existing HTLC UTXO (no new send_lbtc)",
+                                "reused": true,
+                            }),
+                            tx,
+                            vo,
+                            va,
+                            true,
+                        )
+                    } else {
+                        // When rgb_wrap, refuse if issue seal is the only large UTXO
+                        // (would be spent by send and break wrap). Best-effort check.
+                        if do_wrap {
+                            if let Some(cid) = s.lq_contract_id.as_ref() {
+                                let rgb_store = RgbStore::new(&cfg.data_dir);
+                                if let Ok(issue) = rgb_store.load_issue(cid) {
+                                    let utxos = lab_chain::wallet_utxos(&cfg, &s.bob_lq_wallet)?;
+                                    let large: Vec<_> = utxos
+                                        .iter()
+                                        .filter(|u| u.value >= amount_sats.saturating_add(500))
+                                        .collect();
+                                    if large.len() == 1 && large[0].outpoint == issue.seal {
+                                        anyhow::bail!(
+                                            "S3 fund-lq: only spendable UTXO is the RGB issue seal {}. \
+                                             Split funds first (wallet send to self) or re-issue on a \
+                                             UTXO that will not be used for HTLC value.",
+                                            issue.seal
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        let bc = lab_chain::send_lbtc(
+                            &cfg,
+                            &s.bob_lq_wallet,
+                            &s.htlc_lq.address_liquid_unconf,
+                            amount_sats,
+                        )?;
+                        let (tx, vo, va) = lab_chain::find_address_utxo(
+                            &cfg,
+                            &s.htlc_lq.address_liquid_unconf,
+                            amount_sats.saturating_sub(1),
+                        )
+                        .unwrap_or((bc.txid.clone(), 0, amount_sats));
+                        (serde_json::to_value(&bc)?, tx, vo, va, false)
+                    };
                     s.lq_fund_txid = Some(ftxid);
                     s.lq_fund_vout = Some(fvout);
                     s.lq_fund_sats = Some(fval);
+                    // Persist value fund even if RGB wrap fails later.
+                    swap::recompute_phase(&mut s);
+                    store.save(&s)?;
                     let mut rgb_meta = serde_json::Value::Null;
                     if do_wrap {
                         let rgb_store = RgbStore::new(&cfg.data_dir);
-                        rgb_meta = s3_fund_wrap_lq(
+                        match s3_fund_wrap_lq(
                             &cfg,
                             &rgb_store,
                             &mut s,
                             commitment_sats,
                             entropy,
-                        )?;
+                        ) {
+                            Ok(m) => {
+                                rgb_meta = m;
+                                swap::recompute_phase(&mut s);
+                                store.save(&s)?;
+                            }
+                            Err(e) => {
+                                store.save(&s)?;
+                                anyhow::bail!(
+                                    "LQ value funded (txid {}) but RGB wrap failed: {e}. \
+                                     Fix seal (re-issue on unspent UTXO) then re-run fund-lq --rgb-wrap \
+                                     (HTLC UTXO will be reused).",
+                                    s.lq_fund_txid.as_deref().unwrap_or("?")
+                                );
+                            }
+                        }
                     }
-                    swap::recompute_phase(&mut s);
-                    store.save(&s)?;
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
                             "status": "funded_lq",
                             "phase": s.phase,
                             "rgb_wrap": do_wrap,
-                            "broadcast": bc,
+                            "reused_htlc_utxo": reused,
+                            "broadcast": bc_val,
                             "htlc_address": s.htlc_lq.address_liquid_unconf,
                             "htlc_seal": format!("{}:{}", s.lq_fund_txid.as_deref().unwrap_or(""), s.lq_fund_vout.unwrap_or(0)),
                             "rgb": rgb_meta,
@@ -1208,6 +1280,25 @@ fn run() -> Result<()> {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&lab_btc::utxos(&cfg, &btc, &name)?)?
+                    );
+                }
+                BtcCmd::Send {
+                    from,
+                    to,
+                    amount_sats,
+                    fee_sats,
+                } => {
+                    let bc = lab_btc::fund_address(&cfg, &btc, &from, &to, amount_sats, fee_sats)?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "status": "sent",
+                            "from": from,
+                            "to": to,
+                            "amount_sats": amount_sats,
+                            "fee_sats": fee_sats,
+                            "broadcast": bc,
+                        }))?
                     );
                 }
             }
