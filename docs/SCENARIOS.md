@@ -160,10 +160,12 @@ Not a new consensus phase—**UX only**.
 |----|----------|---------------|
 | U0 | Wallet page / lab board | **CLOSED** — board + phase chips + console shell |
 | U1 | Issue / transfer wizards | **CLOSED** — `/v1/rgb/issue|transfer` + UI |
-| U2 | Swap wizard | **CLOSED** — guided fund/claim; demo-u2 phase done |
+| U2 | Swap wizard | **CLOSED** — guided **value** HTLC fund/claim; demo-u2 phase done |
 | U3 | Hardware / Marina path (optional) | Deferred |
+| **U4** | Public hosting security gate | **Required before Internet exposure** — auth, CORS allowlist, limits, loopback RPC, read/write split ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)) |
 
-P0 web verifier must not hard-code assumptions that block U0–U2 (shared API types, CORS, versioned errors).
+P0 web verifier must not hard-code assumptions that block U0–U2 (shared API types, CORS, versioned errors).  
+**P3 closed** remains valid for localhost operator console; U4 is a **new** ops/security scenario, not a silent reopening of P3.
 
 ---
 
@@ -182,6 +184,7 @@ P0 web verifier must not hard-code assumptions that block U0–U2 (shared API ty
 ## Definition of “ladder complete”
 
 - P0 public on Liquid Testnet with web verifier.
-- P1 at least one public swap (user↔bot acceptable).
+- P1 at least one public **value** HTLC swap (user↔bot acceptable).
 - P2 C0 + C3 green on CI; optional public testnet if tooling allows.
-- P3 optional; architecture already browser-ready via `/v1`.
+- P3 lab console closed on localhost operator model.
+- **Next completeness (not required for historical P1–P3 close):** S3 RGB-wrapped claim; then public demo only after U4.

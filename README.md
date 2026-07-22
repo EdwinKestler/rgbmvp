@@ -20,6 +20,7 @@ Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/
 | **Agents / AI** — goals, invariants, Redis project memory | **[docs/M2M.md](docs/M2M.md)** · [AGENTS.md](AGENTS.md) |
 | Architecture · scenarios · stack | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [SCENARIOS](docs/SCENARIOS.md) · [STACK](docs/STACK.md) |
 | Phase evidence | [P1_CLOSED](docs/P1_CLOSED.md) · [P2_CLOSED](docs/P2_CLOSED.md) · [P3_CLOSED](docs/P3_CLOSED.md) |
+| **Next work** | [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md) — S3 → C2/C4 · U4 before public Internet |
 | Protocol without UI | [docs/HEADLESS.md](docs/HEADLESS.md) |
 
 **Redis project memory** is optional and only for agent source discovery — operators can ignore it entirely ([docs/PROJECT_MEMORY.md](docs/PROJECT_MEMORY.md)).
