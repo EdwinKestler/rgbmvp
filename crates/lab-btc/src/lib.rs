@@ -614,8 +614,8 @@ pub fn fund_address(
 
 /// Find HTLC UTXO on address by scanning Esplora (value match preferred).
 pub fn find_htlc_utxo(btc: &BtcConfig, address: &str, min_sats: u64) -> Result<BtcUtxo> {
-    let mut list = address_utxos(btc, address)?;
-    list.into_iter()
+    address_utxos(btc, address)?
+        .into_iter()
         .find(|u| u.value_sats >= min_sats)
         .ok_or_else(|| anyhow::anyhow!("no UTXO ≥ {min_sats} on {address}"))
 }

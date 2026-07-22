@@ -261,7 +261,7 @@ pub fn build_htlc_spend_liquid(
         witness: TxInWitness::default(),
     };
 
-    let mut output = vec![
+    let output = vec![
         TxOut {
             asset: lbtc,
             value: Value::Explicit(output_value_sat),
