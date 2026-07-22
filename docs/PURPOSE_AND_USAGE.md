@@ -192,6 +192,7 @@ rgbmvp/
 | Document | Audience | Content |
 |----------|----------|---------|
 | [README.md](../README.md) | Everyone | Quickstart |
+| [MANIFESTO.md](./MANIFESTO.md) | Bitcoin / Liquid community | Vision, innovation, use cases |
 | **This file** | Humans | Purpose + how to use |
 | [M2M.md](./M2M.md) | Agents / AI | Goals, workflows, project memory protocol |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Both | Layers, API, privacy |
