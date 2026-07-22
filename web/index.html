@@ -53,11 +53,103 @@
   </div>
 
   <nav>
-    <button type="button" class="secondary active" data-tab="swap">Swap status</button>
-    <button type="button" class="secondary" data-tab="verify">RGB verify</button>
+    <button type="button" class="secondary active" data-tab="issue">Issue</button>
+    <button type="button" class="secondary" data-tab="transfer">Transfer</button>
+    <button type="button" class="secondary" data-tab="verify">Verify</button>
+    <button type="button" class="secondary" data-tab="swap">Swap</button>
   </nav>
 
-  <div id="panel-swap" class="panel active">
+  <div id="panel-issue" class="panel active">
+    <div class="card">
+      <h2>Issue RGB20 (NIA)</h2>
+      <p class="muted">Uses <strong>labd fixture wallet</strong> (default alice). Largest L-BTC UTXO becomes the seal. No keys in the browser.</p>
+      <div class="row">
+        <div>
+          <label>Wallet</label>
+          <select id="iss-wallet">
+            <option value="alice" selected>alice</option>
+            <option value="bob">bob</option>
+            <option value="carol">carol</option>
+            <option value="maker">maker</option>
+          </select>
+        </div>
+        <div>
+          <label>Chain</label>
+          <select id="iss-chain">
+            <option value="liquid-testnet" selected>liquid-testnet</option>
+            <option value="bitcoin-testnet">bitcoin-testnet</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Ticker</label>
+          <input id="iss-ticker" value="tRGB" />
+        </div>
+        <div>
+          <label>Supply</label>
+          <input id="iss-supply" type="number" value="1000000" />
+        </div>
+      </div>
+      <label>Name</label>
+      <input id="iss-name" value="Test RGB" />
+      <label>Seal outpoint (optional — default largest UTXO)</label>
+      <input id="iss-seal" placeholder="txid:vout" />
+      <button type="button" id="iss-go">Issue</button>
+      <button type="button" class="secondary" id="iss-list">List contracts</button>
+      <div id="iss-summary" style="margin-top:1rem"></div>
+      <pre id="iss-out"></pre>
+    </div>
+  </div>
+
+  <div id="panel-transfer" class="panel">
+    <div class="card">
+      <h2>Transfer plan (+ optional broadcast)</h2>
+      <p class="muted">Builds MPC + tapret plan from a stored issue. Broadcast closes the seal UTXO via lab wallet (Liquid testnet).</p>
+      <label>Contract id</label>
+      <input id="tr-contract" placeholder="rgb:… (from issue)" />
+      <button type="button" class="secondary" id="tr-load-contracts" style="margin-top:0.4rem">Load from lab contracts…</button>
+      <select id="tr-contract-sel" style="display:none;margin-top:0.4rem"></select>
+      <div class="row">
+        <div>
+          <label>Wallet (seal holder)</label>
+          <select id="tr-wallet">
+            <option value="alice" selected>alice</option>
+            <option value="bob">bob</option>
+            <option value="carol">carol</option>
+            <option value="maker">maker</option>
+          </select>
+        </div>
+        <div>
+          <label>Amount (RGB units)</label>
+          <input id="tr-amount" type="number" value="600000" />
+        </div>
+      </div>
+      <label class="muted" style="display:flex;align-items:center;gap:0.5rem;margin-top:0.75rem">
+        <input type="checkbox" id="tr-broadcast" style="width:auto;margin:0" />
+        Broadcast commitment tx (spends seal; needs funded wallet)
+      </label>
+      <button type="button" id="tr-go">Create transfer plan</button>
+      <div id="tr-summary" style="margin-top:1rem"></div>
+      <pre id="tr-out"></pre>
+    </div>
+  </div>
+
+  <div id="panel-verify" class="panel">
+    <div class="card">
+      <h2>RGB transfer verifier</h2>
+      <p class="muted">Paste plan id + anchor txid (from transfer broadcast or CLI).</p>
+      <label>Plan id</label>
+      <input id="plan" placeholder="tRGB-…" />
+      <label>Anchor txid</label>
+      <input id="txid" placeholder="hex txid" />
+      <button type="button" id="go">Verify</button>
+      <div id="summary" style="margin-top:1rem"></div>
+      <pre id="out"></pre>
+    </div>
+  </div>
+
+  <div id="panel-swap" class="panel">
     <div class="card">
       <h2>Atomic swap status</h2>
       <p class="muted">Load a session created by <code>rgbmvp swap init --id …</code>. Preimage is never shown here.</p>
@@ -74,23 +166,9 @@
     </div>
   </div>
 
-  <div id="panel-verify" class="panel">
-    <div class="card">
-      <h2>RGB transfer verifier</h2>
-      <p class="muted">Paste plan id + anchor txid from <code>rgbmvp rgb transfer</code>.</p>
-      <label>Plan id</label>
-      <input id="plan" placeholder="tRGB-… or bRGB-…" />
-      <label>Anchor txid</label>
-      <input id="txid" placeholder="hex txid" />
-      <button type="button" id="go">Verify</button>
-      <div id="summary" style="margin-top:1rem"></div>
-      <pre id="out"></pre>
-    </div>
-  </div>
-
   <div class="card muted">
-    CLI: <code>swap …</code> · <code>rgb …</code> · <code>bfa audit</code> · <code>covenant demo</code><br/>
-    API: <code>GET /v1</code> · <code>GET /v1/swap/{id}</code> · <code>POST /v1/rgb/verify</code> · <code>POST /v1/audit/bfa</code>
+    U1: <code>POST /v1/rgb/issue</code> · <code>POST /v1/rgb/transfer</code> · <code>GET /v1/rgb/contracts</code><br/>
+    Also: verify · swap · <code>POST /v1/audit/bfa</code>
   </div>
 
   <script>
@@ -232,9 +310,136 @@
         const ok = res.status === 'valid';
         $('summary').innerHTML = ok
           ? `<span class="ok">VALID</span> · <a href="${(res.explorer_url||'#')}" target="_blank">explorer</a>`
-          : `<span class="bad">${res.status || 'error'}</span>`;
+          : `<span class="bad">${res.status || j.error || 'error'}</span>`;
       } catch (e) {
         $('out').textContent = String(e);
+      }
+    };
+
+    // ── U1 Issue ──────────────────────────────────────────────
+    $('iss-go').onclick = async () => {
+      $('iss-out').textContent = '…';
+      $('iss-summary').textContent = '';
+      const body = {
+        wallet: $('iss-wallet').value,
+        chain: $('iss-chain').value,
+        ticker: $('iss-ticker').value.trim() || 'tRGB',
+        name: $('iss-name').value.trim() || 'Test RGB',
+        supply: Number($('iss-supply').value) || 1000000,
+      };
+      const seal = $('iss-seal').value.trim();
+      if (seal) body.seal = seal;
+      try {
+        const r = await fetch('/v1/rgb/issue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const j = await r.json();
+        $('iss-out').textContent = JSON.stringify(j, null, 2);
+        if (!r.ok || j.error) {
+          $('iss-summary').innerHTML = '<span class="bad">' + (j.error || r.statusText) + '</span>';
+          return;
+        }
+        const id = j.issue && j.issue.contract_id;
+        $('iss-summary').innerHTML = '<span class="ok">issued</span> · <code>' + (id || '') + '</code>'
+          + (id ? ' · <a href="#" id="iss-to-tr">use in Transfer →</a>' : '');
+        if (id) {
+          $('tr-contract').value = id;
+          const a = document.getElementById('iss-to-tr');
+          if (a) a.onclick = (ev) => {
+            ev.preventDefault();
+            document.querySelector('nav:not(.site) button[data-tab="transfer"]').click();
+          };
+        }
+      } catch (e) {
+        $('iss-out').textContent = String(e);
+        $('iss-summary').innerHTML = '<span class="bad">' + e + '</span>';
+      }
+    };
+
+    $('iss-list').onclick = async () => {
+      try {
+        const j = await fetch('/v1/rgb/contracts').then(r => r.json());
+        $('iss-out').textContent = JSON.stringify(j, null, 2);
+        const n = (j.contracts || []).length;
+        $('iss-summary').innerHTML = '<span class="muted">' + n + ' contract(s) in lab store</span>';
+      } catch (e) {
+        $('iss-out').textContent = String(e);
+      }
+    };
+
+    // ── U1 Transfer ───────────────────────────────────────────
+    $('tr-load-contracts').onclick = async () => {
+      try {
+        const j = await fetch('/v1/rgb/contracts').then(r => r.json());
+        const sel = $('tr-contract-sel');
+        sel.innerHTML = '';
+        (j.contracts || []).forEach(c => {
+          const o = document.createElement('option');
+          o.value = c.contract_id;
+          o.textContent = (c.ticker || '?') + ' · ' + c.contract_id.slice(0, 28) + '…';
+          sel.appendChild(o);
+        });
+        if ((j.contracts || []).length) {
+          sel.style.display = 'block';
+          sel.onchange = () => { $('tr-contract').value = sel.value; };
+          $('tr-contract').value = sel.value;
+        } else {
+          sel.style.display = 'none';
+          $('tr-summary').innerHTML = '<span class="muted">No contracts yet — run Issue first</span>';
+        }
+      } catch (e) {
+        $('tr-summary').innerHTML = '<span class="bad">' + e + '</span>';
+      }
+    };
+
+    $('tr-go').onclick = async () => {
+      $('tr-out').textContent = '…';
+      $('tr-summary').textContent = '';
+      const body = {
+        contract: $('tr-contract').value.trim(),
+        wallet: $('tr-wallet').value,
+        amount: Number($('tr-amount').value) || 600000,
+        broadcast: $('tr-broadcast').checked,
+      };
+      if (!body.contract) {
+        $('tr-summary').innerHTML = '<span class="bad">contract id required</span>';
+        return;
+      }
+      try {
+        const r = await fetch('/v1/rgb/transfer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const j = await r.json();
+        $('tr-out').textContent = JSON.stringify(j, null, 2);
+        if (!r.ok || j.error) {
+          $('tr-summary').innerHTML = '<span class="bad">' + (j.error || r.statusText) + '</span>';
+          return;
+        }
+        const pid = j.plan_id || '';
+        const txid = j.broadcast && (j.broadcast.txid || j.broadcast.tx_id);
+        let html = '<span class="ok">' + (j.status || 'planned') + '</span> · plan <code>' + pid + '</code>';
+        if (txid) {
+          html += ' · txid <code>' + txid + '</code>';
+          $('plan').value = pid;
+          $('txid').value = txid;
+          html += ' · <a href="#" id="tr-to-ver">Verify →</a>';
+        } else if (pid) {
+          $('plan').value = pid;
+          html += ' · broadcast unchecked — copy plan_id after CLI broadcast, or re-run with Broadcast';
+        }
+        $('tr-summary').innerHTML = html;
+        const a = document.getElementById('tr-to-ver');
+        if (a) a.onclick = (ev) => {
+          ev.preventDefault();
+          document.querySelector('nav:not(.site) button[data-tab="verify"]').click();
+        };
+      } catch (e) {
+        $('tr-out').textContent = String(e);
+        $('tr-summary').innerHTML = '<span class="bad">' + e + '</span>';
       }
     };
 
@@ -242,7 +447,13 @@
     const params = new URLSearchParams(location.search);
     if (params.get('swap')) {
       $('swap-id').value = params.get('swap');
+      document.querySelector('nav:not(.site) button[data-tab="swap"]').click();
       loadSwap();
+    }
+    if (params.get('tab')) {
+      const t = params.get('tab');
+      const b = document.querySelector('nav:not(.site) button[data-tab="' + t + '"]');
+      if (b) b.click();
     }
 
     refreshHealth();

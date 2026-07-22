@@ -1294,6 +1294,10 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
     eprintln!("  GET  /v1/swaps");
     eprintln!("  GET  /v1/demo/wallets|activity");
     eprintln!("  POST /v1/rgb/verify");
+    eprintln!("  POST /v1/rgb/issue     lab fixture wallets (server-side keys)");
+    eprintln!("  POST /v1/rgb/transfer  plan (+ optional broadcast)");
+    eprintln!("  GET  /v1/rgb/contracts");
+    eprintln!("  GET  /v1/rgb/plans/{{id}}");
     eprintln!("  POST /v1/audit/bfa     BFA history JSON");
 
     let web_dir = PathBuf::from("web");
@@ -1441,10 +1445,67 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
                     serde_json::to_vec(&serde_json::json!({"error": e.to_string()})).unwrap(),
                 ),
             }
+        } else if method == "GET" && path == "/v1/rgb/contracts" {
+            match list_rgb_contracts(cfg) {
+                Ok(v) => (
+                    "200 OK",
+                    "application/json",
+                    serde_json::to_vec_pretty(&v).unwrap(),
+                ),
+                Err(e) => (
+                    "500 Internal Server Error",
+                    "application/json",
+                    serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
+                ),
+            }
+        } else if method == "GET" && path.starts_with("/v1/rgb/plans/") {
+            let id = path.trim_start_matches("/v1/rgb/plans/");
+            match store.load_transfer(id) {
+                Ok(p) => (
+                    "200 OK",
+                    "application/json",
+                    serde_json::to_vec_pretty(&serde_json::json!({"plan_id": id, "plan": p})).unwrap(),
+                ),
+                Err(e) => (
+                    "404 Not Found",
+                    "application/json",
+                    serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
+                ),
+            }
         } else if method == "POST" && path == "/v1/rgb/verify" {
             let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(req.len());
             let body_str = &req[body_start..];
             match handle_verify_post(cfg, &store, body_str) {
+                Ok(v) => (
+                    "200 OK",
+                    "application/json",
+                    serde_json::to_vec_pretty(&v).unwrap(),
+                ),
+                Err(e) => (
+                    "400 Bad Request",
+                    "application/json",
+                    serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
+                ),
+            }
+        } else if method == "POST" && path == "/v1/rgb/issue" {
+            let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(req.len());
+            let body_str = &req[body_start..];
+            match handle_rgb_issue_post(cfg, &store, body_str) {
+                Ok(v) => (
+                    "200 OK",
+                    "application/json",
+                    serde_json::to_vec_pretty(&v).unwrap(),
+                ),
+                Err(e) => (
+                    "400 Bad Request",
+                    "application/json",
+                    serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
+                ),
+            }
+        } else if method == "POST" && path == "/v1/rgb/transfer" {
+            let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(req.len());
+            let body_str = &req[body_start..];
+            match handle_rgb_transfer_post(cfg, &store, body_str) {
                 Ok(v) => (
                     "200 OK",
                     "application/json",
@@ -1701,6 +1762,223 @@ fn handle_verify_post(
         "stored": path.display().to_string(),
         "result": result,
     }))
+}
+
+fn list_rgb_contracts(cfg: &Config) -> Result<serde_json::Value> {
+    let dir = cfg.data_dir.join("rgb/contracts");
+    let mut contracts = Vec::new();
+    if dir.exists() {
+        for e in fs::read_dir(&dir)?.filter_map(|e| e.ok()) {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(raw) = fs::read_to_string(&p) {
+                if let Ok(v) = serde_json::from_str::<lab_rgb::IssueResult>(&raw) {
+                    contracts.push(v);
+                }
+            }
+        }
+    }
+    contracts.sort_by(|a, b| a.contract_id.cmp(&b.contract_id));
+    Ok(serde_json::json!({ "contracts": contracts, "count": contracts.len() }))
+}
+
+/// POST /v1/rgb/issue — server-side keys (lab fixtures). JSON:
+/// `{ "wallet":"alice", "name":"…", "ticker":"tRGB", "supply":1000000, "chain":"liquid-testnet", "seal":null }`
+fn handle_rgb_issue_post(
+    cfg: &Config,
+    store: &RgbStore,
+    body: &str,
+) -> Result<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_str(body).context("json body")?;
+    let wallet = v
+        .get("wallet")
+        .and_then(|x| x.as_str())
+        .unwrap_or("alice");
+    let name = v
+        .get("name")
+        .and_then(|x| x.as_str())
+        .unwrap_or("Test RGB")
+        .to_string();
+    let ticker = v
+        .get("ticker")
+        .and_then(|x| x.as_str())
+        .unwrap_or("tRGB")
+        .to_string();
+    let supply = v
+        .get("supply")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(1_000_000);
+    let chain = v
+        .get("chain")
+        .and_then(|x| x.as_str())
+        .unwrap_or("liquid-testnet")
+        .to_string();
+    let seal = if let Some(s) = v.get("seal").and_then(|x| x.as_str()) {
+        s.to_string()
+    } else if chain.starts_with("bitcoin") || chain == "testnet" || chain == "testnet3" {
+        let btc = lab_btc::BtcConfig::from_env();
+        lab_btc::pick_largest_utxo(cfg, &btc, wallet)?.outpoint
+    } else {
+        lab_chain::pick_lbtc_seal(cfg, wallet)?.outpoint
+    };
+    let issue = issue_nia(&IssueRequest {
+        name,
+        ticker,
+        supply,
+        seal: seal.clone(),
+        chain: chain.clone(),
+    })?;
+    let path = store.save_issue(&issue)?;
+    Ok(serde_json::json!({
+        "status": "issued",
+        "issue": issue,
+        "stored": path.display().to_string(),
+        "note": "Genesis is off-chain; seal UTXO must be closed by a transfer witness tx. Keys never left labd.",
+    }))
+}
+
+/// POST /v1/rgb/transfer — plan (+ optional broadcast). JSON:
+/// `{ "contract":"rgb:…"|ticker path, "wallet":"alice", "amount":600000, "broadcast":false, … }`
+fn handle_rgb_transfer_post(
+    cfg: &Config,
+    store: &RgbStore,
+    body: &str,
+) -> Result<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_str(body).context("json body")?;
+    let contract = v
+        .get("contract")
+        .or_else(|| v.get("contract_id"))
+        .and_then(|x| x.as_str())
+        .context("contract required")?;
+    let wallet = v
+        .get("wallet")
+        .and_then(|x| x.as_str())
+        .unwrap_or("alice");
+    let amount = v
+        .get("amount")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(600_000);
+    let broadcast = v
+        .get("broadcast")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
+    let entropy = v.get("entropy").and_then(|x| x.as_u64()).unwrap_or(42);
+    let bob_sats = v.get("bob_sats").and_then(|x| x.as_u64()).unwrap_or(1000);
+    let commitment_sats = v
+        .get("commitment_sats")
+        .and_then(|x| x.as_u64())
+        .unwrap_or(500);
+    let bob_address = v
+        .get("bob_address")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+
+    let issue = store
+        .load_issue(contract)
+        .or_else(|_| {
+            // try load by scanning contracts for matching contract_id
+            let data = &cfg.data_dir;
+            let dir = data.join("rgb/contracts");
+            if dir.exists() {
+                for e in fs::read_dir(&dir)?.filter_map(|e| e.ok()) {
+                    let p = e.path();
+                    if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                        continue;
+                    }
+                    if let Ok(raw) = fs::read_to_string(&p) {
+                        if let Ok(iss) = serde_json::from_str::<lab_rgb::IssueResult>(&raw) {
+                            if iss.contract_id == contract || p.file_stem().map(|s| s.to_string_lossy()) == Some(contract.into()) {
+                                return Ok(iss);
+                            }
+                        }
+                    }
+                }
+            }
+            anyhow::bail!("contract not found: {contract}");
+        })?;
+
+    let chain = v
+        .get("chain")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            if issue.chain_net.starts_with("bitcoin") {
+                issue.chain_net.clone()
+            } else {
+                "liquid-testnet".into()
+            }
+        });
+
+    let plan = plan_transfer(
+        &issue.contract_id,
+        issue.supply,
+        amount,
+        &issue.seal,
+        &format!("bob-{}", issue.contract_id),
+        &format!("change-{}", issue.contract_id),
+        DEMO_INTERNAL_XONLY_HEX,
+        entropy,
+        &issue.ticker,
+        &chain,
+    )?;
+    let plan_id = format!(
+        "{}-{}",
+        issue.ticker,
+        &plan.bundle_id_hex[..16.min(plan.bundle_id_hex.len())]
+    );
+    let plan_path = store.save_transfer(&plan_id, &plan)?;
+
+    let mut out = serde_json::json!({
+        "status": "planned",
+        "plan_id": plan_id,
+        "plan_path": plan_path.display().to_string(),
+        "plan": plan,
+        "verify_hint": {
+            "plan_id": plan_id,
+            "next": "After broadcast, POST /v1/rgb/verify with plan_id + txid"
+        }
+    });
+
+    if broadcast {
+        let is_btc = chain.starts_with("bitcoin") || chain.contains("testnet3");
+        let bc_val = if is_btc {
+            let btc = lab_btc::BtcConfig::from_env();
+            let utxos = lab_btc::utxos(cfg, &btc, wallet)?;
+            let seal_val = utxos
+                .iter()
+                .find(|u| u.outpoint == issue.seal)
+                .map(|u| u.value_sats)
+                .context("seal UTXO not found in btc wallet")?;
+            let fee = 800u64;
+            let bc = lab_btc::broadcast_commitment_tx(
+                cfg,
+                &btc,
+                wallet,
+                &issue.seal,
+                seal_val,
+                &plan.tapret_address,
+                commitment_sats,
+                fee,
+            )?;
+            serde_json::to_value(bc)?
+        } else {
+            let bc = lab_chain::broadcast_commitment_tx(
+                cfg,
+                wallet,
+                &issue.seal,
+                &plan.tapret_address,
+                bob_address.as_deref(),
+                commitment_sats,
+                bob_sats,
+            )?;
+            serde_json::to_value(bc)?
+        };
+        out["status"] = serde_json::json!("broadcast");
+        out["broadcast"] = bc_val;
+    }
+    Ok(out)
 }
 
 /// POST /v1/audit/bfa — body is a BfaHistory JSON document (see docs/C3_CLOSED.md).

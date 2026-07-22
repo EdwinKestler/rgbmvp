@@ -171,8 +171,9 @@ P2 standalone value is real (Simplicity seals + BFA audit) but splitting before 
 1. ~~Write this plan; accept ADRs; monorepo.~~  
 2. ~~**P3.0** — `GET /v1`, `POST /v1/audit/bfa`, `GET /v1/phases`.~~  
 3. ~~**P3.1** — Console nav + board/phase + `/audit` page.~~  
-4. **P3.2** — Issue/transfer wizards (`/v1/rgb/issue` etc.).  
-5. P3.3–P3.5 per table above.  
+4. ~~**P3.2 / U1** — Issue + transfer wizards + `/v1/rgb/issue|transfer|contracts`.~~  
+5. **P3.3 / U2** — Swap guided actions.  
+6. P3.4–P3.5 polish + `P3_CLOSED.md`.  
 
 ## Decisions log
 
@@ -182,3 +183,4 @@ P2 standalone value is real (Simplicity seals + BFA audit) but splitting before 
 | 2026-07-21 | Monorepo retained; no P2 extract |
 | 2026-07-21 | Proceed P3 starting at P3.0 + U0 shell |
 | 2026-07-21 | P3.0 + P3.1 landed (catalog, BFA audit API/UI, console nav) |
+| 2026-07-21 | U1 issue/transfer wizards + API (server-side lab wallets) |
