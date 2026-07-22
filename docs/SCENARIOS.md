@@ -144,7 +144,7 @@ BTC RGB anchor (earlier): [`2a573998…1806`](https://blockstream.info/testnet/t
 | C1 | Mint-gate (lock vault) | CLI, regtest | **CLOSED** — 2 chained mints; drop-anchor / wrong-amount / no-recreate reject |
 | C2 | Mint-gate burn variant | CLI, regtest | **CLOSED** — burn to empty SPK + recursion; not-burn reject ([C2_CLOSED.md](./C2_CLOSED.md)) |
 | C3 | BFA schema + audit | CLI, regtest | **CLOSED** — honest pass; over-mint fail; lie fails anchor |
-| C4 | Time-locked staking covenant | CLI, CI | Early unstake rejected; principal returns to staker after maturity |
+| C4 | Time-locked staking covenant | CLI, regtest | **CLOSED** — early reject; mature principal-home; wrong-dest/amount reject ([C4_CLOSED.md](./C4_CLOSED.md)) |
 | C5 | (Stretch) LiquiDEX / native asset swap | docs | Optional comparison: Liquid native atomic swap vs RGB twin swap |
 
 **Exit:** at least C0 + C3 demonstrated with public writeup; others in CI regtest.

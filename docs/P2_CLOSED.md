@@ -41,4 +41,4 @@ Per [SCENARIOS.md](./SCENARIOS.md) / [P2_PLAN.md](./P2_PLAN.md):
 2. **P1** — Twin HTLC swap without custodian.  
 3. **P2** — Chain-enforced seal policy (Simplicity) **and** oracle-free backed-asset audit (BFA).  
 
-Next track historically: **P3** (done). Protocol extension: **C4** staking · **U4** security ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)).
+Next track historically: **P3** (done). Protocol extensions: **C2/C4 closed**; next **U4** security ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)).

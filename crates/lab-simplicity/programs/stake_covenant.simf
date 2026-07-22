@@ -1,0 +1,49 @@
+/* Lab C4 — time-locked staking (keyless after maturity).
+ *
+ * Stake UTXO under Simplicity leaf 0xbe (NUMS, no key path). Anyone may
+ * spend after absolute height MATURE_HEIGHT, but only if:
+ *
+ *   1. nLockTime is a height ≥ MATURE_HEIGHT (jet::check_lock_height), AND
+ *   2. vout[0] returns the full principal (same asset + amount as this input)
+ *      to STAKER_SPK_HASH (committed staker scriptPubKey).
+ *
+ * Fees must come from a separate input so principal is not eroded.
+ * Rewards / partial unstake / rollover are out of MVP.
+ *
+ * Pins: simplicityhl 0.6 · simplicity-lang 0.8 · Elements 23.3 · leaf 0xbe
+ * ADR: docs/ROADMAP_NEXT.md ADR-C4 · docs/C4_CLOSED.md
+ */
+
+fn main() {
+    // 1) Absolute height maturity (BIP-65 style via nLockTime height).
+    jet::check_lock_height(param::MATURE_HEIGHT);
+
+    // 2) Principal forced home: vout[0] script = staker.
+    assert!(jet::eq_256(
+        unwrap(jet::output_script_hash(0)),
+        param::STAKER_SPK_HASH,
+    ));
+
+    // 3) Explicit principal asset + full amount of the stake input.
+    let (in_asset, in_amt): (Asset1, Amount1) = jet::current_amount();
+    let (out_asset, out_amt): (Asset1, Amount1) = unwrap(jet::output_amount(0));
+
+    match in_asset {
+        Left(_: (u1, u256)) => panic!(), // blinded stake not allowed
+        Right(id: u256) => assert!(jet::eq_256(id, param::PRINCIPAL_ASSET)),
+    };
+    match out_asset {
+        Left(_: (u1, u256)) => panic!(),
+        Right(id: u256) => assert!(jet::eq_256(id, param::PRINCIPAL_ASSET)),
+    };
+
+    let in_value: u64 = match in_amt {
+        Left(_: (u1, u256)) => panic!(),
+        Right(v: u64) => v,
+    };
+    let out_value: u64 = match out_amt {
+        Left(_: (u1, u256)) => panic!(),
+        Right(v: u64) => v,
+    };
+    assert!(jet::eq_64(in_value, out_value));
+}

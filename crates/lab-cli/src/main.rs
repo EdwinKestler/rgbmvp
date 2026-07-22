@@ -160,6 +160,11 @@ enum CovenantCmd {
         #[arg(long, default_value = "scripts/demo_c2_mint_gate_burn.sh")]
         script: PathBuf,
     },
+    /// End-to-end C4 time-locked stake demo
+    DemoC4 {
+        #[arg(long, default_value = "scripts/demo_c4_stake.sh")]
+        script: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1351,6 +1356,20 @@ fn run() -> Result<()> {
                 }
             }
             CovenantCmd::DemoC2 { script } => {
+                anyhow::ensure!(
+                    script.is_file(),
+                    "demo script missing: {} (run from repo root)",
+                    script.display()
+                );
+                let status = std::process::Command::new("bash")
+                    .arg(&script)
+                    .status()
+                    .with_context(|| format!("run {}", script.display()))?;
+                if !status.success() {
+                    anyhow::bail!("demo exited with {status}");
+                }
+            }
+            CovenantCmd::DemoC4 { script } => {
                 anyhow::ensure!(
                     script.is_file(),
                     "demo script missing: {} (run from repo root)",

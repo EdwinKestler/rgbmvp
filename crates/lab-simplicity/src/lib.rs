@@ -1,4 +1,4 @@
-//! P2 SimplicityHL covenant driver (Path A) — C0 anchor + C1 mint-gate.
+//! P2 SimplicityHL covenant driver (Path A) — C0/C1/C2/C4 covenants.
 //!
 //! Adapted from kaleidoswap/rgb-on-liquid-spike `spike-simplicity` (MIT OR Apache-2.0).
 //! Pins: simplicityhl 0.6 · simplicity-lang 0.8 · tapleaf 0xbe · opret-shaped vout0.
@@ -50,6 +50,35 @@ pub fn resolve_mint_gate_program() -> PathBuf {
         return bundled;
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../programs/simplicity/mint_gate_covenant.simf")
+}
+
+/// Bundled C4 stake covenant.
+pub fn bundled_stake_program() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("programs/stake_covenant.simf")
+}
+
+pub fn resolve_stake_program() -> PathBuf {
+    let bundled = bundled_stake_program();
+    if bundled.is_file() {
+        return bundled;
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../programs/simplicity/stake_covenant.simf")
+}
+
+/// C4 stake args: MATURE_HEIGHT (Height/u32), STAKER_SPK_HASH, PRINCIPAL_ASSET (LE).
+pub fn stake_args_json(
+    mature_height: u32,
+    staker_spk_hash_hex: &str,
+    principal_asset_le_hex: &str,
+) -> Result<String> {
+    let staker = normalize_hex32(staker_spk_hash_hex)?;
+    let asset = normalize_hex32(principal_asset_le_hex)?;
+    Ok(serde_json::json!({
+        "MATURE_HEIGHT": { "value": mature_height.to_string(), "type": "Height" },
+        "STAKER_SPK_HASH": { "value": format!("0x{staker}"), "type": "u256" },
+        "PRINCIPAL_ASSET": { "value": format!("0x{asset}"), "type": "u256" }
+    })
+    .to_string())
 }
 
 /// Byte-reverse a hex asset id (display order → consensus / jet order).
@@ -586,6 +615,168 @@ pub fn build_mint_spend(req: &MintSpendRequest) -> Result<String> {
     Ok(hex::encode(elements::encode::serialize(&tx)))
 }
 
+// ── C4 stake ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct StakeSpendRequest {
+    pub program_path: PathBuf,
+    pub args_json: String,
+    pub stake_txid: String,
+    pub stake_vout: u32,
+    pub stake_value_sat: u64,
+    pub fee_txid: String,
+    pub fee_vout: u32,
+    pub fee_input_sat: u64,
+    pub fee_sat: u64,
+    pub key_label: String,
+    /// Destination SPK for principal (must match STAKER_SPK_HASH param).
+    pub staker_spk_hex: String,
+    pub principal_asset: String,
+    pub lbtc_asset: String,
+    pub genesis_hash: String,
+    /// Absolute height for nLockTime (must be ≥ MATURE_HEIGHT).
+    pub lock_height: u32,
+    /// `none` | `early-lock` | `wrong-dest` | `wrong-amount`
+    pub tamper: String,
+}
+
+/// Build + satisfy + sign a C4 unstake: principal → staker, fee from separate input.
+pub fn build_stake_spend(req: &StakeSpendRequest) -> Result<String> {
+    use elements::confidential::{Asset, Nonce, Value};
+    use elements::locktime::Height;
+    use elements::{
+        AssetId, LockTime, OutPoint, Script, Sequence, Transaction, TxIn, TxInWitness, TxOut,
+        TxOutWitness,
+    };
+
+    let src = std::fs::read_to_string(&req.program_path)
+        .with_context(|| format!("read {}", req.program_path.display()))?;
+    let compiled = compile_src(&src, &req.args_json)?;
+    let parts = taproot_parts(&compiled)?;
+    let (sk, pk) = demo_keypair(&req.key_label)?;
+    let funding_spk = Script::from(p2wpkh_spk(&pk));
+
+    let lbtc: AssetId = req.lbtc_asset.parse().context("lbtc asset")?;
+    let principal: AssetId = req.principal_asset.parse().context("principal asset")?;
+    let genesis: elements::BlockHash = req.genesis_hash.parse().context("genesis")?;
+    let staker = hex::decode(req.staker_spk_hex.trim()).context("staker spk")?;
+
+    let change_sat = req
+        .fee_input_sat
+        .checked_sub(req.fee_sat)
+        .context("fee input too small")?;
+
+    let lock_h = Height::from_consensus(req.lock_height)
+        .map_err(|e| anyhow::anyhow!("lock height: {e}"))?;
+
+    let mk_in = |txid_s: &str, vout: u32| -> Result<TxIn> {
+        Ok(TxIn {
+            previous_output: OutPoint::new(txid_s.parse()?, vout),
+            is_pegin: false,
+            script_sig: Script::new(),
+            // Not max: required so nLockTime height is enforced / tx_lock_height works.
+            sequence: Sequence::from_consensus(0xffff_fffe),
+            asset_issuance: Default::default(),
+            witness: TxInWitness::default(),
+        })
+    };
+    let out = |asset: AssetId, sat: u64, spk: Script| TxOut {
+        asset: Asset::Explicit(asset),
+        value: Value::Explicit(sat),
+        nonce: Nonce::Null,
+        script_pubkey: spk,
+        witness: TxOutWitness::default(),
+    };
+
+    let mut tx = Transaction {
+        version: 2,
+        lock_time: LockTime::Blocks(lock_h),
+        input: vec![
+            mk_in(&req.stake_txid, req.stake_vout)?,
+            mk_in(&req.fee_txid, req.fee_vout)?,
+        ],
+        output: vec![
+            out(principal, req.stake_value_sat, Script::from(staker)), // 0: principal home
+            out(lbtc, change_sat, funding_spk.clone()),                // 1: fee change
+            out(lbtc, req.fee_sat, Script::new()),                     // 2: fee
+        ],
+    };
+
+    let utxos = vec![
+        ElementsUtxo {
+            script_pubkey: parts.spk.clone(),
+            asset: Asset::Explicit(principal),
+            value: Value::Explicit(req.stake_value_sat),
+        },
+        ElementsUtxo {
+            script_pubkey: funding_spk.clone(),
+            asset: Asset::Explicit(lbtc),
+            value: Value::Explicit(req.fee_input_sat),
+        },
+    ];
+    let env = ElementsEnv::new(
+        Arc::new(tx.clone()),
+        utxos,
+        0,
+        parts.cmr,
+        parts.control_block.clone(),
+        None,
+        genesis,
+    );
+
+    // No witness params for keyless unstake.
+    let witness_values: WitnessValues = serde_json::from_str("{}").context("empty witness")?;
+    let satisfied = compiled
+        .satisfy_with_env(witness_values, Some(&env))
+        .map_err(|e| anyhow::anyhow!("satisfy: {e}"))?;
+    let (prog_bytes, wit_bytes) = satisfied.redeem().to_vec_with_witness();
+
+    match req.tamper.as_str() {
+        "none" => {}
+        "early-lock" => {
+            // nLockTime below maturity → jet fails if re-satisfied; for consensus,
+            // a satisfied program with lowered locktime is still rejected if height low,
+            // but we rebuild lock_time=0 after satisfy so chain may reject non-final / jet no longer holds.
+            // Prefer wrong program path: set lock to 0 so node rejects when height < 0 never;
+            // actually lock_time 0 means no height lock — consensus may accept if sequence allows.
+            // Use lock_height 1 which fails check_lock_height vs high MATURE only at satisfy time.
+            // After-the-fact: set Blocks(1) so if MATURE is large, consensus won't re-run Simplicity
+            // with different lock... Simplicity is committed in witness; env used only at satisfy.
+            // Consensus re-executes with actual tx. So lowering lock_time after satisfy makes
+            // check_lock_height fail at consensus. Perfect.
+            let h = Height::from_consensus(1).map_err(|e| anyhow::anyhow!("{e}"))?;
+            tx.lock_time = LockTime::Blocks(h);
+        }
+        "wrong-dest" => {
+            tx.output[0].script_pubkey = funding_spk.clone();
+        }
+        "wrong-amount" => {
+            anyhow::ensure!(req.stake_value_sat > 1, "stake too small for wrong-amount");
+            tx.output[0].value = Value::Explicit(req.stake_value_sat - 1);
+            // dump 1 sat to fee change so totals balance for asset? principal asset is L-BTC usually
+            // If principal is L-BTC, need conserving amounts - add 1 to change or fee.
+            if principal == lbtc {
+                tx.output[1].value = Value::Explicit(change_sat + 1);
+            } else {
+                tx.output
+                    .push(out(principal, 1, funding_spk.clone()));
+            }
+        }
+        other => bail!("unknown stake tamper: {other} (none|early-lock|wrong-dest|wrong-amount)"),
+    }
+
+    tx.input[0].witness.script_witness = vec![
+        wit_bytes,
+        prog_bytes,
+        parts.leaf_script.clone().into_bytes(),
+        parts.control_block.serialize(),
+    ];
+
+    sign_p2wpkh_inputs(&mut tx, &[(1, req.fee_input_sat)], &sk, &pk);
+
+    Ok(hex::encode(elements::encode::serialize(&tx)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,5 +877,20 @@ mod tests {
         let burn = compile_src(&src, &args_burn).unwrap();
         // Different burn vs vault targets → different gate addresses.
         assert_ne!(lock.commit().cmr(), burn.commit().cmr());
+    }
+
+    #[test]
+    fn c4_stake_compiles_and_params_affect_cmr() {
+        let staker = "dd".repeat(32);
+        let asset = "ee".repeat(32);
+        let a1 = stake_args_json(100, &staker, &asset).unwrap();
+        let a2 = stake_args_json(200, &staker, &asset).unwrap();
+        let src = std::fs::read_to_string(bundled_stake_program()).unwrap();
+        let c1 = compile_src(&src, &a1).expect("stake compiles");
+        let c2 = compile_src(&src, &a2).expect("stake compiles");
+        assert_ne!(c1.commit().cmr(), c2.commit().cmr());
+        let parts = taproot_parts(&c1).unwrap();
+        assert_eq!(parts.control_block.leaf_version.as_u8(), 0xbe);
+        assert!(parts.address.to_string().starts_with("ert1p"));
     }
 }

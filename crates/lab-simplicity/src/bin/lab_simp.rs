@@ -5,16 +5,17 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use lab_simplicity::{
-    address_info, args_expected_hash_json, build_mint_spend, build_spend, compile_src,
-    demo_address_info, empty_spk_hash_hex, mint_gate_args_json, resolve_mint_gate_program,
-    resolve_rgb_anchor_program, reverse_hex_bytes, sha256_spk_hex, witness_json, MintSpendRequest,
-    SpendRequest,
+    address_info, args_expected_hash_json, build_mint_spend, build_spend, build_stake_spend,
+    compile_src, demo_address_info, empty_spk_hash_hex, mint_gate_args_json,
+    resolve_mint_gate_program, resolve_rgb_anchor_program, resolve_stake_program,
+    reverse_hex_bytes, sha256_spk_hex, stake_args_json, witness_json, MintSpendRequest,
+    SpendRequest, StakeSpendRequest,
 };
 
 #[derive(Parser, Debug)]
 #[command(
     name = "lab-simp",
-    about = "P2 Simplicity covenants: C0 anchor + C1 vault / C2 burn mint-gate (Path A)"
+    about = "P2 Simplicity covenants: C0/C1/C2/C4 (Path A)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -131,6 +132,57 @@ enum Cmd {
         #[arg(long)]
         genesis_hash: String,
         /// none | drop-anchor | wrong-amount | no-recreate | not-burn (C2)
+        #[arg(long, default_value = "none")]
+        tamper: String,
+    },
+    /// C4: compile stake covenant → address (mature height + staker SPK + asset).
+    StakeAddress {
+        #[arg(long)]
+        program: Option<PathBuf>,
+        /// Absolute block height maturity (baked into CMR).
+        #[arg(long)]
+        mature_height: u32,
+        /// Staker scriptPubKey hex (principal forced here on unstake).
+        #[arg(long)]
+        staker_spk: String,
+        /// Principal asset display hex (usually L-BTC).
+        #[arg(long)]
+        principal_asset: String,
+    },
+    /// C4: build unstake spend (principal → staker; fee separate).
+    StakeSpend {
+        #[arg(long)]
+        program: Option<PathBuf>,
+        #[arg(long)]
+        mature_height: u32,
+        #[arg(long)]
+        staker_spk: String,
+        #[arg(long)]
+        principal_asset: String,
+        #[arg(long)]
+        stake_txid: String,
+        #[arg(long)]
+        stake_vout: u32,
+        #[arg(long)]
+        stake_value_sat: u64,
+        #[arg(long)]
+        fee_txid: String,
+        #[arg(long)]
+        fee_vout: u32,
+        #[arg(long)]
+        fee_input_sat: u64,
+        #[arg(long, default_value_t = 2000)]
+        fee_sat: u64,
+        #[arg(long, default_value = "unstaker")]
+        key_label: String,
+        #[arg(long)]
+        lbtc_asset: String,
+        #[arg(long)]
+        genesis_hash: String,
+        /// nLockTime height (default = mature_height).
+        #[arg(long)]
+        lock_height: Option<u32>,
+        /// none | early-lock | wrong-dest | wrong-amount
         #[arg(long, default_value = "none")]
         tamper: String,
     },
@@ -330,6 +382,80 @@ fn main() -> Result<()> {
                 fee_sat,
                 lbtc_asset,
                 genesis_hash,
+                tamper,
+            })?;
+            println!("{hex_tx}");
+            Ok(())
+        }
+        Cmd::StakeAddress {
+            program,
+            mature_height,
+            staker_spk,
+            principal_asset,
+        } => {
+            let program = program.unwrap_or_else(resolve_stake_program);
+            let staker_hash = sha256_spk_hex(&staker_spk)?;
+            let asset_le = reverse_hex_bytes(&principal_asset)?;
+            let args_json = stake_args_json(mature_height, &staker_hash, &asset_le)?;
+            let src = std::fs::read_to_string(&program)
+                .with_context(|| format!("read {}", program.display()))?;
+            let compiled = compile_src(&src, &args_json)?;
+            let info = address_info(&compiled)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "kind": "c4_stake",
+                    "mature_height": mature_height,
+                    "staker_spk_hex": staker_spk,
+                    "staker_spk_hash": staker_hash,
+                    "principal_asset": principal_asset,
+                    "cmr": info.cmr,
+                    "address": info.address,
+                    "spk_hex": info.spk_hex,
+                    "leaf_version": info.leaf_version,
+                }))?
+            );
+            Ok(())
+        }
+        Cmd::StakeSpend {
+            program,
+            mature_height,
+            staker_spk,
+            principal_asset,
+            stake_txid,
+            stake_vout,
+            stake_value_sat,
+            fee_txid,
+            fee_vout,
+            fee_input_sat,
+            fee_sat,
+            key_label,
+            lbtc_asset,
+            genesis_hash,
+            lock_height,
+            tamper,
+        } => {
+            let program = program.unwrap_or_else(resolve_stake_program);
+            let staker_hash = sha256_spk_hex(&staker_spk)?;
+            let asset_le = reverse_hex_bytes(&principal_asset)?;
+            let args_json = stake_args_json(mature_height, &staker_hash, &asset_le)?;
+            let lock_h = lock_height.unwrap_or(mature_height);
+            let hex_tx = build_stake_spend(&StakeSpendRequest {
+                program_path: program,
+                args_json,
+                stake_txid,
+                stake_vout,
+                stake_value_sat,
+                fee_txid,
+                fee_vout,
+                fee_input_sat,
+                fee_sat,
+                key_label,
+                staker_spk_hex: staker_spk,
+                principal_asset,
+                lbtc_asset,
+                genesis_hash,
+                lock_height: lock_h,
                 tamper,
             })?;
             println!("{hex_tx}");

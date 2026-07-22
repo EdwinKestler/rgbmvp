@@ -11,7 +11,7 @@ authoritative source of truth.**
 3. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/SCENARIOS.md](docs/SCENARIOS.md) · [docs/STACK.md](docs/STACK.md)
 
 Phase closures: [P1_CLOSED](docs/P1_CLOSED.md) · [P2_CLOSED](docs/P2_CLOSED.md) · [P3_CLOSED](docs/P3_CLOSED.md).  
-**Next (protocol first, localhost):** [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md) — S3 + C2 done; next **C4** staking; **U4 before any public Internet**.  
+**Next (protocol first, localhost):** [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md) — S3+C2+C4 done; next **U4** security before any public Internet.  
 Headless protocol kit: [docs/HEADLESS.md](docs/HEADLESS.md).
 
 ## Do not confuse

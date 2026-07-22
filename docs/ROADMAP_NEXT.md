@@ -10,7 +10,7 @@ Historical phase closures (P1–P3) remain valid evidence of what was proven. Th
 | 0 | Doc honesty + ADRs | Now |
 | 1 | **S3** RGB-wrapped claim (CLI + live proof) | Done — [S3_RGB_WRAP.md](./S3_RGB_WRAP.md) |
 | 2 | **C2** burn mint-gate (regtest) | **Done** — [C2_CLOSED.md](./C2_CLOSED.md) |
-| 3 | **C4** staking research freeze → implement | Next protocol track |
+| 3 | **C4** staking (regtest) | **Done** — [C4_CLOSED.md](./C4_CLOSED.md) |
 | 4 | **U4** public-hosting security foundation | Parallel design OK; **must finish before any public bind** |
 | 5 | Independent review + public **read-only** demo | After U4 acceptance |
 
@@ -19,7 +19,7 @@ Localhost / public testnet (operator)
    │
    ├─► S3 RGB-wrapped claim     ◄── done (CLI + live)
    ├─► C2 burn mint-gate        ◄── done (regtest)
-   ├─► C4 stake                 ◄── next protocol depth
+   ├─► C4 stake                 ◄── done (regtest)
    │
    └─► U4 security (must complete before)
               │
@@ -64,16 +64,17 @@ Localhost / public testnet (operator)
 | BFA | `mode=burn` + empty `vault=` in `elements-backing:v1` terms |
 | Evidence | [C2_CLOSED.md](./C2_CLOSED.md) · `./scripts/demo_c2_mint_gate_burn.sh` |
 
-#### ADR-C4 — Time-locked staking
+#### ADR-C4 — Time-locked staking (**accepted · implemented**)
 
-| Topic | Working default (MVP) |
-|-------|------------------------|
-| Time | Absolute block height |
-| Principal | Forced to committed staker script hash |
-| Trigger | Anyone after maturity |
-| Fees | Separate input (do not erode principal) |
+| Topic | Decision |
+|-------|----------|
+| Time | Absolute block height via `jet::check_lock_height` + `nLockTime` |
+| Principal | Full stake input → `STAKER_SPK_HASH` (explicit asset+amount) |
+| Trigger | Keyless; anyone after maturity |
+| Fees | Separate P2WPKH input |
 | Rewards / partial / rollover | **Out of MVP** |
-| RGB | Optional later; first cut may be seal-value only if ADR says so |
+| RGB | Deferred; MVP is seal-value only |
+| Evidence | [C4_CLOSED.md](./C4_CLOSED.md) · `./scripts/demo_c4_stake.sh` |
 
 #### ADR-U4 — Public vs operator surface
 
@@ -112,9 +113,7 @@ Reuse C1 tooling. Program + demo + BFA burn mode + negatives.
 
 ## Phase C4 — Staking
 
-Research freeze 3–5 days → implement only with peer-minimal semantics.
-
-**Estimate:** 2–3 weeks after freeze.
+**Closed** — [C4_CLOSED.md](./C4_CLOSED.md). Absolute height + principal-home; no rewards/partial.
 
 ---
 
@@ -143,5 +142,5 @@ MVP before “full Axum rewrite” if needed: loopback RPC ports, mutation flag,
 2. ~~Reconcile S3/U4 in SCENARIOS + this roadmap.~~  
 3. ~~Implement **S3** CLI + live proof.~~ → [S3_RGB_WRAP.md](./S3_RGB_WRAP.md)  
 4. ~~**C2** burn mint-gate on regtest.~~ → [C2_CLOSED.md](./C2_CLOSED.md)  
-5. **C4** staking: research freeze then implement.  
-6. Keep U4 checklist ready; do U4 engineering before any public demo.  
+5. ~~**C4** staking.~~ → [C4_CLOSED.md](./C4_CLOSED.md)  
+6. **U4** security engineering before any public demo.  
