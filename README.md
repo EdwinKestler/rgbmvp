@@ -1,14 +1,27 @@
 # rgbmvp — RGB on Liquid Testnet Lab
 
-Public lab for **RGB client-side assets anchored on Liquid** (and Bitcoin testnet twins), with a CLI, verify API, and read-only demo board.
+Public lab for **RGB client-side assets anchored on Liquid** (and Bitcoin testnet twins), with a CLI, browser lab console, and shared `/v1` API.
 
 Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/rgb-on-liquid-spike) / [writeup](https://x.com/i/status/2077733143428190555).
 
 | | |
 |--|--|
-| **Networks** | Liquid Testnet · Bitcoin Testnet (P1) · no mainnet |
+| **Purpose** | Prove RGB-on-Liquid, twin HTLC swaps, Simplicity/BFA seals, and a safe local browser console |
+| **Networks** | Liquid Testnet · Bitcoin Testnet (P1) · Elements regtest (P2) · **no mainnet** |
 | **Status** | **P0–P3 closed** · headless kit + lab console |
-| **UI** | Issue / transfer / verify / guided swap · `/demo` board · BFA audit (no browser keys) |
+| **UI** | Issue / transfer / verify / guided swap · `/demo` board · BFA audit (**no browser keys**) |
+
+### Documentation (start here)
+
+| Reader | Document |
+|--------|----------|
+| **Humans** — why this exists and how to use it | **[docs/PURPOSE_AND_USAGE.md](docs/PURPOSE_AND_USAGE.md)** |
+| **Agents / AI** — goals, invariants, Redis project memory | **[docs/M2M.md](docs/M2M.md)** · [AGENTS.md](AGENTS.md) |
+| Architecture · scenarios · stack | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [SCENARIOS](docs/SCENARIOS.md) · [STACK](docs/STACK.md) |
+| Phase evidence | [P1_CLOSED](docs/P1_CLOSED.md) · [P2_CLOSED](docs/P2_CLOSED.md) · [P3_CLOSED](docs/P3_CLOSED.md) |
+| Protocol without UI | [docs/HEADLESS.md](docs/HEADLESS.md) |
+
+**Redis project memory** is optional and only for agent source discovery — operators can ignore it entirely ([docs/PROJECT_MEMORY.md](docs/PROJECT_MEMORY.md)).
 
 ---
 

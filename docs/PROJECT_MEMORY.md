@@ -1,10 +1,13 @@
 # Project Memory
 
+> **Humans:** you can skip this file. The lab CLI, web console, and RGB demos do **not** require Redis.  
+> **Agents / AI:** this is the full contract for the optional discovery cache. Also follow [M2M.md](./M2M.md) §3 and [AGENTS.md](../AGENTS.md).
+
 Project Memory is an optional local source-discovery index. Repository files are always the authoritative source of truth. Redis is a deterministic, derived, disposable retrieval cache; a hit is only a path and line-range pointer, and the current file must be opened before any claim or edit.
 
 ## CLI contract
 
-Agents and operators use only `scripts/project_memory.py`; the raw Redis representation is private, opaque, and unstable.
+Agents use only `scripts/project_memory.py`; the raw Redis representation is private, opaque, and unstable.
 
 ```bash
 python scripts/project_memory.py index
