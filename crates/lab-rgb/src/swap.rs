@@ -87,6 +87,10 @@ impl SwapStore {
         let raw = fs::read_to_string(&p).with_context(|| format!("load {}", p.display()))?;
         Ok(serde_json::from_str(&raw)?)
     }
+
+    pub fn path_exists(&self, id: &str) -> bool {
+        self.path(id).exists()
+    }
 }
 
 pub fn init_swap(

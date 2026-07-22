@@ -1290,9 +1290,9 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
     eprintln!("  GET  /v1/proofs/{{id}} · /v1/swaps · /v1/swap/{{id}}");
     eprintln!("  GET  /v1/demo/wallets · /v1/demo/activity");
     eprintln!("  GET  /v1/rgb/contracts · /v1/rgb/plans/{{id}}");
-    eprintln!("  POST /v1/rgb/issue     (lab fixture wallets; no browser keys)");
-    eprintln!("  POST /v1/rgb/transfer  (plan; optional broadcast)");
-    eprintln!("  POST /v1/rgb/verify");
+    eprintln!("  POST /v1/rgb/issue · transfer · verify");
+    eprintln!("  POST /v1/swap/init");
+    eprintln!("  POST /v1/swap/{{id}}/action  fund_btc|fund_lq|claim_lq|claim_btc|refund_*");
     eprintln!("  POST /v1/audit/bfa");
 
     let web_dir = PathBuf::from("web");
@@ -1397,8 +1397,10 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
                     serde_json::to_vec(&serde_json::json!({"error": e.to_string()})).unwrap(),
                 ),
             }
-        } else if method == "GET" && path.starts_with("/v1/swap/") {
+        } else if method == "GET" && path.starts_with("/v1/swap/") && !path.contains("/action") {
             let id = path.trim_start_matches("/v1/swap/");
+            // strip trailing slash
+            let id = id.trim_end_matches('/');
             match swap_store.load(id) {
                 Ok(s) => {
                     let public = public_swap_view(&s, cfg);
@@ -1411,7 +1413,42 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
                 Err(e) => (
                     "404 Not Found",
                     "application/json",
-                    serde_json::to_vec(&serde_json::json!({"error": e.to_string()})).unwrap(),
+                    serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
+                ),
+            }
+        } else if method == "POST" && path == "/v1/swap/init" {
+            let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(req.len());
+            let body_str = &req[body_start..];
+            match handle_swap_init_post(cfg, &swap_store, body_str) {
+                Ok(v) => (
+                    "200 OK",
+                    "application/json",
+                    serde_json::to_vec_pretty(&v).unwrap(),
+                ),
+                Err(e) => (
+                    "400 Bad Request",
+                    "application/json",
+                    serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
+                ),
+            }
+        } else if method == "POST" && path.starts_with("/v1/swap/") && path.ends_with("/action") {
+            // /v1/swap/{id}/action
+            let mid = path
+                .trim_start_matches("/v1/swap/")
+                .trim_end_matches("/action")
+                .trim_end_matches('/');
+            let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(req.len());
+            let body_str = &req[body_start..];
+            match handle_swap_action_post(cfg, &swap_store, mid, body_str) {
+                Ok(v) => (
+                    "200 OK",
+                    "application/json",
+                    serde_json::to_vec_pretty(&v).unwrap(),
+                ),
+                Err(e) => (
+                    "400 Bad Request",
+                    "application/json",
+                    serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
                 ),
             }
         } else if method == "GET" && path == "/v1/demo/wallets" {
@@ -1598,14 +1635,410 @@ fn public_swap_view(s: &lab_rgb::swap::SwapSession, cfg: &Config) -> serde_json:
         },
         "notes": s.notes,
         "steps": [
-            {"id": "created", "done": true},
-            {"id": "funded_btc", "done": s.btc_fund_txid.is_some()},
-            {"id": "funded_lq", "done": s.lq_fund_txid.is_some()},
-            {"id": "claimed_lq", "done": s.lq_claim_txid.is_some()},
-            {"id": "claimed_btc", "done": s.btc_claim_txid.is_some()},
-            {"id": "done", "done": matches!(s.phase, lab_rgb::swap::SwapPhase::Done)},
+            {"id": "created", "done": true, "label": "Created"},
+            {"id": "funded_btc", "done": s.btc_fund_txid.is_some(), "label": "Fund BTC HTLC"},
+            {"id": "funded_lq", "done": s.lq_fund_txid.is_some(), "label": "Fund Liquid HTLC"},
+            {"id": "claimed_lq", "done": s.lq_claim_txid.is_some(), "label": "Alice claims LQ (reveals preimage)"},
+            {"id": "claimed_btc", "done": s.btc_claim_txid.is_some(), "label": "Bob claims BTC"},
+            {"id": "done", "done": matches!(s.phase, lab_rgb::swap::SwapPhase::Done), "label": "Done"},
         ],
+        "next_actions": swap_next_actions(s),
+        "guide": swap_guide(s),
     })
+}
+
+/// Which mutations the lab console should offer (server-side keys).
+fn swap_next_actions(s: &lab_rgb::swap::SwapSession) -> Vec<serde_json::Value> {
+    use lab_rgb::swap::SwapPhase;
+    let mut out = Vec::new();
+    if matches!(s.phase, SwapPhase::Refunded | SwapPhase::Done) {
+        return out;
+    }
+    if s.btc_fund_txid.is_none() {
+        out.push(serde_json::json!({
+            "action": "fund_btc",
+            "label": "1. Fund BTC HTLC",
+            "defaults": {"amount_sats": 10000, "fee_sats": 800},
+            "role": "alice (btc-alice)"
+        }));
+    }
+    if s.lq_fund_txid.is_none() {
+        out.push(serde_json::json!({
+            "action": "fund_lq",
+            "label": "2. Fund Liquid HTLC",
+            "defaults": {"amount_sats": 5000},
+            "role": "bob"
+        }));
+    }
+    if s.btc_fund_txid.is_some() && s.lq_fund_txid.is_some() && s.lq_claim_txid.is_none() {
+        out.push(serde_json::json!({
+            "action": "claim_lq",
+            "label": "3. Claim Liquid (Alice reveals preimage)",
+            "defaults": {"fee_sats": 300},
+            "role": "alice"
+        }));
+    }
+    if s.lq_claim_txid.is_some() && s.btc_claim_txid.is_none() {
+        out.push(serde_json::json!({
+            "action": "claim_btc",
+            "label": "4. Claim BTC (Bob uses preimage)",
+            "defaults": {"fee_sats": 500},
+            "role": "bob"
+        }));
+    }
+    // Refunds only offered if funded and not claimed on that leg
+    if s.btc_fund_txid.is_some() && s.btc_claim_txid.is_none() {
+        out.push(serde_json::json!({
+            "action": "refund_btc",
+            "label": "Refund BTC (after CSV)",
+            "defaults": {"fee_sats": 500},
+            "role": "alice",
+            "caution": "Requires csv_delay confirmations since fund"
+        }));
+    }
+    if s.lq_fund_txid.is_some() && s.lq_claim_txid.is_none() {
+        out.push(serde_json::json!({
+            "action": "refund_lq",
+            "label": "Refund Liquid (after CSV)",
+            "defaults": {"fee_sats": 300},
+            "role": "bob",
+            "caution": "Requires csv_delay confirmations since fund"
+        }));
+    }
+    out
+}
+
+fn swap_guide(s: &lab_rgb::swap::SwapSession) -> String {
+    if matches!(s.phase, lab_rgb::swap::SwapPhase::Done) {
+        return "Swap complete. Preimage was revealed on Liquid claim; never shown in this UI.".into();
+    }
+    if matches!(s.phase, lab_rgb::swap::SwapPhase::Refunded) {
+        return "Refund path used. Happy-path claim is no longer available.".into();
+    }
+    if s.btc_fund_txid.is_none() && s.lq_fund_txid.is_none() {
+        return "Create or load a swap, then fund BTC (Alice) and Liquid (Bob) HTLCs.".into();
+    }
+    if s.btc_fund_txid.is_none() {
+        return "Fund the Bitcoin HTLC from btc-alice next.".into();
+    }
+    if s.lq_fund_txid.is_none() {
+        return "Fund the Liquid HTLC from bob next.".into();
+    }
+    if s.lq_claim_txid.is_none() {
+        return "Both legs funded. Alice should claim Liquid (this publishes the preimage on-chain).".into();
+    }
+    if s.btc_claim_txid.is_none() {
+        return "Liquid claimed. Bob can claim BTC with the published preimage.".into();
+    }
+    "Almost done — refresh status.".into()
+}
+
+fn handle_swap_init_post(
+    cfg: &Config,
+    store: &SwapStore,
+    body: &str,
+) -> Result<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_str(body).context("json body")?;
+    let id = v
+        .get("id")
+        .and_then(|x| x.as_str())
+        .context("id required")?
+        .to_string();
+    let csv_delay = v.get("csv_delay").and_then(|x| x.as_u64()).unwrap_or(6) as u32;
+    let alice_btc = v
+        .get("alice_btc")
+        .and_then(|x| x.as_str())
+        .unwrap_or("btc-alice");
+    let bob_lq = v
+        .get("bob_lq")
+        .and_then(|x| x.as_str())
+        .unwrap_or("bob");
+    let btc_contract = v
+        .get("btc_contract")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    let lq_contract = v
+        .get("lq_contract")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    // refuse overwrite of existing without force
+    if store.path_exists(&id)
+        && !v.get("force").and_then(|x| x.as_bool()).unwrap_or(false)
+    {
+        anyhow::bail!("swap {id} already exists; pass force:true to overwrite");
+    }
+    let session = swap::init_swap(
+        &id,
+        csv_delay,
+        alice_btc,
+        bob_lq,
+        btc_contract,
+        lq_contract,
+    )?;
+    let path = store.save(&session)?;
+    let _ = cfg;
+    Ok(serde_json::json!({
+        "status": "created",
+        "stored": path.display().to_string(),
+        "swap": public_swap_view(&session, cfg),
+        "note": "Preimage stored only under .rgbmvp/swaps/ (mode 600). Never returned by GET /v1/swap/*.",
+    }))
+}
+
+fn handle_swap_action_post(
+    cfg: &Config,
+    store: &SwapStore,
+    id: &str,
+    body: &str,
+) -> Result<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::json!({}));
+    let action = v
+        .get("action")
+        .and_then(|x| x.as_str())
+        .context("action required (fund_btc|fund_lq|claim_lq|claim_btc|refund_btc|refund_lq)")?;
+    let mut s = store.load(id)?;
+
+    let result = match action {
+        "fund_btc" => {
+            let amount_sats = v
+                .get("amount_sats")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(10_000);
+            let fee_sats = v.get("fee_sats").and_then(|x| x.as_u64()).unwrap_or(800);
+            let btc = lab_btc::BtcConfig::from_env();
+            let bc = lab_btc::fund_address(
+                cfg,
+                &btc,
+                &s.alice_btc_wallet,
+                &s.htlc_btc.address_btc,
+                amount_sats,
+                fee_sats,
+            )?;
+            s.btc_fund_txid = Some(bc.txid.clone());
+            s.btc_fund_vout = Some(0);
+            s.btc_fund_sats = Some(amount_sats);
+            swap::recompute_phase(&mut s);
+            store.save(&s)?;
+            serde_json::json!({
+                "status": "funded_btc",
+                "broadcast": bc,
+                "htlc_address": s.htlc_btc.address_btc,
+            })
+        }
+        "fund_lq" => {
+            let amount_sats = v
+                .get("amount_sats")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(5_000);
+            let bc = lab_chain::send_lbtc(
+                cfg,
+                &s.bob_lq_wallet,
+                &s.htlc_lq.address_liquid_unconf,
+                amount_sats,
+            )?;
+            s.lq_fund_txid = Some(bc.txid.clone());
+            s.lq_fund_vout = Some(0);
+            s.lq_fund_sats = Some(amount_sats);
+            swap::recompute_phase(&mut s);
+            store.save(&s)?;
+            serde_json::json!({
+                "status": "funded_lq",
+                "broadcast": bc,
+                "htlc_address": s.htlc_lq.address_liquid_unconf,
+            })
+        }
+        "claim_lq" => {
+            let fee_sats = v.get("fee_sats").and_then(|x| x.as_u64()).unwrap_or(300);
+            let amount = s.lq_fund_sats.context("lq not funded (run fund_lq)")?;
+            let (txid, vout, value) = lab_chain::find_address_utxo(
+                cfg,
+                &s.htlc_lq.address_liquid_unconf,
+                amount.saturating_sub(1),
+            )?;
+            s.lq_fund_txid = Some(txid.clone());
+            s.lq_fund_vout = Some(vout);
+            s.lq_fund_sats = Some(value);
+            let preimage = hex::decode(&s.preimage_hex)?;
+            let (claimer_sk, _) = htlc::demo_keypair(&s.htlc_lq.claimer_label)?;
+            let ws = hex::decode(&s.htlc_lq.witness_script_hex)?;
+            use bitcoin::key::{CompressedPublicKey, Secp256k1};
+            use bitcoin::{Address, Network};
+            let secp = Secp256k1::new();
+            let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &claimer_sk);
+            let compressed = CompressedPublicKey(pk);
+            let dest = Address::p2wpkh(&compressed, Network::Testnet);
+            let dest_spk = dest.script_pubkey();
+            let policy = "144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49";
+            let out_sats = value.saturating_sub(fee_sats);
+            let raw = htlc::build_htlc_spend_liquid(
+                &txid,
+                vout,
+                value,
+                out_sats,
+                fee_sats,
+                dest_spk.as_bytes(),
+                policy,
+                &ws,
+                htlc::HtlcSpend::Claim {
+                    preimage: &preimage,
+                },
+                s.csv_delay,
+                &claimer_sk,
+            )?;
+            let claim_txid = lab_chain::broadcast_raw_hex(cfg, &raw)?;
+            s.lq_claim_txid = Some(claim_txid.clone());
+            swap::recompute_phase(&mut s);
+            store.save(&s)?;
+            serde_json::json!({
+                "status": "claimed_lq",
+                "txid": claim_txid,
+                "explorer": format!("{}/tx/{}", cfg.explorer_base, claim_txid),
+                "preimage_published": true,
+                "note": "Preimage is public on Liquid; Bob can claim BTC. Not returned in API JSON.",
+            })
+        }
+        "claim_btc" => {
+            let fee_sats = v.get("fee_sats").and_then(|x| x.as_u64()).unwrap_or(500);
+            let btc = lab_btc::BtcConfig::from_env();
+            let amount = s.btc_fund_sats.context("btc_fund_sats")?;
+            let utxo = lab_btc::find_htlc_utxo(
+                &btc,
+                &s.htlc_btc.address_btc,
+                amount.saturating_sub(1),
+            )?;
+            let preimage = hex::decode(&s.preimage_hex)?;
+            let (claimer_sk, _) = htlc::demo_keypair(&s.htlc_btc.claimer_label)?;
+            let ws = hex::decode(&s.htlc_btc.witness_script_hex)?;
+            use bitcoin::key::{CompressedPublicKey, Secp256k1};
+            use bitcoin::{Address, Network};
+            let secp = Secp256k1::new();
+            let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &claimer_sk);
+            let compressed = CompressedPublicKey(pk);
+            let dest = Address::p2wpkh(&compressed, Network::Testnet);
+            let dest_spk = dest.script_pubkey();
+            let out_sats = utxo.value_sats.saturating_sub(fee_sats);
+            let raw = htlc::build_htlc_spend_btc(
+                &utxo.txid,
+                utxo.vout,
+                utxo.value_sats,
+                out_sats,
+                dest_spk.as_bytes(),
+                &ws,
+                htlc::HtlcSpend::Claim {
+                    preimage: &preimage,
+                },
+                s.csv_delay,
+                &claimer_sk,
+            )?;
+            let txid = lab_btc::broadcast_raw(&btc, &raw)?;
+            s.btc_claim_txid = Some(txid.clone());
+            swap::recompute_phase(&mut s);
+            store.save(&s)?;
+            serde_json::json!({
+                "status": "claimed_btc",
+                "txid": txid,
+                "explorer": format!("{}/tx/{}", btc.explorer_base, txid),
+                "dest": dest.to_string(),
+            })
+        }
+        "refund_btc" => {
+            let fee_sats = v.get("fee_sats").and_then(|x| x.as_u64()).unwrap_or(500);
+            if s.btc_claim_txid.is_some() {
+                anyhow::bail!("BTC already claimed; cannot refund");
+            }
+            let btc = lab_btc::BtcConfig::from_env();
+            let amount = s.btc_fund_sats.context("btc not funded")?;
+            let utxo = lab_btc::find_htlc_utxo(
+                &btc,
+                &s.htlc_btc.address_btc,
+                amount.saturating_sub(1),
+            )?;
+            let (refund_sk, _) = htlc::demo_keypair(&s.htlc_btc.refund_label)?;
+            let ws = hex::decode(&s.htlc_btc.witness_script_hex)?;
+            use bitcoin::key::{CompressedPublicKey, Secp256k1};
+            use bitcoin::{Address, Network};
+            let secp = Secp256k1::new();
+            let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &refund_sk);
+            let compressed = CompressedPublicKey(pk);
+            let dest = Address::p2wpkh(&compressed, Network::Testnet);
+            let out_sats = utxo.value_sats.saturating_sub(fee_sats);
+            let raw = htlc::build_htlc_spend_btc(
+                &utxo.txid,
+                utxo.vout,
+                utxo.value_sats,
+                out_sats,
+                dest.script_pubkey().as_bytes(),
+                &ws,
+                htlc::HtlcSpend::Refund,
+                s.csv_delay,
+                &refund_sk,
+            )?;
+            let txid = lab_btc::broadcast_raw(&btc, &raw)?;
+            s.notes.push(format!("btc_refund_txid={txid}"));
+            s.phase = lab_rgb::swap::SwapPhase::Refunded;
+            store.save(&s)?;
+            serde_json::json!({
+                "status": "refunded_btc",
+                "txid": txid,
+                "explorer": format!("{}/tx/{}", btc.explorer_base, txid),
+                "note": "Requires CSV maturity (nSequence = csv_delay blocks) since fund.",
+            })
+        }
+        "refund_lq" => {
+            let fee_sats = v.get("fee_sats").and_then(|x| x.as_u64()).unwrap_or(300);
+            if s.lq_claim_txid.is_some() {
+                anyhow::bail!("Liquid already claimed; cannot refund");
+            }
+            let amount = s.lq_fund_sats.context("lq not funded")?;
+            let (txid, vout, value) = lab_chain::find_address_utxo(
+                cfg,
+                &s.htlc_lq.address_liquid_unconf,
+                amount.saturating_sub(1),
+            )?;
+            let (refund_sk, _) = htlc::demo_keypair(&s.htlc_lq.refund_label)?;
+            let ws = hex::decode(&s.htlc_lq.witness_script_hex)?;
+            use bitcoin::key::{CompressedPublicKey, Secp256k1};
+            use bitcoin::{Address, Network};
+            let secp = Secp256k1::new();
+            let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &refund_sk);
+            let compressed = CompressedPublicKey(pk);
+            let dest = Address::p2wpkh(&compressed, Network::Testnet);
+            let policy = "144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49";
+            let out_sats = value.saturating_sub(fee_sats);
+            let raw = htlc::build_htlc_spend_liquid(
+                &txid,
+                vout,
+                value,
+                out_sats,
+                fee_sats,
+                dest.script_pubkey().as_bytes(),
+                policy,
+                &ws,
+                htlc::HtlcSpend::Refund,
+                s.csv_delay,
+                &refund_sk,
+            )?;
+            let claim_txid = lab_chain::broadcast_raw_hex(cfg, &raw)?;
+            s.notes.push(format!("lq_refund_txid={claim_txid}"));
+            s.phase = lab_rgb::swap::SwapPhase::Refunded;
+            store.save(&s)?;
+            serde_json::json!({
+                "status": "refunded_lq",
+                "txid": claim_txid,
+                "explorer": format!("{}/tx/{}", cfg.explorer_base, claim_txid),
+                "note": "Requires CSV maturity since fund.",
+            })
+        }
+        other => anyhow::bail!("unknown action {other:?}"),
+    };
+
+    // reload for public view
+    let s2 = store.load(id)?;
+    Ok(serde_json::json!({
+        "action": action,
+        "result": result,
+        "swap": public_swap_view(&s2, cfg),
+    }))
 }
 
 fn list_swap_ids(data_dir: &std::path::Path) -> Result<Vec<String>> {

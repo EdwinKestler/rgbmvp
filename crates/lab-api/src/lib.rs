@@ -36,6 +36,8 @@ pub fn root_json() -> Value {
             "proofs": "GET /v1/proofs/{id}",
             "swap": "GET /v1/swap/{id}",
             "swaps": "GET /v1/swaps",
+            "swap_init": "POST /v1/swap/init",
+            "swap_action": "POST /v1/swap/{id}/action",
             "demo_wallets": "GET /v1/demo/wallets",
             "demo_activity": "GET /v1/demo/activity",
             "audit_bfa": "POST /v1/audit/bfa",

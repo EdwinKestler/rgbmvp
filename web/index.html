@@ -151,24 +151,40 @@
 
   <div id="panel-swap" class="panel">
     <div class="card">
-      <h2>Atomic swap status</h2>
-      <p class="muted">Load a session created by <code>rgbmvp swap init --id …</code>. Preimage is never shown here.</p>
+      <h2>Atomic swap (guided)</h2>
+      <p class="muted">Lab operator actions use server-side wallets. <strong>Preimage is never returned by the API or UI.</strong></p>
       <label>Swap id</label>
-      <input id="swap-id" placeholder="p1-live" />
+      <input id="swap-id" placeholder="demo-u2" />
       <div class="row">
-        <button type="button" id="swap-load">Load status</button>
+        <div>
+          <label>CSV delay (blocks)</label>
+          <input id="swap-csv" type="number" value="6" />
+        </div>
+        <div>
+          <label>Alice BTC wallet</label>
+          <input id="swap-alice" value="btc-alice" />
+        </div>
+      </div>
+      <label>Bob Liquid wallet</label>
+      <input id="swap-bob" value="bob" />
+      <div class="row">
+        <button type="button" id="swap-init">Init swap</button>
+        <button type="button" class="secondary" id="swap-load">Refresh status</button>
         <button type="button" class="secondary" id="swap-list">List swaps</button>
       </div>
-      <div id="swap-summary" style="margin-top:1rem"></div>
+      <p class="muted" id="swap-guide" style="margin-top:0.75rem"></p>
+      <div id="swap-summary" style="margin-top:0.5rem"></div>
       <div class="steps" id="swap-steps"></div>
+      <div id="swap-actions" style="margin:0.75rem 0;display:flex;flex-wrap:wrap;gap:0.5rem"></div>
       <div class="links" id="swap-links"></div>
       <pre id="swap-out"></pre>
     </div>
   </div>
 
   <div class="card muted">
-    U1: <code>POST /v1/rgb/issue</code> · <code>POST /v1/rgb/transfer</code> · <code>GET /v1/rgb/contracts</code><br/>
-    Also: verify · swap · <code>POST /v1/audit/bfa</code>
+    U1: <code>POST /v1/rgb/issue|transfer</code> ·
+    U2: <code>POST /v1/swap/init</code> · <code>POST /v1/swap/&#123;id&#125;/action</code><br/>
+    Preimage redacted on all GET responses.
   </div>
 
   <script>
@@ -207,6 +223,7 @@
     function renderSwap(s) {
       const phase = s.phase || '?';
       const done = phase === 'done';
+      $('swap-guide').textContent = s.guide || '';
       $('swap-summary').innerHTML = `
         <div class="phase ${done ? 'ok' : ''}">phase: ${phase}</div>
         <div class="muted">hash <code>${(s.hash_hex||'').slice(0,16)}…</code>
@@ -222,9 +239,24 @@
       (s.steps || []).forEach(st => {
         const d = document.createElement('span');
         d.className = 'step' + (st.done ? ' done' : '');
-        d.textContent = st.id + (st.done ? ' ✓' : '');
+        d.textContent = (st.label || st.id) + (st.done ? ' ✓' : '');
         stepsEl.appendChild(d);
       });
+
+      const actEl = $('swap-actions');
+      actEl.innerHTML = '';
+      (s.next_actions || []).forEach(a => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = a.action.startsWith('refund') ? 'secondary' : '';
+        btn.textContent = a.label || a.action;
+        btn.title = (a.role || '') + (a.caution ? ' — ' + a.caution : '');
+        btn.onclick = () => runSwapAction(a);
+        actEl.appendChild(btn);
+      });
+      if (!(s.next_actions || []).length && !done) {
+        actEl.innerHTML = '<span class="muted">No actions available (check phase / refunds).</span>';
+      }
 
       const linksEl = $('swap-links');
       linksEl.innerHTML = '';
@@ -246,7 +278,10 @@
         }
       });
 
-      $('swap-out').textContent = JSON.stringify(s, null, 2);
+      // strip any accidental preimage keys from display
+      const safe = JSON.parse(JSON.stringify(s));
+      delete safe.preimage_hex;
+      $('swap-out').textContent = JSON.stringify(safe, null, 2);
     }
 
     async function loadSwap() {
@@ -257,20 +292,75 @@
         const r = await fetch('/v1/swap/' + encodeURIComponent(id));
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || r.statusText);
+        if (j.preimage_hex) delete j.preimage_hex;
         renderSwap(j);
-        // keep id in URL for shareability
         const u = new URL(location.href);
         u.searchParams.set('swap', id);
+        u.searchParams.set('tab', 'swap');
         history.replaceState(null, '', u);
       } catch (e) {
         $('swap-summary').innerHTML = `<span class="bad">${e}</span>`;
         $('swap-steps').innerHTML = '';
+        $('swap-actions').innerHTML = '';
         $('swap-links').innerHTML = '';
+        $('swap-guide').textContent = '';
         $('swap-out').textContent = String(e);
       }
     }
 
+    async function runSwapAction(a) {
+      const id = $('swap-id').value.trim();
+      if (!id) return;
+      const body = Object.assign({ action: a.action }, a.defaults || {});
+      if (a.action.startsWith('refund') && !confirm(a.label + '?\n' + (a.caution || ''))) return;
+      $('swap-out').textContent = 'Running ' + a.action + '…';
+      try {
+        const r = await fetch('/v1/swap/' + encodeURIComponent(id) + '/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.statusText);
+        if (j.swap) {
+          renderSwap(j.swap);
+          $('swap-out').textContent = JSON.stringify(j, null, 2);
+        } else {
+          $('swap-out').textContent = JSON.stringify(j, null, 2);
+          await loadSwap();
+        }
+      } catch (e) {
+        $('swap-out').textContent = String(e);
+        $('swap-summary').innerHTML = '<span class="bad">' + e + '</span>';
+      }
+    }
+
     $('swap-load').onclick = loadSwap;
+    $('swap-init').onclick = async () => {
+      const id = $('swap-id').value.trim();
+      if (!id) { $('swap-out').textContent = 'enter a new swap id'; return; }
+      const body = {
+        id,
+        csv_delay: Number($('swap-csv').value) || 6,
+        alice_btc: $('swap-alice').value.trim() || 'btc-alice',
+        bob_lq: $('swap-bob').value.trim() || 'bob',
+      };
+      $('swap-out').textContent = 'Init…';
+      try {
+        const r = await fetch('/v1/swap/init', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.statusText);
+        if (j.swap) renderSwap(j.swap);
+        $('swap-out').textContent = JSON.stringify(j, null, 2);
+      } catch (e) {
+        $('swap-out').textContent = String(e);
+        $('swap-summary').innerHTML = '<span class="bad">' + e + '</span>';
+      }
+    };
     $('swap-list').onclick = async () => {
       try {
         const r = await fetch('/v1/swaps');
@@ -279,7 +369,7 @@
         $('swap-out').textContent = JSON.stringify(j, null, 2);
         $('swap-summary').innerHTML = ids.length
           ? `<span class="muted">Click an id:</span> ` + ids.map(id =>
-              `<a href="?swap=${encodeURIComponent(id)}" data-id="${id}">${id}</a>`).join(' · ')
+              `<a href="?swap=${encodeURIComponent(id)}&tab=swap" data-id="${id}">${id}</a>`).join(' · ')
           : '<span class="muted">No swaps under .rgbmvp/swaps/</span>';
         $('swap-summary').querySelectorAll('a[data-id]').forEach(a => {
           a.onclick = (ev) => {
