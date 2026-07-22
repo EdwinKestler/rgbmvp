@@ -1,4 +1,4 @@
-//! `lab-simp` — drive C0 RGB-anchor + C1 mint-gate Simplicity covenants.
+//! `lab-simp` — drive C0 RGB-anchor + C1/C2 mint-gate Simplicity covenants.
 
 use std::path::PathBuf;
 
@@ -6,14 +6,15 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use lab_simplicity::{
     address_info, args_expected_hash_json, build_mint_spend, build_spend, compile_src,
-    demo_address_info, mint_gate_args_json, resolve_mint_gate_program, resolve_rgb_anchor_program,
-    reverse_hex_bytes, sha256_spk_hex, witness_json, MintSpendRequest, SpendRequest,
+    demo_address_info, empty_spk_hash_hex, mint_gate_args_json, resolve_mint_gate_program,
+    resolve_rgb_anchor_program, reverse_hex_bytes, sha256_spk_hex, witness_json, MintSpendRequest,
+    SpendRequest,
 };
 
 #[derive(Parser, Debug)]
 #[command(
     name = "lab-simp",
-    about = "P2 Simplicity covenants: C0 anchor + C1 mint-gate (Path A)"
+    about = "P2 Simplicity covenants: C0 anchor + C1 vault / C2 burn mint-gate (Path A)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -34,10 +35,13 @@ enum Cmd {
         /// C1: vault scriptPubKey hex → VAULT_SPK_HASH.
         #[arg(long)]
         vault_spk: Option<String>,
-        /// C1: backing asset id (display hex; byte-reversed into args).
+        /// C2 burn: bake empty-script hash as VAULT_SPK_HASH (provably unspendable burn).
+        #[arg(long, default_value_t = false)]
+        burn: bool,
+        /// C1/C2: backing asset id (display hex; byte-reversed into args).
         #[arg(long)]
         backing_asset: Option<String>,
-        /// C1: tranche (asset sats locked per mint).
+        /// C1/C2: tranche (asset sats locked or burned per mint).
         #[arg(long)]
         tranche: Option<u64>,
     },
@@ -113,6 +117,9 @@ enum Cmd {
         key_label: String,
         #[arg(long)]
         vault_spk_out: Option<String>,
+        /// C2: burn TRANCHE of BACKING_ASSET to empty SPK (not vault lock).
+        #[arg(long, default_value_t = false)]
+        burn: bool,
         #[arg(long)]
         recipient_spk: String,
         #[arg(long, default_value_t = 5_000)]
@@ -123,7 +130,7 @@ enum Cmd {
         lbtc_asset: String,
         #[arg(long)]
         genesis_hash: String,
-        /// none | drop-anchor | wrong-amount | no-recreate
+        /// none | drop-anchor | wrong-amount | no-recreate | not-burn (C2)
         #[arg(long, default_value = "none")]
         tamper: String,
     },
@@ -144,14 +151,20 @@ fn load_mint_args(
     vault_spk: Option<String>,
     backing_asset: Option<String>,
     tranche: Option<u64>,
+    burn: bool,
 ) -> Result<String> {
     if let Some(p) = args {
         return std::fs::read_to_string(p).context("read args file");
     }
-    let vault = vault_spk.context("provide --args or --vault-spk + --backing-asset + --tranche")?;
     let asset = backing_asset.context("provide --backing-asset")?;
     let t = tranche.context("provide --tranche")?;
-    let vault_hash = sha256_spk_hex(&vault)?;
+    let vault_hash = if burn {
+        empty_spk_hash_hex()
+    } else {
+        let vault =
+            vault_spk.context("provide --args or --vault-spk + --backing-asset + --tranche")?;
+        sha256_spk_hex(&vault)?
+    };
     let asset_le = reverse_hex_bytes(&asset)?;
     mint_gate_args_json(&vault_hash, &asset_le, t)
 }
@@ -177,10 +190,12 @@ fn main() -> Result<()> {
             args,
             hash,
             vault_spk,
+            burn,
             backing_asset,
             tranche,
         } => {
-            let is_mint = vault_spk.is_some() || backing_asset.is_some() || tranche.is_some();
+            let is_mint =
+                burn || vault_spk.is_some() || backing_asset.is_some() || tranche.is_some();
             let program = program.unwrap_or_else(|| {
                 if is_mint {
                     resolve_mint_gate_program()
@@ -192,7 +207,7 @@ fn main() -> Result<()> {
                 // Prefer mint path when mint flags set; else if only --args, compile as-is
                 // with default program still C0 unless program points to mint gate.
                 if is_mint {
-                    load_mint_args(args, vault_spk, backing_asset, tranche)?
+                    load_mint_args(args, vault_spk, backing_asset, tranche, burn)?
                 } else if let Some(p) = args {
                     std::fs::read_to_string(p)?
                 } else {
@@ -266,6 +281,7 @@ fn main() -> Result<()> {
             fee_input_sat,
             key_label,
             vault_spk_out,
+            burn,
             recipient_spk,
             recipient_sat,
             fee_sat,
@@ -274,16 +290,25 @@ fn main() -> Result<()> {
             tamper,
         } => {
             let program = program.unwrap_or_else(resolve_mint_gate_program);
-            let vault_out = vault_spk_out
-                .clone()
-                .or_else(|| vault_spk.clone())
-                .context("provide --vault-spk-out or --vault-spk for vault output")?;
+            let vault_out = if burn {
+                String::new()
+            } else {
+                vault_spk_out
+                    .clone()
+                    .or_else(|| vault_spk.clone())
+                    .context("provide --vault-spk-out or --vault-spk for vault output (or --burn)")?
+            };
             let backing = backing_asset
                 .clone()
                 .context("provide --backing-asset")?;
             let tranche_v = tranche.context("provide --tranche")?;
-            let vault_for_args = vault_spk.or(vault_spk_out);
-            let args_json = load_mint_args(args, vault_for_args, Some(backing.clone()), Some(tranche_v))?;
+            let vault_for_args = if burn {
+                Some(String::new())
+            } else {
+                vault_spk.or(vault_spk_out)
+            };
+            let args_json =
+                load_mint_args(args, vault_for_args, Some(backing.clone()), Some(tranche_v), burn)?;
             let hex_tx = build_mint_spend(&MintSpendRequest {
                 program_path: program,
                 args_json,

@@ -29,6 +29,33 @@ pub const GS_BACKING: GlobalStateType = GlobalStateType::with(3100);
 
 const TERMS_PREFIX: &str = "elements-backing:v1";
 
+/// How backing is proven on mint witnesses (committed in genesis terms).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum BackingMode {
+    /// C1: lock tranche to vault SPK.
+    #[default]
+    Lock,
+    /// C2: destroy tranche to empty (unspendable) SPK.
+    Burn,
+}
+
+impl BackingMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BackingMode::Lock => "lock",
+            BackingMode::Burn => "burn",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "lock" | "vault" => Ok(BackingMode::Lock),
+            "burn" => Ok(BackingMode::Burn),
+            other => anyhow::bail!("unknown backing mode {other:?} (lock|burn)"),
+        }
+    }
+}
+
 /// Contract-committed backing terms (part of contract id).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BackingTerms {
@@ -36,16 +63,19 @@ pub struct BackingTerms {
     pub backing_asset: elements::AssetId,
     pub rate_num: u64,
     pub rate_den: u64,
+    /// C1 lock (default) vs C2 burn — cannot silently switch after genesis.
+    pub mode: BackingMode,
 }
 
 impl BackingTerms {
     pub fn to_canonical(&self) -> String {
         format!(
-            "{TERMS_PREFIX};vault={};asset={};rate={}/{}",
+            "{TERMS_PREFIX};vault={};asset={};rate={}/{};mode={}",
             hex::encode(&self.vault_spk),
             self.backing_asset,
             self.rate_num,
-            self.rate_den
+            self.rate_den,
+            self.mode.as_str()
         )
     }
 
@@ -53,6 +83,7 @@ impl BackingTerms {
         let mut vault = None;
         let mut asset = None;
         let mut rate = None;
+        let mut mode = BackingMode::Lock;
         let mut parts = s.split(';');
         anyhow::ensure!(
             parts.next() == Some(TERMS_PREFIX),
@@ -68,16 +99,25 @@ impl BackingTerms {
                     let (n, d) = v.split_once('/').context("rate must be <num>/<den>")?;
                     rate = Some((n.parse::<u64>()?, d.parse::<u64>()?));
                 }
+                Some(("mode", v)) => mode = BackingMode::parse(v)?,
                 _ => anyhow::bail!("unknown backing terms field: {part}"),
             }
         }
         let (rate_num, rate_den) = rate.context("missing rate")?;
         anyhow::ensure!(rate_den > 0, "rate denominator must be non-zero");
+        let vault_spk = vault.context("missing vault")?;
+        if mode == BackingMode::Burn {
+            anyhow::ensure!(
+                vault_spk.is_empty(),
+                "mode=burn requires empty vault SPK (unspendable burn target)"
+            );
+        }
         Ok(Self {
-            vault_spk: vault.context("missing vault")?,
+            vault_spk,
             backing_asset: asset.context("missing asset")?,
             rate_num,
             rate_den,
+            mode,
         })
     }
 
@@ -411,9 +451,16 @@ pub fn audit_history(
             match audit_mint(&terms, &transition, &witness_tx) {
                 Ok(a) => {
                     backing_ok = true;
+                    let label = match terms.mode {
+                        BackingMode::Burn => "burned",
+                        BackingMode::Lock => "locked",
+                    };
                     detail.push_str(&format!(
-                        "backing ok (minted {} req {} locked {})",
-                        a.minted, a.required, a.locked
+                        "backing ok (minted {} req {} {label} {}; mode={})",
+                        a.minted,
+                        a.required,
+                        a.locked,
+                        terms.mode.as_str()
                     ));
                 }
                 Err(e) => {
@@ -597,6 +644,7 @@ mod tests {
                 .unwrap(),
             rate_num: 1,
             rate_den: 1,
+            mode: BackingMode::Lock,
         }
     }
 
@@ -605,7 +653,27 @@ mod tests {
         let t = demo_terms();
         let s = t.to_canonical();
         assert!(s.len() <= 255);
+        assert!(s.contains("mode=lock"));
         assert_eq!(BackingTerms::from_canonical(&s).unwrap(), t);
+    }
+
+    #[test]
+    fn burn_terms_require_empty_vault() {
+        let burn = BackingTerms {
+            vault_spk: vec![],
+            backing_asset: demo_terms().backing_asset,
+            rate_num: 1,
+            rate_den: 1,
+            mode: BackingMode::Burn,
+        };
+        let s = burn.to_canonical();
+        assert!(s.contains("mode=burn"));
+        assert_eq!(BackingTerms::from_canonical(&s).unwrap(), burn);
+        let bad = format!(
+            "{TERMS_PREFIX};vault=0014aa;asset={};rate=1/1;mode=burn",
+            burn.backing_asset
+        );
+        assert!(BackingTerms::from_canonical(&bad).is_err());
     }
 
     #[test]

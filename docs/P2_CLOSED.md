@@ -28,7 +28,7 @@ Per [SCENARIOS.md](./SCENARIOS.md) / [P2_PLAN.md](./P2_PLAN.md):
 
 | Item | Note |
 |------|------|
-| C2 burn mint-gate | Optional variant |
+| C2 burn mint-gate | **CLOSED** — [C2_CLOSED.md](./C2_CLOSED.md) |
 | C4 staking covenant | Stretch |
 | C5 LiquiDEX comparison | Docs only |
 | Public Liquid Testnet Simplicity/BFA | Feature probe later |
@@ -41,4 +41,4 @@ Per [SCENARIOS.md](./SCENARIOS.md) / [P2_PLAN.md](./P2_PLAN.md):
 2. **P1** — Twin HTLC swap without custodian.  
 3. **P2** — Chain-enforced seal policy (Simplicity) **and** oracle-free backed-asset audit (BFA).  
 
-Next track: **P3** browser UI on shared `/v1`, or optional C2/C4 research.
+Next track historically: **P3** (done). Protocol extension: **C4** staking · **U4** security ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)).

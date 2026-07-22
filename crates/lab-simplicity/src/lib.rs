@@ -60,11 +60,29 @@ pub fn reverse_hex_bytes(hex_str: &str) -> Result<String> {
     Ok(hex::encode(rev))
 }
 
-/// SHA256 of a scriptPubKey (hex) → vault hash param.
+/// SHA256 of a scriptPubKey (hex) → vault/burn hash param.
+/// Empty hex or the token `burn` (C2) hashes the empty script → provably unspendable.
 pub fn sha256_spk_hex(spk_hex: &str) -> Result<String> {
     use elements::hashes::{sha256, Hash};
-    let bytes = hex::decode(spk_hex.trim().trim_start_matches("0x")).context("spk hex")?;
+    let t = spk_hex.trim().trim_start_matches("0x");
+    let bytes = if t.is_empty() || t.eq_ignore_ascii_case("burn") {
+        Vec::new()
+    } else {
+        hex::decode(t).context("spk hex")?
+    };
     Ok(hex::encode(sha256::Hash::hash(&bytes).as_byte_array()))
+}
+
+/// SHA256 of the empty script (Elements unspendable / fee-shaped SPK).
+/// Used as `VAULT_SPK_HASH` for C2 burn mint-gate (tranche destroyed, not locked).
+pub fn empty_spk_hash_hex() -> String {
+    use elements::hashes::{sha256, Hash};
+    hex::encode(sha256::Hash::hash(&[]).as_byte_array())
+}
+
+/// C2 burn target: empty scriptPubKey (provably unspendable).
+pub fn burn_spk_bytes() -> Vec<u8> {
+    Vec::new()
 }
 
 /// Mint-gate `param::` JSON: VAULT_SPK_HASH, BACKING_ASSET (LE), TRANCHE.
@@ -449,7 +467,12 @@ pub fn build_mint_spend(req: &MintSpendRequest) -> Result<String> {
     let lbtc: AssetId = req.lbtc_asset.parse().context("lbtc asset id")?;
     let backing: AssetId = req.backing_asset.parse().context("backing asset id")?;
     let genesis: elements::BlockHash = req.genesis_hash.parse().context("genesis hash")?;
-    let vault = hex::decode(req.vault_spk_hex.trim()).context("vault spk hex")?;
+    let vault_hex = req.vault_spk_hex.trim().trim_start_matches("0x");
+    let vault = if vault_hex.is_empty() || vault_hex.eq_ignore_ascii_case("burn") {
+        burn_spk_bytes()
+    } else {
+        hex::decode(vault_hex).context("vault spk hex")?
+    };
     let recipient = hex::decode(req.recipient_spk_hex.trim()).context("recipient spk hex")?;
 
     let change_sat = req
@@ -539,7 +562,11 @@ pub fn build_mint_spend(req: &MintSpendRequest) -> Result<String> {
             tx.output
                 .push(out(backing, 1, funding_spk.clone()));
         }
-        other => bail!("unknown tamper mode: {other}"),
+        // C2: covenant expects empty (burn) SPK; pay vault/key instead → consensus reject.
+        "not-burn" => {
+            tx.output[1].script_pubkey = funding_spk.clone();
+        }
+        other => bail!("unknown tamper mode: {other} (use none|drop-anchor|wrong-amount|no-recreate|not-burn)"),
     }
 
     tx.input[0].witness.script_witness = vec![
@@ -638,5 +665,26 @@ mod tests {
         let parts = taproot_parts(&c1).unwrap();
         assert_eq!(parts.control_block.leaf_version.as_u8(), 0xbe);
         assert!(parts.address.to_string().starts_with("ert1p"));
+    }
+
+    #[test]
+    fn c2_burn_empty_spk_hash_is_stable() {
+        let h = empty_spk_hash_hex();
+        assert_eq!(h.len(), 64);
+        assert_eq!(h, sha256_spk_hex("").unwrap());
+        assert_eq!(h, sha256_spk_hex("burn").unwrap());
+        // Known SHA256("")
+        assert_eq!(
+            h,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        let asset = "cc".repeat(32);
+        let args_lock = mint_gate_args_json(&"aa".repeat(32), &asset, 250_000).unwrap();
+        let args_burn = mint_gate_args_json(&h, &asset, 250_000).unwrap();
+        let src = std::fs::read_to_string(bundled_mint_gate_program()).unwrap();
+        let lock = compile_src(&src, &args_lock).unwrap();
+        let burn = compile_src(&src, &args_burn).unwrap();
+        // Different burn vs vault targets → different gate addresses.
+        assert_ne!(lock.commit().cmr(), burn.commit().cmr());
     }
 }

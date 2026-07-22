@@ -8,17 +8,18 @@ Historical phase closures (P1–P3) remain valid evidence of what was proven. Th
 | Priority | Track | When |
 |----------|--------|------|
 | 0 | Doc honesty + ADRs | Now |
-| 1 | **S3** RGB-wrapped claim (CLI done; live proof optional) | Main protocol track |
-| 2 | **C2** burn mint-gate (regtest) | After short C2 ADR; can trail S3 |
-| 3 | **C4** staking research freeze → implement | After ADR-C4; last protocol track |
+| 1 | **S3** RGB-wrapped claim (CLI + live proof) | Done — [S3_RGB_WRAP.md](./S3_RGB_WRAP.md) |
+| 2 | **C2** burn mint-gate (regtest) | **Done** — [C2_CLOSED.md](./C2_CLOSED.md) |
+| 3 | **C4** staking research freeze → implement | Next protocol track |
 | 4 | **U4** public-hosting security foundation | Parallel design OK; **must finish before any public bind** |
 | 5 | Independent review + public **read-only** demo | After U4 acceptance |
 
 ```text
 Localhost / public testnet (operator)
    │
-   ├─► S3 RGB-wrapped claim     ◄── protocol completeness (NOW)
-   ├─► C2 burn · C4 stake       ◄── regtest protocol depth
+   ├─► S3 RGB-wrapped claim     ◄── done (CLI + live)
+   ├─► C2 burn mint-gate        ◄── done (regtest)
+   ├─► C4 stake                 ◄── next protocol depth
    │
    └─► U4 security (must complete before)
               │
@@ -53,14 +54,15 @@ Localhost / public testnet (operator)
 | Done | Value claims **and** both RGB `anchor_verify` valid |
 | Regression | Keep `rgb_wrap=false` value-only path |
 
-#### ADR-C2 — Burn mint-gate
+#### ADR-C2 — Burn mint-gate (**accepted · implemented**)
 
-| Topic | Working default |
-|-------|-----------------|
-| Burn | Explicit asset + exact tranche + **provably unspendable** output |
-| Anchor | Prefer dual-role OP_RETURN only if jets can enforce both shape and burn; else separate outputs documented in ADR |
-| Gate | Recreate gate (same as C1) unless ADR decides one-shot gate |
-| BFA | `backing_mode=burn` committed in genesis terms (cannot silently switch to lock) |
+| Topic | Decision |
+|-------|----------|
+| Burn | Explicit asset + exact tranche to **empty SPK** (SHA256∅ baked as `VAULT_SPK_HASH`) |
+| Anchor | **Separate** opret vout0 (not dual-role OP_RETURN) |
+| Gate | Recreate gate (same C1 program + recursion) |
+| BFA | `mode=burn` + empty `vault=` in `elements-backing:v1` terms |
+| Evidence | [C2_CLOSED.md](./C2_CLOSED.md) · `./scripts/demo_c2_mint_gate_burn.sh` |
 
 #### ADR-C4 — Time-locked staking
 
@@ -139,7 +141,7 @@ MVP before “full Axum rewrite” if needed: loopback RPC ports, mutation flag,
 
 1. ~~Lock strategy: protocol first, localhost.~~  
 2. ~~Reconcile S3/U4 in SCENARIOS + this roadmap.~~  
-3. ~~Implement **S3** CLI (funding seal = HTLC, claim multi-output + plan, extract-preimage).~~ → [S3_RGB_WRAP.md](./S3_RGB_WRAP.md)  
-4. Operator live testnet proof for S3 (optional) + negative tests as CI allows.  
-5. Keep U4 checklist ready; do U4 engineering before any public demo.  
-6. C2 after ADR; C4 after research freeze.  
+3. ~~Implement **S3** CLI + live proof.~~ → [S3_RGB_WRAP.md](./S3_RGB_WRAP.md)  
+4. ~~**C2** burn mint-gate on regtest.~~ → [C2_CLOSED.md](./C2_CLOSED.md)  
+5. **C4** staking: research freeze then implement.  
+6. Keep U4 checklist ready; do U4 engineering before any public demo.  

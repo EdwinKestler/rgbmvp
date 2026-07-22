@@ -63,6 +63,6 @@ Re-run:
 
 ## Next
 
-- C2 burn mint-gate variant (optional)  
-- C3 BFA schema + audit  
-- Optional `/v1/covenant/*`  
+- ~~C2 burn mint-gate~~ → [C2_CLOSED.md](./C2_CLOSED.md)  
+- ~~C3 BFA schema + audit~~ → [C3_CLOSED.md](./C3_CLOSED.md)  
+- C4 staking · U4 public security gate · Optional `/v1/covenant/*`  
