@@ -197,27 +197,146 @@ pub fn plan_transfer(
     ticker: &str,
     chain: &str,
 ) -> Result<TransferPlan> {
-    if send == 0 || send > supply {
-        anyhow::bail!("send amount must be in 1..={supply}");
-    }
-    let chain_net = parse_chain_net(chain)?;
-    let contract_id = parse_contract_id(contract_id_s)?;
     let bob_seal = placeholder_outpoint(bob_label);
     let change_seal = placeholder_outpoint(change_label);
-    let change_amount = supply - send;
-
-    let (bundle_id, transition) = rgb20::build_transfer(
-        contract_id,
+    plan_transfer_core(
+        contract_id_s,
+        None,
+        0,
         supply,
         send,
-        bob_seal,
-        if change_amount > 0 {
-            Some(change_seal)
+        alice_seal_s,
+        rgb20::SealTarget::Outpoint(bob_seal),
+        if supply > send {
+            Some(rgb20::SealTarget::Outpoint(change_seal))
         } else {
             None
         },
+        internal_key_hex,
+        entropy,
+        ticker,
+        chain,
+    )
+}
+
+/// Plan a transfer that assigns `send` units to a **known** outpoint (e.g. HTLC fund).
+/// Used by S3 fund-wrap: RGB rights move onto the HTLC UTXO after value fund.
+pub fn plan_transfer_to_seal(
+    contract_id_s: &str,
+    prev_amount: u64,
+    send: u64,
+    alice_seal_s: &str,
+    bob_seal_s: &str,
+    change_seal_s: Option<&str>,
+    internal_key_hex: &str,
+    entropy: u64,
+    ticker: &str,
+    chain: &str,
+) -> Result<TransferPlan> {
+    let bob = parse_outpoint(bob_seal_s)?;
+    let change = match change_seal_s {
+        Some(s) if prev_amount > send => Some(rgb20::SealTarget::Outpoint(parse_outpoint(s)?)),
+        _ => None,
+    };
+    plan_transfer_core(
+        contract_id_s,
+        None,
         0,
-    )?;
+        prev_amount,
+        send,
+        alice_seal_s,
+        rgb20::SealTarget::Outpoint(bob),
+        change,
+        internal_key_hex,
+        entropy,
+        ticker,
+        chain,
+    )
+}
+
+/// Plan an RGB claim re-seat: close HTLC-bound seal, create successor on the
+/// claim witness (`WitnessTx` vout). `prev_opid_hex` is the fund-wrap transition.
+pub fn plan_claim_transfer(
+    contract_id_s: &str,
+    prev_opid_hex: &str,
+    prev_opout_no: u16,
+    prev_amount: u64,
+    send: u64,
+    alice_seal_s: &str,
+    recipient_vout: u32,
+    change_vout: Option<u32>,
+    internal_key_hex: &str,
+    entropy: u64,
+    ticker: &str,
+    chain: &str,
+) -> Result<TransferPlan> {
+    let prev_opid = rgbcore::OpId::from(parse32_hex(prev_opid_hex, "prev_opid")?);
+    let change = change_vout.map(|v| rgb20::SealTarget::WitnessVout {
+        vout: v,
+        blinding: 1,
+    });
+    plan_transfer_core(
+        contract_id_s,
+        Some(prev_opid),
+        prev_opout_no,
+        prev_amount,
+        send,
+        alice_seal_s,
+        rgb20::SealTarget::WitnessVout {
+            vout: recipient_vout,
+            blinding: 0,
+        },
+        change,
+        internal_key_hex,
+        entropy,
+        ticker,
+        chain,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_transfer_core(
+    contract_id_s: &str,
+    prev_opid: Option<rgbcore::OpId>,
+    prev_opout_no: u16,
+    prev_amount: u64,
+    send: u64,
+    alice_seal_s: &str,
+    bob_target: rgb20::SealTarget,
+    change_target: Option<rgb20::SealTarget>,
+    internal_key_hex: &str,
+    entropy: u64,
+    ticker: &str,
+    chain: &str,
+) -> Result<TransferPlan> {
+    if send == 0 || send > prev_amount {
+        anyhow::bail!("send amount must be in 1..={prev_amount}");
+    }
+    let chain_net = parse_chain_net(chain)?;
+    let contract_id = parse_contract_id(contract_id_s)?;
+    let change_amount = prev_amount - send;
+
+    let (bundle_id, transition) = if let Some(opid) = prev_opid {
+        rgb20::build_transfer_from(
+            contract_id,
+            opid,
+            prev_opout_no,
+            prev_amount,
+            send,
+            bob_target,
+            change_target,
+            0,
+        )?
+    } else {
+        rgb20::build_transfer(
+            contract_id,
+            prev_amount,
+            send,
+            bob_target,
+            change_target,
+            0,
+        )?
+    };
 
     let p = parse32_hex(internal_key_hex, "internal_key")?;
     let pid = contract_id.to_byte_array();
@@ -245,8 +364,10 @@ pub fn plan_transfer(
         send_amount: send,
         change_amount,
         alice_seal: alice_seal_s.into(),
-        bob_seal_placeholder: format!("{}:{}", bob_seal.txid, bob_seal.vout),
-        change_seal_placeholder: format!("{}:{}", change_seal.txid, change_seal.vout),
+        bob_seal_placeholder: bob_target.display(),
+        change_seal_placeholder: change_target
+            .map(|t| t.display())
+            .unwrap_or_else(|| "none".into()),
         bundle_id_hex: hex::encode(bundle_id.to_byte_array()),
         transition_opid_hex: hex::encode(transition.commit_id().to_byte_array()),
         mpc_root_hex: hex::encode(root),
@@ -344,4 +465,58 @@ pub fn verify_against_witness(
             witness.txid
         )),
     })
+}
+
+#[cfg(test)]
+mod s3_plan_tests {
+    use super::*;
+
+    #[test]
+    fn plan_to_seal_and_claim_chain() {
+        let seal = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0";
+        let htlc = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:1";
+        let iss = issue_nia(&IssueRequest {
+            name: "S3Asset".into(),
+            ticker: "s3a".into(),
+            supply: 5000,
+            seal: seal.into(),
+            chain: "liquid-testnet".into(),
+        })
+        .unwrap();
+        let fund = plan_transfer_to_seal(
+            &iss.contract_id,
+            5000,
+            5000,
+            seal,
+            htlc,
+            None,
+            DEMO_INTERNAL_XONLY_HEX,
+            7,
+            "s3a",
+            "liquid-testnet",
+        )
+        .unwrap();
+        assert_eq!(fund.bob_seal_placeholder, htlc);
+        assert_eq!(fund.send_amount, 5000);
+        assert!(fund.tapret_address.starts_with("tex1") || fund.tapret_address.starts_with("tlq"));
+
+        let claim = plan_claim_transfer(
+            &iss.contract_id,
+            &fund.transition_opid_hex,
+            0,
+            5000,
+            5000,
+            htlc,
+            1,
+            None,
+            DEMO_INTERNAL_XONLY_HEX,
+            8,
+            "s3a",
+            "liquid-testnet",
+        )
+        .unwrap();
+        assert!(claim.bob_seal_placeholder.starts_with("witness:1:"));
+        assert_ne!(claim.bundle_id_hex, fund.bundle_id_hex);
+        assert_ne!(claim.commitment_spk_hex, fund.commitment_spk_hex);
+    }
 }

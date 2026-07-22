@@ -8,7 +8,7 @@ Historical phase closures (P1–P3) remain valid evidence of what was proven. Th
 | Priority | Track | When |
 |----------|--------|------|
 | 0 | Doc honesty + ADRs | Now |
-| 1 | **S3** RGB-wrapped claim (CLI, testnet/localhost) | Main protocol track |
+| 1 | **S3** RGB-wrapped claim (CLI done; live proof optional) | Main protocol track |
 | 2 | **C2** burn mint-gate (regtest) | After short C2 ADR; can trail S3 |
 | 3 | **C4** staking research freeze → implement | After ADR-C4; last protocol track |
 | 4 | **U4** public-hosting security foundation | Parallel design OK; **must finish before any public bind** |
@@ -35,7 +35,7 @@ Localhost / public testnet (operator)
 | ID | Correct status |
 |----|----------------|
 | **S2** | Script HTLC fund/claim/refund **live** (value path) |
-| **S3** | **Pending** — RGB-wrapped claim (preimage + close HTLC seal + re-anchor + verify). Value claim alone is **not** S3. |
+| **S3** | **CLI implemented** — see [S3_RGB_WRAP.md](./S3_RGB_WRAP.md). Live testnet happy-path still operator-run. Value claim alone is **not** S3. |
 | **P1 closed** | Still correct for **value** HTLC lab path; RGB-wrap was always deferred in [P1_CLOSED.md](./P1_CLOSED.md) |
 | **U4** | **New** — public hosting security gate (not a silent expansion of closed P3) |
 
@@ -139,6 +139,7 @@ MVP before “full Axum rewrite” if needed: loopback RPC ports, mutation flag,
 
 1. ~~Lock strategy: protocol first, localhost.~~  
 2. ~~Reconcile S3/U4 in SCENARIOS + this roadmap.~~  
-3. Implement **S3** CLI (funding seal = HTLC, claim multi-output + plan, extract-preimage).  
-4. Keep U4 checklist ready; do U4 engineering before any public demo.  
-5. C2 after ADR; C4 after research freeze.  
+3. ~~Implement **S3** CLI (funding seal = HTLC, claim multi-output + plan, extract-preimage).~~ → [S3_RGB_WRAP.md](./S3_RGB_WRAP.md)  
+4. Operator live testnet proof for S3 (optional) + negative tests as CI allows.  
+5. Keep U4 checklist ready; do U4 engineering before any public demo.  
+6. C2 after ADR; C4 after research freeze.  

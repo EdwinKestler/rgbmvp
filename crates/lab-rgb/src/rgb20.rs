@@ -95,6 +95,35 @@ pub fn issue(
     })
 }
 
+/// Where a transfer assigns a new RGB allocation.
+#[derive(Debug, Clone, Copy)]
+pub enum SealTarget {
+    /// Known outpoint (e.g. HTLC fund `txid:vout`).
+    Outpoint(OutPoint),
+    /// Same-tx seal on the witness that closes the previous seal (claim).
+    WitnessVout { vout: u32, blinding: u64 },
+}
+
+impl SealTarget {
+    pub fn to_graph_seal(self) -> GraphSeal {
+        match self {
+            SealTarget::Outpoint(op) => GraphSeal::with_blinding(op.txid, op.vout, 0u64),
+            SealTarget::WitnessVout { vout, blinding } => {
+                GraphSeal::with_blinded_vout(vout, blinding)
+            }
+        }
+    }
+
+    pub fn display(self) -> String {
+        match self {
+            SealTarget::Outpoint(op) => format!("{}:{}", op.txid, op.vout),
+            SealTarget::WitnessVout { vout, blinding } => {
+                format!("witness:{vout}:blind={blinding}")
+            }
+        }
+    }
+}
+
 /// Build an RGB20 transfer transition: spend Alice's initial allocation,
 /// create Bob's allocation + (optional) change back to Alice. Wrap in
 /// a single-transition `TransitionBundle` and return its `BundleId`.
@@ -107,8 +136,8 @@ pub fn build_transfer(
     contract_id: ContractId,
     initial_amount: u64,
     bob_amount: u64,
-    bob_seal_outpoint: OutPoint,
-    change_seal_outpoint: Option<OutPoint>,
+    bob_seal: SealTarget,
+    change_seal: Option<SealTarget>,
     alice_input_vin: u32,
 ) -> Result<(BundleId, Transition)> {
     // Genesis OpId shares its 32 bytes with the ContractId.
@@ -119,8 +148,8 @@ pub fn build_transfer(
         0,
         initial_amount,
         bob_amount,
-        bob_seal_outpoint,
-        change_seal_outpoint,
+        bob_seal,
+        change_seal,
         alice_input_vin,
     )
 }
@@ -137,8 +166,8 @@ pub fn build_transfer_from(
     prev_opout_no: u16,
     prev_amount: u64,
     bob_amount: u64,
-    bob_seal_outpoint: OutPoint,
-    change_seal_outpoint: Option<OutPoint>,
+    bob_seal: SealTarget,
+    change_seal: Option<SealTarget>,
     alice_input_vin: u32,
 ) -> Result<(BundleId, Transition)> {
     let schema = NonInflatableAsset::schema();
@@ -162,28 +191,31 @@ pub fn build_transfer_from(
         .map_err(|e| anyhow::anyhow!("add_input: {e:?}"))?;
 
     // Bob's allocation.
-    let bob_seal: GraphSeal =
-        GraphSeal::with_blinding(bob_seal_outpoint.txid, bob_seal_outpoint.vout, 0u64);
     builder = builder
         .add_fungible_state(
             FieldName::from("assetOwner"),
-            BuilderSeal::Revealed(bob_seal),
+            BuilderSeal::Revealed(bob_seal.to_graph_seal()),
             bob_amount,
         )
         .map_err(|e| anyhow::anyhow!("add_fungible_state (bob): {e:?}"))?;
 
     // Change back to Alice (if any).
-    if let Some(change_op) = change_seal_outpoint {
+    if let Some(change_target) = change_seal {
         let change_amount = prev_amount
             .checked_sub(bob_amount)
             .context("change amount underflow")?;
         if change_amount > 0 {
-            let change_seal: GraphSeal =
-                GraphSeal::with_blinding(change_op.txid, change_op.vout, 1u64);
+            // Re-bind change seal with blinding=1 if caller used Outpoint with 0.
+            let change_gs = match change_target {
+                SealTarget::Outpoint(op) => GraphSeal::with_blinding(op.txid, op.vout, 1u64),
+                SealTarget::WitnessVout { vout, blinding } => {
+                    GraphSeal::with_blinded_vout(vout, if blinding == 0 { 1 } else { blinding })
+                }
+            };
             builder = builder
                 .add_fungible_state(
                     FieldName::from("assetOwner"),
-                    BuilderSeal::Revealed(change_seal),
+                    BuilderSeal::Revealed(change_gs),
                     change_amount,
                 )
                 .map_err(|e| anyhow::anyhow!("add_fungible_state (change): {e:?}"))?;
@@ -286,8 +318,8 @@ mod tests {
             issuance.contract_id,
             issuance.initial_amount,
             600_000,
-            fake_outpoint(0xBB),       // bob's seal
-            Some(fake_outpoint(0xCC)), // alice's change seal
+            SealTarget::Outpoint(fake_outpoint(0xBB)),
+            Some(SealTarget::Outpoint(fake_outpoint(0xCC))),
             0,
         )
         .expect("transfer");
@@ -304,11 +336,36 @@ mod tests {
             issuance.contract_id,
             issuance.initial_amount,
             600_000,
-            fake_outpoint(0xBB),
-            Some(fake_outpoint(0xCC)),
+            SealTarget::Outpoint(fake_outpoint(0xBB)),
+            Some(SealTarget::Outpoint(fake_outpoint(0xCC))),
             0,
         )
         .expect("transfer 2");
         assert_eq!(bundle_id, bundle_id_2);
+    }
+
+    #[test]
+    fn witness_vout_seal_builds() {
+        let issuance = issue(
+            ChainNet::LiquidTestnet,
+            "S3Claim",
+            "s3c",
+            1000,
+            fake_outpoint(0x11),
+        )
+        .expect("issue");
+        let (bundle_id, _) = build_transfer(
+            issuance.contract_id,
+            1000,
+            1000,
+            SealTarget::WitnessVout {
+                vout: 1,
+                blinding: 0,
+            },
+            None,
+            0,
+        )
+        .expect("claim-style transfer");
+        assert!(bundle_id.to_byte_array().iter().any(|b| *b != 0));
     }
 }

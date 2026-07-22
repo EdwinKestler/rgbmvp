@@ -107,7 +107,7 @@ BTC fixture: [`fixtures/testnet_btc.json`](../fixtures/testnet_btc.json).
 | S1 HTLC addresses | **Done** — dual HTLC (BTC claimer=bob, LQ claimer=alice) |
 | S2 fund both | **Live** — `swap fund-btc` + `swap fund-lq` |
 | S2 claim (value HTLC) | **Live** — Alice `claim-lq` then Bob `claim-btc` → **phase=done** (Script HTLC only) |
-| S3 RGB-wrapped claim | **Pending** — preimage + close HTLC-bound RGB seal + re-anchor + verify (see [ROADMAP_NEXT.md](./ROADMAP_NEXT.md)) |
+| S3 RGB-wrapped claim | **CLI implemented** — [S3_RGB_WRAP.md](./S3_RGB_WRAP.md); fund-wrap + multi-out claim + extract-preimage; live testnet proof operator-run |
 | S4 coordinator | CLI session under `.rgbmvp/swaps/` (+ P3 guided UI) |
 | S2 refund | **CLI done** — `swap refund-btc` / `swap refund-lq` (CSV mature) |
 | S5 round-trip | Deferred |

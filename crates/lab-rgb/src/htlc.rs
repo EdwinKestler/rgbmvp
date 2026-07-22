@@ -158,10 +158,45 @@ pub fn build_htlc_spend_btc(
     csv_delay: u32,
     signer_sk: &SecretKey,
 ) -> Result<String> {
-    if output_value_sat >= input_value_sat {
-        bail!("output must leave room for fee");
+    build_htlc_spend_btc_outs(
+        prev_txid,
+        prev_vout,
+        input_value_sat,
+        &[(output_value_sat, dest_spk)],
+        witness_script,
+        spend,
+        csv_delay,
+        signer_sk,
+    )
+}
+
+/// Multi-output BTC HTLC spend (S3: vout0=tapret commitment, vout1=claimer).
+#[allow(clippy::too_many_arguments)]
+pub fn build_htlc_spend_btc_outs(
+    prev_txid: &str,
+    prev_vout: u32,
+    input_value_sat: u64,
+    outputs: &[(u64, &[u8])],
+    witness_script: &[u8],
+    spend: HtlcSpend,
+    csv_delay: u32,
+    signer_sk: &SecretKey,
+) -> Result<String> {
+    if outputs.is_empty() {
+        bail!("need at least one output");
+    }
+    let out_sum: u64 = outputs.iter().map(|(v, _)| *v).sum();
+    if out_sum >= input_value_sat {
+        bail!("outputs must leave room for fee ({out_sum} >= {input_value_sat})");
     }
     let prev_txid: Txid = prev_txid.parse().context("prev_txid")?;
+    let tx_outs: Vec<TxOut> = outputs
+        .iter()
+        .map(|(v, spk)| TxOut {
+            value: Amount::from_sat(*v),
+            script_pubkey: ScriptBuf::from_bytes(spk.to_vec()),
+        })
+        .collect();
     let mut tx = Transaction {
         version: Version::TWO,
         lock_time: LockTime::ZERO,
@@ -171,10 +206,7 @@ pub fn build_htlc_spend_btc(
             sequence: Sequence::from_consensus(htlc_sequence(&spend, csv_delay)),
             witness: Witness::new(),
         }],
-        output: vec![TxOut {
-            value: Amount::from_sat(output_value_sat),
-            script_pubkey: ScriptBuf::from_bytes(dest_spk.to_vec()),
-        }],
+        output: tx_outs,
     };
 
     let sighash = SighashCache::new(&tx)
@@ -197,6 +229,56 @@ pub fn build_htlc_spend_btc(
     Ok(serialize_hex(&tx))
 }
 
+/// Extract 32-byte preimage from a claim witness stack
+/// (`[sig, preimage, 0x01, witness_script]`).
+pub fn extract_preimage_from_witness_stack(stack: &[Vec<u8>]) -> Result<[u8; 32]> {
+    // Claim path has 4 items; refund has 3 (sig, empty, script).
+    if stack.len() < 4 {
+        bail!(
+            "witness stack too short for claim (got {} items; need sig+preimage+IF+script)",
+            stack.len()
+        );
+    }
+    let preimage = &stack[1];
+    if preimage.len() != 32 {
+        bail!(
+            "preimage stack item must be 32 bytes, got {}",
+            preimage.len()
+        );
+    }
+    // Optional: check IF branch marker is non-empty (true).
+    if stack[2].is_empty() {
+        bail!("witness looks like refund (empty IF branch), not claim");
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(preimage);
+    Ok(out)
+}
+
+/// Parse bitcoin consensus-encoded tx hex and extract claim preimage from vin0.
+pub fn extract_preimage_from_btc_tx_hex(tx_hex: &str) -> Result<[u8; 32]> {
+    use bitcoin::consensus::encode::deserialize;
+    let raw = hex::decode(tx_hex.trim()).context("tx hex")?;
+    let tx: Transaction = deserialize(&raw).context("deserialize bitcoin tx")?;
+    if tx.input.is_empty() {
+        bail!("tx has no inputs");
+    }
+    let stack: Vec<Vec<u8>> = tx.input[0].witness.to_vec();
+    extract_preimage_from_witness_stack(&stack)
+}
+
+/// Parse Elements tx hex and extract claim preimage from vin0.
+pub fn extract_preimage_from_liquid_tx_hex(tx_hex: &str) -> Result<[u8; 32]> {
+    use elements::encode::deserialize;
+    let raw = hex::decode(tx_hex.trim()).context("tx hex")?;
+    let tx: elements::Transaction = deserialize(&raw).context("deserialize elements tx")?;
+    if tx.input.is_empty() {
+        bail!("tx has no inputs");
+    }
+    let stack = &tx.input[0].witness.script_witness;
+    extract_preimage_from_witness_stack(stack)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +297,45 @@ mod tests {
         let s = [0x11u8; 32];
         assert_ne!(sha256_preimage(&s), [0u8; 32]);
     }
+
+    #[test]
+    fn extract_preimage_from_stack() {
+        let pre = [0xABu8; 32];
+        let stack = vec![
+            vec![0x30, 0x01], // fake sig
+            pre.to_vec(),
+            vec![0x01],
+            vec![0x63], // fake script
+        ];
+        assert_eq!(extract_preimage_from_witness_stack(&stack).unwrap(), pre);
+    }
+
+    #[test]
+    fn multi_out_btc_claim_builds() {
+        let h = [0x42u8; 32];
+        let info = build_htlc_addresses(&h, "claimer", "refund", 6).unwrap();
+        let (sk, _) = demo_keypair("claimer").unwrap();
+        let pre = [0x11u8; 32];
+        let ws = hex::decode(&info.witness_script_hex).unwrap();
+        let dest = p2wsh_spk(&ws); // reuse as dummy dest
+        let commit = vec![0x51, 0x20];
+        let mut commit_spk = commit;
+        commit_spk.extend_from_slice(&[0x22u8; 32]);
+        let hex_tx = build_htlc_spend_btc_outs(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            0,
+            10_000,
+            &[(500, commit_spk.as_slice()), (9_000, dest.as_slice())],
+            &ws,
+            HtlcSpend::Claim { preimage: &pre },
+            6,
+            &sk,
+        )
+        .unwrap();
+        assert!(!hex_tx.is_empty());
+        let got = extract_preimage_from_btc_tx_hex(&hex_tx).unwrap();
+        assert_eq!(got, pre);
+    }
 }
 
 /// Build + sign Elements/Liquid HTLC claim/refund (explicit L-BTC only).
@@ -232,6 +353,34 @@ pub fn build_htlc_spend_liquid(
     csv_delay: u32,
     signer_sk: &SecretKey,
 ) -> Result<String> {
+    build_htlc_spend_liquid_outs(
+        prev_txid,
+        prev_vout,
+        input_value_sat,
+        &[(output_value_sat, dest_spk)],
+        fee_sat,
+        lbtc_asset_hex,
+        witness_script,
+        spend,
+        csv_delay,
+        signer_sk,
+    )
+}
+
+/// Multi-output Liquid HTLC spend (S3: vout0=tapret, vout1=claimer, + fee out).
+#[allow(clippy::too_many_arguments)]
+pub fn build_htlc_spend_liquid_outs(
+    prev_txid: &str,
+    prev_vout: u32,
+    input_value_sat: u64,
+    outputs: &[(u64, &[u8])],
+    fee_sat: u64,
+    lbtc_asset_hex: &str,
+    witness_script: &[u8],
+    spend: HtlcSpend,
+    csv_delay: u32,
+    signer_sk: &SecretKey,
+) -> Result<String> {
     use elements::confidential::{Asset, Nonce, Value};
     use elements::encode::serialize_hex;
     use elements::hashes::Hash as _;
@@ -243,9 +392,13 @@ pub fn build_htlc_spend_liquid(
     use elements::secp256k1_zkp::Message as ElMessage;
     use elements::secp256k1_zkp::Secp256k1 as ElSecp;
 
-    if output_value_sat + fee_sat != input_value_sat {
+    if outputs.is_empty() {
+        bail!("need at least one output");
+    }
+    let out_sum: u64 = outputs.iter().map(|(v, _)| *v).sum();
+    if out_sum + fee_sat != input_value_sat {
         bail!(
-            "LQ claim: output+fee must equal input ({output_value_sat}+{fee_sat} != {input_value_sat})"
+            "LQ claim: outputs+fee must equal input ({out_sum}+{fee_sat} != {input_value_sat})"
         );
     }
     let txid: Txid = prev_txid.parse().context("prev_txid")?;
@@ -261,22 +414,23 @@ pub fn build_htlc_spend_liquid(
         witness: TxInWitness::default(),
     };
 
-    let output = vec![
-        TxOut {
+    let mut output: Vec<TxOut> = outputs
+        .iter()
+        .map(|(v, spk)| TxOut {
             asset: lbtc,
-            value: Value::Explicit(output_value_sat),
+            value: Value::Explicit(*v),
             nonce: Nonce::Null,
-            script_pubkey: Script::from(dest_spk.to_vec()),
+            script_pubkey: Script::from(spk.to_vec()),
             witness: TxOutWitness::default(),
-        },
-        TxOut {
-            asset: lbtc,
-            value: Value::Explicit(fee_sat),
-            nonce: Nonce::Null,
-            script_pubkey: Script::new(),
-            witness: TxOutWitness::default(),
-        },
-    ];
+        })
+        .collect();
+    output.push(TxOut {
+        asset: lbtc,
+        value: Value::Explicit(fee_sat),
+        nonce: Nonce::Null,
+        script_pubkey: Script::new(),
+        witness: TxOutWitness::default(),
+    });
 
     let mut tx = Transaction {
         version: 2,
@@ -292,7 +446,6 @@ pub fn build_htlc_spend_liquid(
         EcdsaSighashType::All,
     );
 
-    // Sign with bitcoin SecretKey bytes via elements secp
     let el_secp = ElSecp::new();
     let el_sk = elements::secp256k1_zkp::SecretKey::from_slice(&signer_sk.secret_bytes())
         .context("el secret key")?;

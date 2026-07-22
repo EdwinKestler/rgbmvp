@@ -8,7 +8,7 @@ Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/
 |--|--|
 | **Purpose** | Prove RGB-on-Liquid, twin HTLC swaps, Simplicity/BFA seals, and a safe local browser console |
 | **Networks** | Liquid Testnet · Bitcoin Testnet (P1) · Elements regtest (P2) · **no mainnet** |
-| **Status** | **P0–P3 closed** · next: **S3** protocol on localhost · public demo only after **U4** ([ROADMAP_NEXT](docs/ROADMAP_NEXT.md)) |
+| **Status** | **P0–P3 closed** · **S3 CLI** (RGB-wrap) · next: C2/C4 or live S3 proof · public demo only after **U4** ([ROADMAP_NEXT](docs/ROADMAP_NEXT.md)) |
 | **UI** | Issue / transfer / verify / guided swap · `/demo` board · BFA audit (**no browser keys**) |
 
 ### Documentation (start here)
@@ -20,7 +20,7 @@ Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/
 | **Agents / AI** — goals, invariants, Redis project memory | **[docs/M2M.md](docs/M2M.md)** · [AGENTS.md](AGENTS.md) |
 | Architecture · scenarios · stack | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [SCENARIOS](docs/SCENARIOS.md) · [STACK](docs/STACK.md) |
 | Phase evidence | [P1_CLOSED](docs/P1_CLOSED.md) · [P2_CLOSED](docs/P2_CLOSED.md) · [P3_CLOSED](docs/P3_CLOSED.md) |
-| **Next work** | [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md) — S3 → C2/C4 · U4 before public Internet |
+| **Next work** | [docs/ROADMAP_NEXT.md](docs/ROADMAP_NEXT.md) — S3 live proof → C2/C4 · U4 before public Internet · [S3_RGB_WRAP](docs/S3_RGB_WRAP.md) |
 | Protocol without UI | [docs/HEADLESS.md](docs/HEADLESS.md) |
 
 **Redis project memory** is optional and only for agent source discovery — operators can ignore it entirely ([docs/PROJECT_MEMORY.md](docs/PROJECT_MEMORY.md)).

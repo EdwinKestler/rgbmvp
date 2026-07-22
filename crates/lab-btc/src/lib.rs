@@ -519,6 +519,18 @@ pub fn fetch_witness_for_rgb(btc: &BtcConfig, txid: &str) -> Result<lab_rgb::sea
     })
 }
 
+/// Raw transaction hex from Esplora (`/tx/{txid}/hex`).
+pub fn fetch_tx_hex(btc: &BtcConfig, txid: &str) -> Result<String> {
+    let url = format!("{}/tx/{}/hex", btc.esplora_api.trim_end_matches('/'), txid);
+    let body = http()?
+        .get(&url)
+        .send()
+        .with_context(|| format!("GET {url}"))?
+        .error_for_status()?
+        .text()?;
+    Ok(body.trim().to_string())
+}
+
 pub fn pick_largest_utxo(cfg: &Config, btc: &BtcConfig, name: &str) -> Result<BtcUtxo> {
     utxos(cfg, btc, name)?
         .into_iter()

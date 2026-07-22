@@ -616,6 +616,21 @@ pub fn fetch_witness_esplora(esplora_base: &str, txid: &str) -> Result<lab_rgb::
     })
 }
 
+/// Raw transaction hex from Esplora (`/tx/{txid}/hex`).
+pub fn fetch_tx_hex(cfg: &Config, txid: &str) -> Result<String> {
+    let api = esplora_api_base(cfg);
+    let url = format!("{}/tx/{}/hex", api.trim_end_matches('/'), txid);
+    let body = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?
+        .get(&url)
+        .send()
+        .with_context(|| format!("GET {url}"))?
+        .error_for_status()?
+        .text()?;
+    Ok(body.trim().to_string())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BroadcastResult {
     pub txid: String,

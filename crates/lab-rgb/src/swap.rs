@@ -1,4 +1,4 @@
-//! Swap session state for BTC ↔ Liquid RGB atomic swaps (P1).
+//! Swap session state for BTC ↔ Liquid RGB atomic swaps (P1 / S3).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,15 +22,47 @@ pub enum SwapPhase {
     Refunded,
 }
 
+/// Per-leg RGB wrap state (S3). Absent / default when `rgb_wrap=false`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SwapLegRgb {
+    pub contract_id: String,
+    /// RGB units placed on the HTLC seal (usually full supply).
+    pub amount: u64,
+    /// Original issue seal spent when funding RGB onto HTLC.
+    pub issue_seal: Option<String>,
+    /// HTLC outpoint that holds RGB after fund-wrap.
+    pub htlc_seal: Option<String>,
+    pub fund_plan_id: Option<String>,
+    pub fund_anchor_txid: Option<String>,
+    pub fund_verify: Option<String>,
+    /// Transition opid hex of fund plan (prev for claim).
+    pub fund_transition_opid_hex: Option<String>,
+    pub claim_plan_id: Option<String>,
+    pub claim_anchor_txid: Option<String>,
+    pub claim_verify: Option<String>,
+    /// Successor seal after claim (`claim_txid:vout`).
+    pub successor_seal: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwapSession {
     pub id: String,
+    /// Schema version: 1 = value-only P1, 2 = S3 rgb_wrap fields.
+    #[serde(default = "default_session_version")]
+    pub version: u32,
     pub phase: SwapPhase,
     pub csv_delay: u32,
     pub preimage_hex: String,
     pub hash_hex: String,
     pub btc_contract_id: Option<String>,
     pub lq_contract_id: Option<String>,
+    /// When true, fund/claim must re-seat RGB and verify anchors for Done.
+    #[serde(default)]
+    pub rgb_wrap: bool,
+    #[serde(default)]
+    pub btc_rgb: Option<SwapLegRgb>,
+    #[serde(default)]
+    pub lq_rgb: Option<SwapLegRgb>,
     pub alice_btc_wallet: String,
     pub bob_lq_wallet: String,
     /// BTC leg: Bob claims, Alice refunds
@@ -46,6 +78,10 @@ pub struct SwapSession {
     pub lq_claim_txid: Option<String>,
     pub btc_claim_txid: Option<String>,
     pub notes: Vec<String>,
+}
+
+fn default_session_version() -> u32 {
+    1
 }
 
 pub struct SwapStore {
@@ -100,9 +136,13 @@ pub fn init_swap(
     bob_lq_wallet: &str,
     btc_contract_id: Option<String>,
     lq_contract_id: Option<String>,
+    rgb_wrap: bool,
 ) -> Result<SwapSession> {
     if csv_delay == 0 {
         bail!("csv_delay must be > 0");
+    }
+    if rgb_wrap && btc_contract_id.is_none() && lq_contract_id.is_none() {
+        bail!("--rgb-wrap requires at least one of --btc-contract / --lq-contract");
     }
     let mut preimage = [0u8; 32];
     fill_random(&mut preimage)?;
@@ -113,14 +153,40 @@ pub fn init_swap(
     // LQ: Alice claims Bob's locked L-BTC; Bob refunds after CSV
     let htlc_lq = htlc::build_htlc_addresses(&hash, "alice-claimer", "bob-refund", csv_delay)?;
 
+    let btc_rgb = btc_contract_id.as_ref().map(|cid| SwapLegRgb {
+        contract_id: cid.clone(),
+        amount: 0, // filled on fund from issue.supply
+        ..Default::default()
+    });
+    let lq_rgb = lq_contract_id.as_ref().map(|cid| SwapLegRgb {
+        contract_id: cid.clone(),
+        amount: 0,
+        ..Default::default()
+    });
+
+    let mut notes = vec![
+        "Alice claims Liquid first (reveals preimage). Bob then claims BTC.".into(),
+        "Preimage file is mode 600 under .rgbmvp/swaps/.".into(),
+    ];
+    if rgb_wrap {
+        notes.push(
+            "S3 rgb_wrap: fund assigns RGB to HTLC seal; claim re-anchors + verify required for done."
+                .into(),
+        );
+    }
+
     Ok(SwapSession {
         id: id.into(),
+        version: if rgb_wrap { 2 } else { 1 },
         phase: SwapPhase::Created,
         csv_delay,
         preimage_hex: hex::encode(preimage),
         hash_hex: hex::encode(hash),
         btc_contract_id,
         lq_contract_id,
+        rgb_wrap,
+        btc_rgb,
+        lq_rgb,
         alice_btc_wallet: alice_btc_wallet.into(),
         bob_lq_wallet: bob_lq_wallet.into(),
         htlc_btc,
@@ -133,10 +199,7 @@ pub fn init_swap(
         lq_fund_sats: None,
         lq_claim_txid: None,
         btc_claim_txid: None,
-        notes: vec![
-            "Alice claims Liquid first (reveals preimage). Bob then claims BTC.".into(),
-            "Preimage file is mode 600 under .rgbmvp/swaps/.".into(),
-        ],
+        notes,
     })
 }
 
@@ -145,6 +208,30 @@ fn fill_random(buf: &mut [u8]) -> Result<()> {
     use bitcoin::secp256k1::rand::RngCore;
     OsRng.fill_bytes(buf);
     Ok(())
+}
+
+/// True when value claims are complete and (if rgb_wrap) required claim verifies are valid.
+pub fn rgb_done_ok(s: &SwapSession) -> bool {
+    if !s.rgb_wrap {
+        return true;
+    }
+    let btc_ok = if s.btc_contract_id.is_some() {
+        s.btc_rgb
+            .as_ref()
+            .map(|r| r.claim_verify.as_deref() == Some("valid"))
+            .unwrap_or(false)
+    } else {
+        true
+    };
+    let lq_ok = if s.lq_contract_id.is_some() {
+        s.lq_rgb
+            .as_ref()
+            .map(|r| r.claim_verify.as_deref() == Some("valid"))
+            .unwrap_or(false)
+    } else {
+        true
+    };
+    btc_ok && lq_ok
 }
 
 pub fn recompute_phase(s: &mut SwapSession) {
@@ -156,11 +243,54 @@ pub fn recompute_phase(s: &mut SwapSession) {
     let clq = s.lq_claim_txid.is_some();
     let cbtc = s.btc_claim_txid.is_some();
     s.phase = match (btc, lq, clq, cbtc) {
-        (true, true, true, true) => SwapPhase::Done,
+        (true, true, true, true) if rgb_done_ok(s) => SwapPhase::Done,
+        (true, true, true, true) => SwapPhase::ClaimedBtc, // value claimed; RGB verify pending
         (true, true, true, false) => SwapPhase::ClaimedLq,
         (true, true, false, false) => SwapPhase::FundedBoth,
         (true, false, _, _) => SwapPhase::FundedBtc,
         (false, true, _, _) => SwapPhase::FundedLq,
         _ => SwapPhase::Created,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_session_deserializes() {
+        let json = r#"{
+            "id":"t","phase":"created","csv_delay":6,
+            "preimage_hex":"aa","hash_hex":"bb",
+            "btc_contract_id":null,"lq_contract_id":null,
+            "alice_btc_wallet":"btc-alice","bob_lq_wallet":"bob",
+            "htlc_btc":{"hash_hex":"bb","csv_delay":6,"claimer_label":"c","refund_label":"r",
+                "witness_script_hex":"00","spk_hex":"00","address_btc":"tb1q","address_liquid_unconf":"tex1q"},
+            "htlc_lq":{"hash_hex":"bb","csv_delay":6,"claimer_label":"c","refund_label":"r",
+                "witness_script_hex":"00","spk_hex":"00","address_btc":"tb1q","address_liquid_unconf":"tex1q"},
+            "btc_fund_txid":null,"btc_fund_vout":null,"btc_fund_sats":null,
+            "lq_fund_txid":null,"lq_fund_vout":null,"lq_fund_sats":null,
+            "lq_claim_txid":null,"btc_claim_txid":null,"notes":[]
+        }"#;
+        let s: SwapSession = serde_json::from_str(json).unwrap();
+        assert!(!s.rgb_wrap);
+        assert_eq!(s.version, 1);
+        assert!(s.btc_rgb.is_none());
+    }
+
+    #[test]
+    fn rgb_done_requires_verify_when_wrap() {
+        let mut s = init_swap("x", 6, "btc-alice", "bob", Some("c1".into()), None, true).unwrap();
+        s.btc_fund_txid = Some("a".into());
+        s.lq_fund_txid = Some("b".into());
+        s.lq_claim_txid = Some("c".into());
+        s.btc_claim_txid = Some("d".into());
+        recompute_phase(&mut s);
+        assert_eq!(s.phase, SwapPhase::ClaimedBtc);
+        if let Some(r) = s.btc_rgb.as_mut() {
+            r.claim_verify = Some("valid".into());
+        }
+        recompute_phase(&mut s);
+        assert_eq!(s.phase, SwapPhase::Done);
+    }
 }
