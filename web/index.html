@@ -36,6 +36,15 @@
     .links a { display: inline-block; margin-right: 0.75rem; margin-top: 0.35rem; font-size: 0.88rem; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
     @media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
+    .celebrate {
+      display: none; margin: 0.75rem 0; padding: 0.75rem 1rem; border-radius: 10px;
+      background: #0f2a1c; border: 1px solid #2a6b4a; color: #3ddc97; font-weight: 600;
+    }
+    .celebrate.show { display: block; }
+    .chip {
+      display: inline-block; font-size: 0.72rem; padding: 0.2rem 0.5rem; border-radius: 999px;
+      border: 1px solid #2a6b4a; background: #163528; color: #3ddc97; margin-left: 0.35rem;
+    }
   </style>
 </head>
 <body>
@@ -168,10 +177,23 @@
       <label>Bob Liquid wallet <span class="muted">(name, e.g. bob — not tlq1…)</span></label>
       <input id="swap-bob" value="bob" placeholder="bob" />
       <div class="row">
+        <div>
+          <label>BTC twin contract <span class="muted">(optional rgb:…)</span></label>
+          <input id="swap-btc-contract" placeholder="rgb:… on bitcoin-testnet" />
+        </div>
+        <div>
+          <label>Liquid twin contract <span class="muted">(optional rgb:…)</span></label>
+          <input id="swap-lq-contract" placeholder="rgb:… on liquid-testnet" />
+        </div>
+      </div>
+      <p class="muted" style="margin-top:0.4rem">Optional IDs are stored on the session for twin-swap documentation. HTLC fund/claim is L-BTC/BTC value; full RGB-wrapped re-anchor remains a CLI/research path.</p>
+      <div class="row">
         <button type="button" id="swap-init">Init swap</button>
         <button type="button" class="secondary" id="swap-load">Refresh status</button>
         <button type="button" class="secondary" id="swap-list">List swaps</button>
+        <button type="button" class="secondary" id="swap-save-contracts" title="Attach twin rgb: ids to existing session">Save twin contracts</button>
       </div>
+      <div id="swap-celebrate" class="celebrate">Swap complete · phase done · preimage stayed off the UI</div>
       <p class="muted" id="swap-guide" style="margin-top:0.75rem"></p>
       <div id="swap-summary" style="margin-top:0.5rem"></div>
       <div class="steps" id="swap-steps"></div>
@@ -222,16 +244,37 @@
 
     function renderSwap(s) {
       const phase = s.phase || '?';
-      const done = phase === 'done';
+      const done = phase === 'done' || phase === 'Done';
       $('swap-guide').textContent = s.guide || '';
+      const celeb = $('swap-celebrate');
+      if (celeb) {
+        if (done) {
+          celeb.classList.add('show');
+          celeb.innerHTML = '✓ Swap complete <span class="chip">phase done</span> · preimage never shown in this UI · '
+            + (s.id ? ('id <code>' + s.id + '</code>') : '');
+        } else {
+          celeb.classList.remove('show');
+        }
+      }
+      // Prefill optional contract fields from session
+      if (s.btc_contract_id && $('swap-btc-contract') && !$('swap-btc-contract').value) {
+        $('swap-btc-contract').value = s.btc_contract_id;
+      }
+      if (s.lq_contract_id && $('swap-lq-contract') && !$('swap-lq-contract').value) {
+        $('swap-lq-contract').value = s.lq_contract_id;
+      }
+      const twins = [];
+      if (s.btc_contract_id) twins.push('BTC twin <code>' + s.btc_contract_id + '</code>');
+      if (s.lq_contract_id) twins.push('LQ twin <code>' + s.lq_contract_id + '</code>');
       $('swap-summary').innerHTML = `
-        <div class="phase ${done ? 'ok' : ''}">phase: ${phase}</div>
+        <div class="phase ${done ? 'ok' : ''}">phase: ${phase}${done ? ' <span class="chip">done</span>' : ''}</div>
         <div class="muted">hash <code>${(s.hash_hex||'').slice(0,16)}…</code>
           · CSV ${s.csv_delay}
           · ${s.alice_btc_wallet || '?'} ↔ ${s.bob_lq_wallet || '?'}</div>
         <div class="muted" style="margin-top:0.4rem">
           BTC HTLC: <code>${s.htlc_btc?.address || '—'}</code><br/>
           LQ HTLC: <code>${s.htlc_lq?.address || '—'}</code>
+          ${twins.length ? '<br/>' + twins.join('<br/>') : ''}
         </div>`;
 
       const stepsEl = $('swap-steps');
@@ -336,6 +379,32 @@
     }
 
     $('swap-load').onclick = loadSwap;
+    $('swap-save-contracts').onclick = async () => {
+      const id = $('swap-id').value.trim();
+      if (!id) return;
+      const body = { action: 'set_contracts' };
+      const bc = $('swap-btc-contract').value.trim();
+      const lc = $('swap-lq-contract').value.trim();
+      if (bc) body.btc_contract = bc;
+      if (lc) body.lq_contract = lc;
+      if (!bc && !lc) {
+        $('swap-summary').innerHTML = '<span class="bad">enter at least one rgb: contract id</span>';
+        return;
+      }
+      try {
+        const r = await fetch('/v1/swap/' + encodeURIComponent(id) + '/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.statusText);
+        if (j.swap) renderSwap(j.swap);
+        $('swap-out').textContent = JSON.stringify(j, null, 2);
+      } catch (e) {
+        $('swap-summary').innerHTML = '<span class="bad">' + e + '</span>';
+      }
+    };
     $('swap-init').onclick = async () => {
       const id = $('swap-id').value.trim();
       if (!id) { $('swap-out').textContent = 'enter a new swap id'; return; }
@@ -345,6 +414,10 @@
         alice_btc: $('swap-alice').value.trim() || 'btc-alice',
         bob_lq: $('swap-bob').value.trim() || 'bob',
       };
+      const bc = $('swap-btc-contract') && $('swap-btc-contract').value.trim();
+      const lc = $('swap-lq-contract') && $('swap-lq-contract').value.trim();
+      if (bc) body.btc_contract = bc;
+      if (lc) body.lq_contract = lc;
       $('swap-out').textContent = 'Init…';
       try {
         const r = await fetch('/v1/swap/init', {

@@ -152,15 +152,15 @@ BTC RGB anchor (earlier): [`2a573998…1806`](https://blockstream.info/testnet/t
 ## Phase P3 — Browser UI (after API is stable)
 
 Not a new consensus phase—**UX only**.  
-**Plan:** [`P3_PLAN.md`](./P3_PLAN.md) (ADRs accepted; monorepo).  
+**Plan:** [`P3_PLAN.md`](./P3_PLAN.md) · **Closed:** [`P3_CLOSED.md`](./P3_CLOSED.md).  
 **Headless kit:** [`HEADLESS.md`](./HEADLESS.md).
 
 | ID | Scenario | Pass criteria |
 |----|----------|---------------|
-| U0 | Wallet page (watch-only / LWK WASM) | Show L-BTC + known RGB balances from local state |
-| U1 | Issue / transfer wizards | Call `/v1/rgb/*`; download consignments |
-| U2 | Swap wizard | Drive P1 state machine in-browser |
-| U3 | Hardware / Marina path (optional) | Document external signer; no seed in web server |
+| U0 | Wallet page / lab board | **CLOSED** — board + phase chips + console shell |
+| U1 | Issue / transfer wizards | **CLOSED** — `/v1/rgb/issue|transfer` + UI |
+| U2 | Swap wizard | **CLOSED** — guided fund/claim; demo-u2 phase done |
+| U3 | Hardware / Marina path (optional) | Deferred |
 
 P0 web verifier must not hard-code assumptions that block U0–U2 (shared API types, CORS, versioned errors).
 

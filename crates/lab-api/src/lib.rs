@@ -17,8 +17,8 @@ pub fn root_json() -> Value {
     json!({
         "product": lab_core::PRODUCT,
         "api": lab_core::API_VERSION,
-        "phase": "p3",
-        "message": "RGB Liquid Testnet Lab — browser lab console (P3). Keys stay on labd; UI is thin.",
+        "phase": "p3-closed",
+        "message": "RGB Liquid Testnet Lab — P3 lab console closed. Keys stay on labd; UI is thin.",
         "security": {
             "browser_seeds": false,
             "preimage_redacted_on_swap_get": true,
@@ -70,7 +70,8 @@ pub fn phases_json() -> Value {
             {"id": "P1", "name": "HTLC twin swap", "status": "closed", "doc": "docs/P1_CLOSED.md"},
             {"id": "P2", "name": "Simplicity + BFA", "status": "closed", "doc": "docs/P2_CLOSED.md",
              "slices": ["C0", "C1", "C3"]},
-            {"id": "P3", "name": "Browser lab console", "status": "in_progress", "doc": "docs/P3_PLAN.md"}
+            {"id": "P3", "name": "Browser lab console", "status": "closed", "doc": "docs/P3_CLOSED.md",
+             "slices": ["U0", "U1", "U2", "audit"]}
         ]
     })
 }

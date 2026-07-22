@@ -1,6 +1,6 @@
 # P3 plan — Browser lab console (UX only)
 
-**Status:** In progress (ADRs accepted 2026-07-21)  
+**Status:** **CLOSED** — see [P3_CLOSED.md](./P3_CLOSED.md)  
 **Depends on:** P0–P2 closed ([P1_CLOSED.md](./P1_CLOSED.md) · [P2_CLOSED.md](./P2_CLOSED.md))  
 **Scenarios:** [SCENARIOS.md](./SCENARIOS.md) U0–U3  
 **Repo strategy:** **Monorepo** (`rgbmvp`) — no P2 split (see § Repo)
@@ -173,7 +173,7 @@ P2 standalone value is real (Simplicity seals + BFA audit) but splitting before 
 3. ~~**P3.1** — Console nav + board/phase + `/audit` page.~~  
 4. ~~**P3.2 / U1** — Issue + transfer wizards + `/v1/rgb/issue|transfer|contracts`.~~  
 5. ~~**P3.3 / U2** — Swap guided actions (`/v1/swap/init`, `/action`).~~  
-6. P3.4–P3.5 polish + `P3_CLOSED.md` / browser tour.  
+6. ~~**P3.5** polish + `P3_CLOSED.md` / browser tour / done banner / twin contract fields.~~  
 
 ## Decisions log
 
@@ -185,3 +185,4 @@ P2 standalone value is real (Simplicity seals + BFA audit) but splitting before 
 | 2026-07-21 | P3.0 + P3.1 landed (catalog, BFA audit API/UI, console nav) |
 | 2026-07-21 | U1 issue/transfer wizards + API (server-side lab wallets) |
 | 2026-07-21 | U2 swap guided actions; preimage never on GET or UI |
+| 2026-07-21 | **P3 closed** — celebrate banner, twin contract fields, P3_CLOSED.md |

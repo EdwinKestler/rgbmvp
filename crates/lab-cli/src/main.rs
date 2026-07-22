@@ -1782,11 +1782,15 @@ fn handle_swap_init_post(
     );
     let btc_contract = v
         .get("btc_contract")
+        .or_else(|| v.get("btc_contract_id"))
         .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     let lq_contract = v
         .get("lq_contract")
+        .or_else(|| v.get("lq_contract_id"))
         .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     // refuse overwrite of existing without force
     if store.path_exists(&id)
@@ -1839,6 +1843,31 @@ fn handle_swap_action_post(
     }
 
     let result = match action {
+        "set_contracts" => {
+            if let Some(c) = v
+                .get("btc_contract")
+                .or_else(|| v.get("btc_contract_id"))
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                s.btc_contract_id = Some(c.to_string());
+            }
+            if let Some(c) = v
+                .get("lq_contract")
+                .or_else(|| v.get("lq_contract_id"))
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                s.lq_contract_id = Some(c.to_string());
+            }
+            store.save(&s)?;
+            serde_json::json!({
+                "status": "contracts_updated",
+                "btc_contract_id": s.btc_contract_id,
+                "lq_contract_id": s.lq_contract_id,
+                "note": "Twin RGB ids stored on session for documentation; HTLC path unchanged.",
+            })
+        }
         "fund_btc" => {
             let amount_sats = v
                 .get("amount_sats")

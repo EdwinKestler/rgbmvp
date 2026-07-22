@@ -7,8 +7,8 @@ Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/
 | | |
 |--|--|
 | **Networks** | Liquid Testnet · Bitcoin Testnet (P1) · no mainnet |
-| **Status** | **P0 + P1 closed** · Demo v0 read-only · P2 Simplicity research next |
-| **UI** | Verify + swap status + `/demo` board (no browser keys) |
+| **Status** | **P0–P3 closed** · headless kit + lab console |
+| **UI** | Issue / transfer / verify / guided swap · `/demo` board · BFA audit (no browser keys) |
 
 ---
 
@@ -78,7 +78,7 @@ Never use fixture mnemonics on mainnet.
 # expect status: valid
 ```
 
-### 4) Web: verify API + demo board
+### 4) Browser lab console (~15 min tour)
 
 ```bash
 ./target/debug/rgbmvp serve --bind 127.0.0.1:8080
@@ -86,13 +86,20 @@ Never use fixture mnemonics on mainnet.
 
 | URL | What |
 |-----|------|
-| http://127.0.0.1:8080/ | RGB verify form + swap status |
-| http://127.0.0.1:8080/demo | **Read-only** balances + swaps / plans / proofs |
-| `GET /v1/health` | Network + `rgb_ready` |
+| http://127.0.0.1:8080/ | **Console:** Issue · Transfer · Verify · guided Swap |
+| http://127.0.0.1:8080/demo | Read-only board + phase chips |
+| http://127.0.0.1:8080/audit | BFA audit (upload history JSON) |
+| `GET /v1` | API catalog |
+| `POST /v1/rgb/issue` | Issue NIA (server-side lab wallet) |
+| `POST /v1/rgb/transfer` | Plan (+ optional broadcast) |
 | `POST /v1/rgb/verify` | `{ "plan_id": "…", "txid": "…" }` |
-| `GET /v1/swap/{id}` | Swap status (**preimage redacted**) |
-| `GET /v1/demo/wallets` | Lab wallet board JSON |
-| `GET /v1/demo/activity` | Swaps, plans, proofs |
+| `POST /v1/swap/init` | Create swap session |
+| `POST /v1/swap/{id}/action` | `fund_btc` · `fund_lq` · `claim_lq` · `claim_btc` · refunds |
+| `GET /v1/swap/{id}` | Status (**preimage redacted**) + `next_actions` |
+
+**Swap tab:** use wallet **names** `btc-alice` / `bob` (not addresses). Optional twin `rgb:` contract ids are stored on the session for documentation.
+
+Full closure notes: **[`docs/P3_CLOSED.md`](docs/P3_CLOSED.md)**.
 
 Example verify:
 
@@ -102,18 +109,17 @@ curl -s -X POST http://127.0.0.1:8080/v1/rgb/verify \
   -d '{"plan_id":"tRGB-…","txid":"…"}' | jq .
 ```
 
-### 5) (Optional) P1 HTLC snapshot
+### 5) (Optional) P1 HTLC via CLI
 
-P1 is **closed** (fund → claim LQ → claim BTC + refund CLI). Details and live txids:  
-**[`docs/P1_CLOSED.md`](docs/P1_CLOSED.md)**
+P1 is **closed** (fund → claim LQ → claim BTC + refund). Details:  
+**[`docs/P1_CLOSED.md`](docs/P1_CLOSED.md)** · or use the **Swap** tab in the console.
 
 ```bash
-# Bitcoin testnet key stays in local .env only (never commit WIF)
 cp .env.example .env
 # set BTC_TESTNET_WIF + BTC_TESTNET_ADDRESS, fund tb1… faucet, then:
 ./target/debug/rgbmvp btc import-env
 ./target/debug/rgbmvp swap init --id demo --csv-delay 6 --alice-btc btc-alice --bob-lq bob
-# fund-btc / fund-lq / claim-lq / claim-btc  (see P1_CLOSED.md)
+# fund-btc / fund-lq / claim-lq / claim-btc
 ```
 
 ---
@@ -127,7 +133,7 @@ cp .env.example .env
 | **P1** | BTC ↔ Liquid HTLC twin swap | **Closed** — [P1_CLOSED.md](docs/P1_CLOSED.md) |
 | **Demo v0** | Read-only `/demo` board | Done |
 | **P2** | Simplicity + BFA audit | **Closed** (C0+C3; C1 stretch) |
-| **P3** | Browser lab console | **In progress** — [P3_PLAN.md](docs/P3_PLAN.md) |
+| **P3** | Browser lab console | **Closed** — [P3_CLOSED.md](docs/P3_CLOSED.md) |
 
 ---
 
@@ -150,7 +156,8 @@ cp .env.example .env
 | [docs/C1_CLOSED.md](docs/C1_CLOSED.md) | C1 mint-gate vault + recursion (regtest proof) |
 | [docs/C3_CLOSED.md](docs/C3_CLOSED.md) | C3 BFA schema + full-history audit |
 | [docs/P2_CLOSED.md](docs/P2_CLOSED.md) | P2 phase closure (C0+C3) |
-| [docs/P3_PLAN.md](docs/P3_PLAN.md) | P3 browser lab console plan + ADRs |
+| [docs/P3_PLAN.md](docs/P3_PLAN.md) | P3 plan + ADRs |
+| [docs/P3_CLOSED.md](docs/P3_CLOSED.md) | P3 lab console closure + browser tour |
 | [docs/HEADLESS.md](docs/HEADLESS.md) | Protocol kit without UI (monorepo) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, `/v1` API, privacy |
 | [docs/SCENARIOS.md](docs/SCENARIOS.md) | Scenario ladder |
