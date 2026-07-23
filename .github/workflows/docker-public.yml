@@ -40,7 +40,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pin full commit (v0.36.0); floating tags have been supply-chain targets.
+        # 0.28.0 does not exist as a resolvable action ref.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: rgbmvp-public:ci
           format: table
