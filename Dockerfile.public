@@ -10,7 +10,7 @@
 #     -e PORT=8080 \
 #     rgbmvp-public:local
 
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates

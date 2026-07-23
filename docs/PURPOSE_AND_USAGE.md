@@ -75,7 +75,7 @@ It is inspired by [kaleidoswap/rgb-on-liquid-spike](https://github.com/kaleidosw
 
 ### 4.1 Prerequisites
 
-- Rust **1.85+**, Python **3.11+** (optional for glue/tests)
+- Rust **1.88+** (CI uses `stable`), Python **3.11+** (optional for glue/tests)
 - No Docker required for P0/P1/P3 public testnet demos  
 - Docker **optional** for P2 Simplicity regtest (`./scripts/regtest_simplicity.sh up`)
 - Redis **optional** — only for agent project-memory cache (you can ignore it)

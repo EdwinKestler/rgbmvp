@@ -14,12 +14,26 @@ on:
 
 jobs:
   deploy:
-    if: ${{ secrets.VERCEL_TOKEN != '' }}
+    # Skip quietly when Vercel secrets are not configured (GitHub forbids
+    # secrets.* in job-level if on some paths; use a soft check in a step).
     runs-on: ubuntu-latest
     environment: public-demo
     steps:
+      - name: Require Vercel secrets
+        id: gate
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -z "${VERCEL_TOKEN}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "VERCEL_TOKEN not set — skipping deploy (configure repo secrets to enable)."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
       - name: Stage static public root
+        if: steps.gate.outputs.skip != 'true'
         run: |
           set -euo pipefail
           rm -rf public
@@ -31,6 +45,7 @@ jobs:
           cp artifacts/public/manifest.json public/manifest.json
           cp deploy/vercel.json vercel.json
       - uses: amondnet/vercel-action@v25
+        if: steps.gate.outputs.skip != 'true'
         with:
           vercel-token: ${{ secrets.VERCEL_TOKEN }}
           vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}

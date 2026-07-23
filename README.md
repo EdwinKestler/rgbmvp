@@ -43,7 +43,7 @@ Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/
 ### 0) Prerequisites
 
 ```bash
-rustc --version    # 1.85+ recommended
+rustc --version    # 1.88+ recommended (CI uses stable)
 python3 --version  # 3.11+
 # If missing packages later:
 #   sudo apt-get install -y build-essential pkg-config libssl-dev clang cmake

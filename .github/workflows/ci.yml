@@ -16,9 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Pin recent stable: some crates (e.g. ar_archive_writer) require >= 1.88
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.85"
+          toolchain: stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo test (workspace libs)
         run: |
