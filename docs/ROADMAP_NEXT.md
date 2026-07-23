@@ -11,8 +11,8 @@ Historical phase closures (P1–P3) remain valid evidence of what was proven. Th
 | 1 | **S3** RGB-wrapped claim (CLI + live proof) | Done — [S3_RGB_WRAP.md](./S3_RGB_WRAP.md) |
 | 2 | **C2** burn mint-gate (regtest) | **Done** — [C2_CLOSED.md](./C2_CLOSED.md) |
 | 3 | **C4** staking (regtest) | **Done** — [C4_CLOSED.md](./C4_CLOSED.md) |
-| 4 | **U4** public-hosting security foundation | Parallel design OK; **must finish before any public bind** |
-| 5 | Independent review + public **read-only** demo | After U4 acceptance |
+| 4 | **U4** public-hosting security foundation | **Implemented** — [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md); deploy still operator-run |
+| 5 | Independent review + public **read-only** demo | After U4 soak + deploy |
 
 ```text
 Localhost / public testnet (operator)
@@ -21,10 +21,10 @@ Localhost / public testnet (operator)
    ├─► C2 burn mint-gate        ◄── done (regtest)
    ├─► C4 stake                 ◄── done (regtest)
    │
-   └─► U4 security (must complete before)
+   └─► U4 security (code done; deploy optional)
               │
               ▼
-         Internet demo (later; default read-only)
+         Internet demo (read-only; Vercel + Cloud Run sketches)
 ```
 
 ---
@@ -76,18 +76,17 @@ Localhost / public testnet (operator)
 | RGB | Deferred; MVP is seal-value only |
 | Evidence | [C4_CLOSED.md](./C4_CLOSED.md) · `./scripts/demo_c4_stake.sh` |
 
-#### ADR-U4 — Public vs operator surface
+#### ADR-U4 — Public vs operator surface (**accepted · implemented**)
 
-| Topic | Working default |
-|-------|-----------------|
-| Public | GET static + health/phases/proofs/public swap status only |
-| Mutations | Bearer `LABD_API_TOKEN`, constant-time compare, off by default off-loopback |
-| CORS | Allowlist from config |
-| labd bind | `127.0.0.1` behind TLS reverse proxy |
+| Topic | Decision |
+|-------|----------|
+| Public | GET static + `/v1` read surface; see `GET /v1/security` |
+| Mutations | Bearer `LABD_API_TOKEN` (constant-time); required if `LABD_PUBLIC_READ_ONLY` or non-loopback |
+| CORS | Allowlist `LABD_CORS_ORIGINS` (no `*` in public mode) |
+| labd bind | Operator `127.0.0.1`; Cloud Run `0.0.0.0:$PORT` + read-only |
 | Docker RPC | Host bind **127.0.0.1** only |
-| Mainnet | Forbidden in public deploy config |
-
-Full U4 work packages and acceptance: peer review adopted in project discussion (2026-07-22); implement when approaching public demo.
+| Mainnet | Forbidden at config load |
+| Evidence | [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md) · `Dockerfile.public` · `deploy/` |
 
 ---
 
@@ -119,11 +118,10 @@ Reuse C1 tooling. Program + demo + BFA burn mode + negatives.
 
 ## Phase U4 — Security gate (before Internet)
 
-Not required for S3/C2/C4 **localhost** work. **Required** before binding labd or demos to a public interface.
+**Implemented in-tree** — [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md).  
+Still **required** before marketing a public URL: deploy soak + no secrets in image.
 
-MVP before “full Axum rewrite” if needed: loopback RPC ports, mutation flag, Bearer on POST, id regex, CORS allowlist, body limit.
-
-**Estimate:** 1–2 weeks + review/soak before public IP.
+MVP delivered: loopback RPC ports, `LABD_PUBLIC_READ_ONLY`, Bearer on POST, id regex, CORS allowlist, body limit, public Dockerfile + Vercel/Cloud Run sketches.
 
 ---
 
@@ -143,4 +141,4 @@ MVP before “full Axum rewrite” if needed: loopback RPC ports, mutation flag,
 3. ~~Implement **S3** CLI + live proof.~~ → [S3_RGB_WRAP.md](./S3_RGB_WRAP.md)  
 4. ~~**C2** burn mint-gate on regtest.~~ → [C2_CLOSED.md](./C2_CLOSED.md)  
 5. ~~**C4** staking.~~ → [C4_CLOSED.md](./C4_CLOSED.md)  
-6. **U4** security engineering before any public demo.  
+6. ~~**U4** security engineering.~~ → [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md); optional deploy next.  

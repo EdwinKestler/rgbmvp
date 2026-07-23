@@ -17,7 +17,8 @@ services:
     container_name: rgbmvp-elementsd-simplicity
     restart: unless-stopped
     ports:
-      - "7042:7042"
+      # U4: host bind loopback only (do not expose Elements RPC on LAN/Internet)
+      - "127.0.0.1:7042:7042"
     volumes:
       - ./docker/elements-simplicity.conf:/home/elements/.elements/elements.conf:ro
       - elementsd-simplicity-data:/home/elements/.elements
@@ -39,7 +40,7 @@ services:
     container_name: rgbmvp-elementsd
     restart: unless-stopped
     ports:
-      - "7041:7041"
+      - "127.0.0.1:7041:7041"
     volumes:
       - ./docker/elements.conf:/home/elements/.elements/elements.conf:ro
       - elementsd-data:/home/elements/.elements
@@ -61,7 +62,7 @@ services:
     container_name: rgbmvp-bitcoind
     restart: unless-stopped
     ports:
-      - "18543:18443"
+      - "127.0.0.1:18543:18443"
     command:
       - -regtest
       - -server

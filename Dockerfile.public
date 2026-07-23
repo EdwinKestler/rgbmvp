@@ -1,0 +1,41 @@
+# Public read-only labd image (U4).
+# No wallets, no .env secrets, mutations require LABD_API_TOKEN if enabled at all.
+#
+# Build:
+#   docker build -f Dockerfile.public -t rgbmvp-public:local .
+# Run:
+#   docker run --rm -p 8080:8080 \
+#     -e LABD_PUBLIC_READ_ONLY=1 \
+#     -e LABD_CORS_ORIGINS=https://your-vercel.app \
+#     -e PORT=8080 \
+#     rgbmvp-public:local
+
+FROM rust:1.85-bookworm AS builder
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY vendor ./vendor
+# Build only the CLI binary (pulls workspace deps).
+RUN cargo build --release -p lab-cli
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /src/target/release/rgbmvp /usr/local/bin/rgbmvp
+COPY web ./web
+
+ENV LABD_PUBLIC_READ_ONLY=1
+ENV LABD_WEB_DIR=/app/web
+ENV RGBMVP_NETWORK=liquid-testnet
+ENV RGBMVP_DATA_DIR=/tmp/rgbmvp-public
+# Cloud Run sets PORT; LABD_BIND left unset so Config uses 0.0.0.0:$PORT
+ENV PORT=8080
+
+# Empty data dir: no wallets in the image. Mount read-only proofs if desired:
+#   -v $PWD/artifacts/public:/tmp/rgbmvp-public/rgb/proofs:ro
+
+EXPOSE 8080
+USER nobody
+CMD ["rgbmvp", "serve"]

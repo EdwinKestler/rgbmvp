@@ -7,7 +7,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use lab_core::Config;
+use lab_core::{
+    cors_allow_origin, is_mutation_method, validate_path_id, AuthDecision, Config,
+};
 use lab_rgb::storage::RgbStore;
 use lab_rgb::swap::{self, SwapStore};
 use lab_rgb::{
@@ -1485,21 +1487,31 @@ fn run() -> Result<()> {
 
 fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
     let listener = TcpListener::bind(bind).with_context(|| format!("bind {bind}"))?;
+    let sec = &cfg.security;
     eprintln!("labd listening on http://{bind}");
+    eprintln!(
+        "  U4 security: public_read_only={} loopback_bind={} token_configured={} max_body={}",
+        sec.public_read_only,
+        lab_core::is_loopback_bind(bind),
+        sec.api_token.is_some(),
+        sec.max_body_bytes
+    );
     eprintln!("  GET  /                 lab console (Issue · Transfer · Verify · Swap)");
     eprintln!("  GET  /demo             read-only board");
     eprintln!("  GET  /audit            BFA audit UI");
     eprintln!("  GET  /v1               API catalog");
-    eprintln!("  GET  /v1/health · /v1/phases · /v1/networks");
+    eprintln!("  GET  /v1/health · /v1/phases · /v1/networks · /v1/security");
     eprintln!("  GET  /v1/proofs/{{id}} · /v1/swaps · /v1/swap/{{id}}");
     eprintln!("  GET  /v1/demo/wallets · /v1/demo/activity");
     eprintln!("  GET  /v1/rgb/contracts · /v1/rgb/plans/{{id}}");
-    eprintln!("  POST /v1/rgb/issue · transfer · verify");
-    eprintln!("  POST /v1/swap/init");
-    eprintln!("  POST /v1/swap/{{id}}/action  fund_btc|fund_lq|claim_lq|claim_btc|refund_*");
-    eprintln!("  POST /v1/audit/bfa");
+    if sec.public_read_only {
+        eprintln!("  POST (mutations)       DISABLED unless Authorization: Bearer <LABD_API_TOKEN>");
+    } else {
+        eprintln!("  POST /v1/rgb/issue · transfer · verify");
+        eprintln!("  POST /v1/swap/init · /v1/swap/{{id}}/action · /v1/audit/bfa");
+    }
 
-    let web_dir = PathBuf::from("web");
+    let web_dir = PathBuf::from(std::env::var("LABD_WEB_DIR").unwrap_or_else(|_| "web".into()));
     let store = RgbStore::new(&cfg.data_dir);
     let swap_store = SwapStore::new(&cfg.data_dir);
 
@@ -1508,7 +1520,7 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
             Ok(s) => s,
             Err(_) => continue,
         };
-        let mut buf = [0u8; 65536];
+        let mut buf = vec![0u8; sec.max_body_bytes.saturating_add(8192).min(2 * 1024 * 1024)];
         let n = match stream.read(&mut buf) {
             Ok(n) => n,
             Err(_) => continue,
@@ -1522,6 +1534,80 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
         let path_raw = parts.next().unwrap_or("/");
         let path = path_raw.split('?').next().unwrap_or(path_raw);
 
+        // Parse headers of interest
+        let mut content_length: Option<usize> = None;
+        let mut authorization: Option<String> = None;
+        let mut origin: Option<String> = None;
+        for line in lines.by_ref() {
+            if line.is_empty() {
+                break;
+            }
+            if let Some((k, v)) = line.split_once(':') {
+                let k = k.trim().to_ascii_lowercase();
+                let v = v.trim();
+                match k.as_str() {
+                    "content-length" => content_length = v.parse().ok(),
+                    "authorization" => authorization = Some(v.to_string()),
+                    "origin" => origin = Some(v.to_string()),
+                    _ => {}
+                }
+            }
+        }
+        let acao = cors_allow_origin(sec, origin.as_deref());
+
+        // Body size gate
+        if let Some(cl) = content_length {
+            if cl > sec.max_body_bytes {
+                let body = serde_json::to_vec(&serde_json::json!({
+                    "error": "payload too large",
+                    "status": "error",
+                    "code": "body_too_large",
+                    "max_body_bytes": sec.max_body_bytes
+                }))
+                .unwrap_or_default();
+                write_http_response(
+                    &mut stream,
+                    "413 Payload Too Large",
+                    "application/json",
+                    &body,
+                    acao.as_deref(),
+                );
+                continue;
+            }
+        }
+
+        // U4 mutation gate
+        if is_mutation_method(method) {
+            match sec.authorize_mutation(authorization.as_deref()) {
+                AuthDecision::Allow => {}
+                AuthDecision::Deny {
+                    status,
+                    code,
+                    message,
+                } => {
+                    let status_line = match status {
+                        401 => "401 Unauthorized",
+                        403 => "403 Forbidden",
+                        _ => "403 Forbidden",
+                    };
+                    let body = serde_json::to_vec(&serde_json::json!({
+                        "error": message,
+                        "status": "error",
+                        "code": code,
+                    }))
+                    .unwrap_or_default();
+                    write_http_response(
+                        &mut stream,
+                        status_line,
+                        "application/json",
+                        &body,
+                        acao.as_deref(),
+                    );
+                    continue;
+                }
+            }
+        }
+
         // CORS preflight for browser tools
         let (status, content_type, body) = if method == "OPTIONS" {
             (
@@ -1529,6 +1615,14 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
                 "text/plain",
                 Vec::new(),
             )
+        } else if method == "GET" && path == "/v1/security" {
+            let j = serde_json::to_vec_pretty(&lab_api::security_json(
+                sec.public_read_only,
+                lab_core::is_loopback_bind(bind),
+                sec.api_token.is_some(),
+            ))
+            .unwrap();
+            ("200 OK", "application/json", j)
         } else if method == "GET"
             && (path == "/" || path == "/index.html")
         {
@@ -1576,6 +1670,13 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
             ("200 OK", "application/json", j)
         } else if method == "GET" && path.starts_with("/v1/proofs/") {
             let id = path.trim_start_matches("/v1/proofs/");
+            if let Err(e) = validate_path_id(id) {
+                (
+                    "400 Bad Request",
+                    "application/json",
+                    serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "code": "bad_id", "status": "error"})).unwrap(),
+                )
+            } else {
             match store.load_proof(id) {
                 Ok(p) => (
                     "200 OK",
@@ -1587,6 +1688,7 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
                     "application/json",
                     serde_json::to_vec(&serde_json::json!({"error": e.to_string()})).unwrap(),
                 ),
+            }
             }
         } else if method == "GET" && path == "/v1/swaps" {
             match list_swap_ids(&cfg.data_dir) {
@@ -1605,6 +1707,13 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
             let id = path.trim_start_matches("/v1/swap/");
             // strip trailing slash
             let id = id.trim_end_matches('/');
+            if let Err(e) = validate_path_id(id) {
+                (
+                    "400 Bad Request",
+                    "application/json",
+                    serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "code": "bad_id", "status": "error"})).unwrap(),
+                )
+            } else {
             match swap_store.load(id) {
                 Ok(s) => {
                     let public = public_swap_view(&s, cfg);
@@ -1619,6 +1728,7 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
                     "application/json",
                     serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
                 ),
+            }
             }
         } else if method == "POST" && path == "/v1/swap/init" {
             let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(req.len());
@@ -1643,6 +1753,13 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
                 .trim_end_matches('/');
             let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(req.len());
             let body_str = &req[body_start..];
+            if let Err(e) = validate_path_id(mid) {
+                (
+                    "400 Bad Request",
+                    "application/json",
+                    serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "code": "bad_id", "status": "error"})).unwrap(),
+                )
+            } else {
             match handle_swap_action_post(cfg, &swap_store, mid, body_str) {
                 Ok(v) => (
                     "200 OK",
@@ -1654,6 +1771,7 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
                     "application/json",
                     serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
                 ),
+            }
             }
         } else if method == "GET" && path == "/v1/demo/wallets" {
             match demo_wallets(cfg) {
@@ -1696,6 +1814,13 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
             }
         } else if method == "GET" && path.starts_with("/v1/rgb/plans/") {
             let id = path.trim_start_matches("/v1/rgb/plans/");
+            if let Err(e) = validate_path_id(id) {
+                (
+                    "400 Bad Request",
+                    "application/json",
+                    serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "code": "bad_id", "status": "error"})).unwrap(),
+                )
+            } else {
             match store.load_transfer(id) {
                 Ok(p) => (
                     "200 OK",
@@ -1707,6 +1832,7 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
                     "application/json",
                     serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
                 ),
+            }
             }
         } else if method == "POST" && path == "/v1/rgb/verify" {
             let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(req.len());
@@ -1783,14 +1909,29 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
             )
         };
 
-        let resp = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        let _ = stream.write_all(resp.as_bytes());
-        let _ = stream.write_all(&body);
+        write_http_response(&mut stream, status, content_type, &body, acao.as_deref());
     }
     Ok(())
+}
+
+fn write_http_response(
+    stream: &mut impl Write,
+    status: &str,
+    content_type: &str,
+    body: &[u8],
+    allow_origin: Option<&str>,
+) {
+    let mut headers = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n",
+        body.len()
+    );
+    if let Some(o) = allow_origin {
+        headers.push_str(&format!("Access-Control-Allow-Origin: {o}\r\n"));
+        headers.push_str("Vary: Origin\r\n");
+    }
+    headers.push_str("\r\n");
+    let _ = stream.write_all(headers.as_bytes());
+    let _ = stream.write_all(body);
 }
 
 /// Public swap JSON: never expose preimage.

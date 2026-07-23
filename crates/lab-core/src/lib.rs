@@ -1,12 +1,20 @@
 //! Shared configuration and machine-oriented types for rgbmvp.
 //!
 //! Phase 0: network identity, paths, health JSON. RGB types arrive in P0.
+//! U4: public-hosting security helpers (`security` module).
+
+pub mod security;
 
 use std::env;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+
+pub use security::{
+    constant_time_eq, cors_allow_origin, is_loopback_bind, is_mutation_method, is_safe_path_id,
+    parse_cors_origins, validate_path_id, AuthDecision, MutationPolicy,
+};
 
 pub const PRODUCT: &str = "rgbmvp";
 pub const API_VERSION: &str = "v1";
@@ -61,6 +69,8 @@ pub struct Config {
     pub electrum_validate_domain: bool,
     pub explorer_base: String,
     pub log_level: String,
+    /// U4 security policy (mutations, CORS, body limit).
+    pub security: MutationPolicy,
 }
 
 impl Config {
@@ -70,6 +80,13 @@ impl Config {
         let network = LabNetwork::parse(
             &env::var("RGBMVP_NETWORK").unwrap_or_else(|_| DEFAULT_NETWORK.to_string()),
         )?;
+        // Refuse mainnet-ish labels for lab safety.
+        if let Ok(n) = env::var("RGBMVP_NETWORK") {
+            let t = n.trim().to_ascii_lowercase();
+            if t.contains("mainnet") || t == "liquid" || t == "bitcoin" {
+                bail!("mainnet is forbidden in lab config (got RGBMVP_NETWORK={n:?})");
+            }
+        }
         let data_dir = PathBuf::from(
             env::var("RGBMVP_DATA_DIR").unwrap_or_else(|_| ".rgbmvp".to_string()),
         );
@@ -79,12 +96,25 @@ impl Config {
         let consignment_dir = env::var("RGBMVP_CONSIGNMENT_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| data_dir.join("consignments"));
+        // Cloud Run / containers often inject PORT; prefer LABD_BIND, else 0.0.0.0:$PORT only if set.
+        let labd_bind = if let Ok(b) = env::var("LABD_BIND") {
+            b
+        } else if let Ok(port) = env::var("PORT") {
+            format!("0.0.0.0:{port}")
+        } else {
+            "127.0.0.1:8080".into()
+        };
+        let security = MutationPolicy::from_env(&labd_bind);
+        // Public read-only + non-loopback is the intended Cloud Run posture.
+        if security.public_read_only && is_loopback_bind(&labd_bind) {
+            // ok for local public-mode testing
+        }
         Ok(Self {
             network,
             data_dir,
             wallet_dir,
             consignment_dir,
-            labd_bind: env::var("LABD_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string()),
+            labd_bind,
             public_base_url: env::var("LABD_PUBLIC_BASE_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string()),
             esplora_tip_url: env::var("LWK_ESPLORA_TIP_URL")
@@ -104,6 +134,7 @@ impl Config {
             explorer_base: env::var("LIQUID_TESTNET_EXPLORER")
                 .unwrap_or_else(|_| DEFAULT_EXPLORER.to_string()),
             log_level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+            security,
         })
     }
 

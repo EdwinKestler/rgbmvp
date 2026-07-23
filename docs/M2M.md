@@ -19,7 +19,7 @@ This document is structured for **machine parsing**: goals, invariants, workflow
 | `mainnet` | forbidden unless explicit human flag + review |
 | `phase_status` | P0 done · P1 closed · P2 closed · P3 closed (see `docs/*_CLOSED.md`) |
 | `next_strategy` | Protocol completeness on localhost/testnet first; public demo only after U4 (`docs/ROADMAP_NEXT.md`) |
-| `next_protocol` | U4 before public Internet; S3+C2+C4 closed |
+| `next_protocol` | U4 implemented; optional public deploy (Vercel/Cloud Run); S3+C2+C4 closed |
 | `public_hosting` | Blocked until U4 acceptance gate |
 | `binary` | `cargo build -p lab-cli` → `./target/debug/rgbmvp` |
 | `api_prefix` | `/v1` |

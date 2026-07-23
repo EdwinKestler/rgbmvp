@@ -163,7 +163,7 @@ Not a new consensus phase—**UX only**.
 | U1 | Issue / transfer wizards | **CLOSED** — `/v1/rgb/issue|transfer` + UI |
 | U2 | Swap wizard | **CLOSED** — guided **value** HTLC fund/claim; demo-u2 phase done |
 | U3 | Hardware / Marina path (optional) | Deferred |
-| **U4** | Public hosting security gate | **Required before Internet exposure** — auth, CORS allowlist, limits, loopback RPC, read/write split ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)) |
+| **U4** | Public hosting security gate | **Implemented** — [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md); public read-only + Bearer mutations; deploy sketches in `deploy/` |
 
 P0 web verifier must not hard-code assumptions that block U0–U2 (shared API types, CORS, versioned errors).  
 **P3 closed** remains valid for localhost operator console; U4 is a **new** ops/security scenario, not a silent reopening of P3.
