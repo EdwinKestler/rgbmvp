@@ -6,9 +6,15 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # On-demand runs always use the workflow file + code from the selected ref
+  # (tip of main if you choose main). Re-running a *failed old job* still uses
+  # that old commit's workflow — do not re-run pre-1.88 failures.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
+  # Force cargo/rustc to 1.88 even if runner has an older default.
+  RUSTUP_TOOLCHAIN: "1.88"
 
 jobs:
   rust:
@@ -17,7 +23,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      # Must be >= 1.88 (ar_archive_writer); root rust-toolchain.toml pins 1.88
+      # ar_archive_writer@0.5.2 requires rustc >= 1.88 (also rust-toolchain.toml).
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.88"
@@ -26,8 +32,23 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential pkg-config libssl-dev clang cmake
       - uses: Swatinem/rust-cache@v2
-      - name: rustc version
-        run: rustc --version && cargo --version
+      - name: rustc version gate (>= 1.88)
+        run: |
+          set -euo pipefail
+          echo "RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-}"
+          rustup show
+          rustc --version
+          cargo --version
+          # Fail early if this job is somehow still on < 1.88 (old re-runs, bad cache).
+          ver=$(rustc --version | awk '{print $2}')
+          major=${ver%%.*}
+          rest=${ver#*.}
+          minor=${rest%%.*}
+          if [ "$major" -lt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -lt 88 ]; }; then
+            echo "::error::rustc $ver is too old; need >= 1.88 (ar_archive_writer). If you re-ran an old failed Actions job, that still uses the old commit's workflow — open the latest 'ci' run on main or use workflow_dispatch on ref main."
+            exit 1
+          fi
+          echo "OK: rustc $ver meets >= 1.88"
       - name: cargo test (workspace libs)
         run: |
           cargo test -p lab-core -p lab-api -p lab-rgb -p lab-simplicity --lib
