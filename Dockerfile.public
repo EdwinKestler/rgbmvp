@@ -11,12 +11,15 @@
 #     rgbmvp-public:local
 
 FROM rust:1.88-bookworm AS builder
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev clang cmake \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 COPY vendor ./vendor
 # Build only the CLI binary (pulls workspace deps).
-RUN cargo build --release -p lab-cli
+RUN rustc --version && cargo build --release -p lab-cli
 
 FROM debian:bookworm-slim
 RUN apt-get update \

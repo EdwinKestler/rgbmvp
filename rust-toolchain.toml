@@ -1,0 +1,4 @@
+# Pin for local + CI (ar_archive_writer and related crates need >= 1.88).
+[toolchain]
+channel = "1.88"
+profile = "minimal"
