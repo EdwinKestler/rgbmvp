@@ -1,6 +1,9 @@
 //! U4 public-hosting security primitives (no HTTP stack dependency).
 
+use std::collections::HashMap;
 use std::env;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
@@ -299,5 +302,55 @@ mod tests {
             Some("https://demo.example".into())
         );
         assert_eq!(cors_allow_origin(&p, Some("https://evil.example")), None);
+    }
+
+    #[test]
+    fn rate_limit_window() {
+        let lim = RateLimiter::new(3, Duration::from_secs(60));
+        assert!(lim.check("1.1.1.1"));
+        assert!(lim.check("1.1.1.1"));
+        assert!(lim.check("1.1.1.1"));
+        assert!(!lim.check("1.1.1.1"));
+        assert!(lim.check("2.2.2.2"));
+    }
+}
+
+/// Simple in-process sliding-window rate limiter (per key, e.g. peer IP).
+#[derive(Debug)]
+pub struct RateLimiter {
+    max: usize,
+    window: Duration,
+    hits: Mutex<HashMap<String, Vec<Instant>>>,
+}
+
+impl RateLimiter {
+    pub fn new(max: usize, window: Duration) -> Self {
+        Self {
+            max: max.max(1),
+            window,
+            hits: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// From env: `LABD_VERIFY_RATE_LIMIT` (default 30) per minute.
+    pub fn from_env_verify() -> Self {
+        let max = env::var("LABD_VERIFY_RATE_LIMIT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30);
+        Self::new(max, Duration::from_secs(60))
+    }
+
+    /// Returns true if the request is allowed.
+    pub fn check(&self, key: &str) -> bool {
+        let now = Instant::now();
+        let mut guard = self.hits.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = guard.entry(key.to_string()).or_default();
+        entry.retain(|t| now.duration_since(*t) < self.window);
+        if entry.len() >= self.max {
+            return false;
+        }
+        entry.push(now);
+        true
     }
 }

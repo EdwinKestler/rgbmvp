@@ -1,0 +1,42 @@
+{
+  "id": "s3-20260722-1251",
+  "phase": "done",
+  "rgb_wrap": true,
+  "version": 2,
+  "csv_delay": 6,
+  "hash_hex": "37bc26982831568c05e4114c29bc19da84e3b2b83be501cdd6d1d3fdfac58a1f",
+  "preimage_hex": null,
+  "preimage_redacted": true,
+  "btc_contract_id": "rgb:r5_o5E6y-B03GIeV-ftfLput-m4ezkiP-doC1sv_-wPFT28I",
+  "lq_contract_id": "rgb:QLCa4u1b-pfYSZI9-YioBOTi-5FyzZ6R-9taAhe7-SPW2iOE",
+  "value_path": {
+    "btc_fund_txid": "39a23496ce8c9747f3e334a119386c53b54f1a5fd26decc0dbc1698819959a73",
+    "btc_fund_sats": 10000,
+    "lq_fund_txid": "b2fda5469de0d1334e43ef709b133d9c28ca313156ef971a634d4a087fce6d31",
+    "lq_fund_sats": 5000,
+    "lq_claim_txid": "57e177d0bad744cb6f2a4eed43ae6ddcfa26480fab34b3777d4389c1de2901c1",
+    "btc_claim_txid": "08e88af3135a9ae0bdffca63048821f4476b4792b302b19b851875cc5ad562df"
+  },
+  "btc_rgb": {
+    "fund_verify": "valid",
+    "claim_verify": "valid",
+    "fund_anchor_txid": "5ce1e25caac0435346102851e463ae61de63d0df87a37c612d6f115c4c151f4b",
+    "claim_anchor_txid": "08e88af3135a9ae0bdffca63048821f4476b4792b302b19b851875cc5ad562df",
+    "htlc_seal": "39a23496ce8c9747f3e334a119386c53b54f1a5fd26decc0dbc1698819959a73:0",
+    "successor_seal": "08e88af3135a9ae0bdffca63048821f4476b4792b302b19b851875cc5ad562df:1"
+  },
+  "lq_rgb": {
+    "fund_verify": "valid",
+    "claim_verify": "valid",
+    "fund_anchor_txid": "dcdaeee2a51523e25e26a74146f1895357f6f3db11fa16322c2eaf89624e53b3",
+    "claim_anchor_txid": "57e177d0bad744cb6f2a4eed43ae6ddcfa26480fab34b3777d4389c1de2901c1",
+    "htlc_seal": "b2fda5469de0d1334e43ef709b133d9c28ca313156ef971a634d4a087fce6d31:0",
+    "successor_seal": "57e177d0bad744cb6f2a4eed43ae6ddcfa26480fab34b3777d4389c1de2901c1:1"
+  },
+  "explorers": {
+    "btc_fund": "https://blockstream.info/testnet/tx/39a23496ce8c9747f3e334a119386c53b54f1a5fd26decc0dbc1698819959a73",
+    "btc_claim": "https://blockstream.info/testnet/tx/08e88af3135a9ae0bdffca63048821f4476b4792b302b19b851875cc5ad562df",
+    "lq_fund": "https://blockstream.info/liquidtestnet/tx/b2fda5469de0d1334e43ef709b133d9c28ca313156ef971a634d4a087fce6d31",
+    "lq_claim": "https://blockstream.info/liquidtestnet/tx/57e177d0bad744cb6f2a4eed43ae6ddcfa26480fab34b3777d4389c1de2901c1"
+  }
+}

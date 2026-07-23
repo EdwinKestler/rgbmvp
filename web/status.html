@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>rgbmvp — public status (read-only)</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color: #e8eef7; background: #0b1220; }
+    body { max-width: 960px; margin: 1.5rem auto; padding: 0 1rem; line-height: 1.45; }
+    h1 { font-size: 1.35rem; margin-bottom: 0.2rem; }
+    h2 { font-size: 1rem; margin: 1.25rem 0 0.5rem; color: #9fb0cc; font-weight: 600; }
+    .muted { color: #9fb0cc; font-size: 0.9rem; }
+    .banner {
+      background: #12261c; border: 1px solid #2a5c40; color: #9fe3b8;
+      padding: 0.65rem 0.85rem; border-radius: 8px; margin: 0.75rem 0 1rem; font-size: 0.88rem;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 0.75rem 0 1rem; }
+    .chip {
+      border-radius: 999px; padding: 0.25rem 0.7rem; font-size: 0.78rem; font-weight: 700;
+      border: 1px solid #334866; background: #141e33;
+    }
+    .chip.done, .chip.closed, .chip.implemented { color: #3ddc97; border-color: #2a5c40; }
+    .chip.pending { color: #f0d78c; }
+    a { color: #7eb6ff; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th, td { text-align: left; padding: 0.45rem 0.35rem; border-bottom: 1px solid #243352; vertical-align: top; }
+    th { color: #9fb0cc; font-weight: 600; }
+    code { font-size: 0.8rem; }
+    .card { background: #141e33; border: 1px solid #243352; border-radius: 10px; padding: 0.85rem 1rem; margin: 0.5rem 0; }
+  </style>
+</head>
+<body>
+  <h1>rgbmvp public status</h1>
+  <p class="muted">Read-only ladder evidence. No browser keys · no mainnet · mutations stay on operator labd.</p>
+  <div class="banner">
+    <strong>Public demo (read-only)</strong> —
+    full protocol runs <em>locally</em> (CLI + testnet / regtest).
+    See <a href="https://github.com/EdwinKestler/rgbmvp">GitHub</a> ·
+    <a href="/">Console</a> · <a href="/demo">Board</a>
+  </div>
+  <nav style="display:flex;gap:0.65rem;flex-wrap:wrap;margin:0.5rem 0;font-size:0.9rem">
+    <a href="/">Console</a>
+    <a href="/demo">Board</a>
+    <a href="/status">Status</a>
+    <a href="/audit">BFA audit</a>
+  </nav>
+
+  <div class="chips" id="chips"><span class="muted">Loading phases…</span></div>
+  <div id="err" style="color:#ff6b6b"></div>
+
+  <h2>Phase ladder</h2>
+  <div class="card"><table>
+    <thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Surface</th><th>Doc / links</th></tr></thead>
+    <tbody id="phase-rows"></tbody>
+  </table></div>
+
+  <h2>S3 live (Bitcoin + Liquid testnet)</h2>
+  <div class="card" id="s3"><span class="muted">Loading…</span></div>
+
+  <h2>Covenant demos (Elements regtest)</h2>
+  <div class="card" id="covenants"><span class="muted">Loading…</span></div>
+
+  <p class="muted" id="stamp"></p>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    // Works under labd (/artifacts/…) and Vercel (./artifacts/… or root copy)
+    const CANDIDATES = [
+      '/artifacts/public/manifest.json',
+      './artifacts/public/manifest.json',
+      'artifacts/public/manifest.json',
+      '/manifest.json',
+      './manifest.json'
+    ];
+
+    async function loadManifest() {
+      for (const u of CANDIDATES) {
+        try {
+          const r = await fetch(u, { cache: 'no-store' });
+          if (r.ok) return { url: u, data: await r.json() };
+        } catch (_) {}
+      }
+      throw new Error('Could not load artifacts/public/manifest.json (serve via labd or Vercel static).');
+    }
+
+    function chipClass(st) {
+      const s = (st || '').toLowerCase();
+      if (['done', 'closed', 'implemented'].includes(s)) return s === 'implemented' ? 'implemented' : (s === 'closed' ? 'closed' : 'done');
+      return 'pending';
+    }
+
+    function linkDoc(doc) {
+      if (!doc) return '—';
+      // Prefer GitHub for static hosts without docs tree
+      const gh = 'https://github.com/EdwinKestler/rgbmvp/blob/main/' + doc;
+      return `<a href="${gh}" target="_blank" rel="noopener">${doc}</a>`;
+    }
+
+    async function main() {
+      try {
+        const { url, data } = await loadManifest();
+        const phases = data.phases || [];
+        $('chips').innerHTML = phases.map(p =>
+          `<span class="chip ${chipClass(p.status)}" title="${p.name}">${p.id}: ${p.status}</span>`
+        ).join('');
+
+        $('phase-rows').innerHTML = phases.map(p => `
+          <tr>
+            <td><strong>${p.id}</strong></td>
+            <td>${p.name}</td>
+            <td class="chip ${chipClass(p.status)}" style="display:inline-block">${p.status}</td>
+            <td class="muted">${p.surface || '—'}</td>
+            <td>${linkDoc(p.doc)}</td>
+          </tr>`).join('');
+
+        const s3 = data.proofs && data.proofs.s3_live;
+        if (s3) {
+          const L = s3.links || {};
+          $('s3').innerHTML = `
+            <p><strong>Session</strong> <code>${s3.session_id}</code> · phase <strong>${s3.phase}</strong> · rgb_wrap=${s3.rgb_wrap}</p>
+            <p class="muted">${s3.note || ''}</p>
+            <ul>
+              <li>BTC fund · <a href="${L.btc_fund}" target="_blank" rel="noopener">tx</a>
+                · RGB anchor <a href="${L.btc_fund_rgb_anchor}" target="_blank" rel="noopener">tx</a>
+                · claim <a href="${L.btc_claim}" target="_blank" rel="noopener">tx</a>
+                · verify ${s3.verify && s3.verify.btc_claim}</li>
+              <li>LQ fund · <a href="${L.lq_fund}" target="_blank" rel="noopener">tx</a>
+                · RGB anchor <a href="${L.lq_fund_rgb_anchor}" target="_blank" rel="noopener">tx</a>
+                · claim <a href="${L.lq_claim}" target="_blank" rel="noopener">tx</a>
+                · verify ${s3.verify && s3.verify.lq_claim}</li>
+            </ul>`;
+        }
+
+        const p = data.proofs || {};
+        const rows = ['c0_regtest','c1_regtest','c2_regtest','c3_regtest','c4_regtest']
+          .filter(k => p[k])
+          .map(k => {
+            const x = p[k];
+            const ids = [x.spend_txid, x.mint1_txid, x.mint2_txid, x.unstake_txid].filter(Boolean);
+            return `<tr>
+              <td><strong>${k.replace('_regtest','').toUpperCase()}</strong></td>
+              <td class="muted">${x.network || 'regtest'}</td>
+              <td><code>${ids.join('<br>') || (x.note || '—')}</code></td>
+              <td>${linkDoc(x.doc)} · <code>${x.demo || ''}</code></td>
+            </tr>`;
+          }).join('');
+        $('covenants').innerHTML = `<table>
+          <tr><th>Slice</th><th>Network</th><th>Txids (local regtest)</th><th>Doc</th></tr>
+          ${rows}
+        </table>
+        <p class="muted">Regtest txids are not on public explorers. Re-run demos for reproducible local proofs.</p>`;
+
+        $('stamp').textContent = 'Manifest: ' + url + ' · generated ' + (data.generated || '');
+      } catch (e) {
+        $('err').textContent = String(e);
+      }
+    }
+    main();
+  </script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+# Build (and optionally push) the U4 public read-only image.
+name: docker-public
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile.public"
+      - "crates/**"
+      - "vendor/**"
+      - "web/**"
+      - "artifacts/public/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/docker-public.yml"
+  pull_request:
+    paths:
+      - "Dockerfile.public"
+      - "web/**"
+      - "artifacts/public/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build public image (no push on PR)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.public
+          push: false
+          tags: rgbmvp-public:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: rgbmvp-public:ci
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+  push-ghcr:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.public
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/rgbmvp-public:latest
+            ghcr.io/${{ github.repository_owner }}/rgbmvp-public:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

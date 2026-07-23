@@ -1,5 +1,10 @@
 # rgbmvp — RGB on Liquid Testnet Lab
 
+[![ci](https://github.com/EdwinKestler/rgbmvp/actions/workflows/ci.yml/badge.svg)](https://github.com/EdwinKestler/rgbmvp/actions/workflows/ci.yml)
+[![Public demo (read-only)](https://img.shields.io/badge/public%20demo-read--only-2ea44f)](web/status.html)
+[![Run full lab locally](https://img.shields.io/badge/lab-CLI%20%2B%20localhost-0A66C2)](#try-on-liquid-testnet-in-15-minutes)
+[![U4 security](https://img.shields.io/badge/U4-security%20gate-111)](docs/U4_PUBLIC_HOSTING.md)
+
 Public lab for **RGB client-side assets anchored on Liquid** (and Bitcoin testnet twins), with a CLI, browser lab console, and shared `/v1` API.
 
 Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/rgb-on-liquid-spike) / [writeup](https://x.com/i/status/2077733143428190555).
@@ -8,8 +13,10 @@ Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/
 |--|--|
 | **Purpose** | Prove RGB-on-Liquid, twin HTLC swaps, Simplicity/BFA seals, and a safe local browser console |
 | **Networks** | Liquid Testnet · Bitcoin Testnet (P1) · Elements regtest (P2) · **no mainnet** |
-| **Status** | **P0–P3 closed** · **S3** + **C2** + **C4** + **U4** done · optional public deploy ([ROADMAP_NEXT](docs/ROADMAP_NEXT.md)) |
-| **UI** | Issue / transfer / verify / guided swap · `/demo` board · BFA audit (**no browser keys**) |
+| **Status** | **P0–P3 closed** · **S3** + **C2** + **C4** + **U4** done · public artifacts + CI ([ROADMAP_NEXT](docs/ROADMAP_NEXT.md)) |
+| **Public demo** | **Read-only** status board + canned proofs — [web/status.html](web/status.html) · [artifacts/public](artifacts/public/) · [PUBLIC_LAUNCH](docs/PUBLIC_LAUNCH.md) |
+| **Full lab** | **Run locally** (CLI + wallets + regtest) — never put hot keys on the Internet |
+| **UI** | Issue / transfer / verify / guided swap · `/demo` · `/status` · BFA audit (**no browser keys**) |
 
 ### Documentation (start here)
 
@@ -20,7 +27,8 @@ Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/
 | **Agents / AI** — goals, invariants, Redis project memory | **[docs/M2M.md](docs/M2M.md)** · [AGENTS.md](AGENTS.md) |
 | Architecture · scenarios · stack | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [SCENARIOS](docs/SCENARIOS.md) · [STACK](docs/STACK.md) |
 | Phase evidence | [P1_CLOSED](docs/P1_CLOSED.md) · [P2_CLOSED](docs/P2_CLOSED.md) · [P3_CLOSED](docs/P3_CLOSED.md) |
-| **Next work** | Optional public deploy — [U4_PUBLIC_HOSTING](docs/U4_PUBLIC_HOSTING.md) · [deploy/](deploy/) · [C4_CLOSED](docs/C4_CLOSED.md) · [S3_RGB_WRAP](docs/S3_RGB_WRAP.md) |
+| **Launch / deploy** | [PUBLIC_LAUNCH](docs/PUBLIC_LAUNCH.md) · [U4_PUBLIC_HOSTING](docs/U4_PUBLIC_HOSTING.md) · [deploy/](deploy/) |
+| **Evidence** | [artifacts/public](artifacts/public/) · [S3_RGB_WRAP](docs/S3_RGB_WRAP.md) · [C4_CLOSED](docs/C4_CLOSED.md) |
 | Protocol without UI | [docs/HEADLESS.md](docs/HEADLESS.md) |
 
 **Redis project memory** is optional and only for agent source discovery — operators can ignore it entirely ([docs/PROJECT_MEMORY.md](docs/PROJECT_MEMORY.md)).

@@ -1,0 +1,39 @@
+# Optional: deploy static public face to Vercel on main.
+# Requires secrets.VERCEL_TOKEN, secrets.VERCEL_ORG_ID, secrets.VERCEL_PROJECT_ID
+name: deploy-vercel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "artifacts/public/**"
+      - "deploy/vercel.json"
+      - ".github/workflows/deploy-vercel.yml"
+
+jobs:
+  deploy:
+    if: ${{ secrets.VERCEL_TOKEN != '' }}
+    runs-on: ubuntu-latest
+    environment: public-demo
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage static public root
+        run: |
+          set -euo pipefail
+          rm -rf public
+          mkdir -p public
+          cp -r web/* public/
+          mkdir -p public/artifacts/public
+          cp -r artifacts/public/* public/artifacts/public/
+          # Root copies so status.html CANDIDATES resolve on Vercel
+          cp artifacts/public/manifest.json public/manifest.json
+          cp deploy/vercel.json vercel.json
+      - uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-args: "--prod"
+          working-directory: ./

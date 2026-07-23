@@ -141,4 +141,6 @@ MVP delivered: loopback RPC ports, `LABD_PUBLIC_READ_ONLY`, Bearer on POST, id r
 3. ~~Implement **S3** CLI + live proof.~~ → [S3_RGB_WRAP.md](./S3_RGB_WRAP.md)  
 4. ~~**C2** burn mint-gate on regtest.~~ → [C2_CLOSED.md](./C2_CLOSED.md)  
 5. ~~**C4** staking.~~ → [C4_CLOSED.md](./C4_CLOSED.md)  
-6. ~~**U4** security engineering.~~ → [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md); optional deploy next.  
+6. ~~**U4** security engineering.~~ → [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md)  
+7. ~~Public content + CI + harden.~~ → [PUBLIC_LAUNCH.md](./PUBLIC_LAUNCH.md) · `artifacts/public/` · `.github/workflows/*`  
+8. Operator: enable deploy secrets → 24–48h soak → announce.  

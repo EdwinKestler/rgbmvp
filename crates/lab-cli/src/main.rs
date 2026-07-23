@@ -8,8 +8,10 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use lab_core::{
-    cors_allow_origin, is_mutation_method, validate_path_id, AuthDecision, Config,
+    cors_allow_origin, is_mutation_method, is_safe_path_id, validate_path_id, AuthDecision, Config,
+    RateLimiter,
 };
+use std::sync::Arc;
 use lab_rgb::storage::RgbStore;
 use lab_rgb::swap::{self, SwapStore};
 use lab_rgb::{
@@ -1512,14 +1514,27 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
     }
 
     let web_dir = PathBuf::from(std::env::var("LABD_WEB_DIR").unwrap_or_else(|_| "web".into()));
+    let artifacts_dir = PathBuf::from(
+        std::env::var("LABD_ARTIFACTS_DIR").unwrap_or_else(|_| "artifacts/public".into()),
+    );
     let store = RgbStore::new(&cfg.data_dir);
     let swap_store = SwapStore::new(&cfg.data_dir);
+    let verify_limiter = Arc::new(RateLimiter::from_env_verify());
+    eprintln!("  GET  /status · /artifacts/public/*  (public evidence)");
+    eprintln!(
+        "  verify rate limit: {}/min per peer (LABD_VERIFY_RATE_LIMIT)",
+        std::env::var("LABD_VERIFY_RATE_LIMIT").unwrap_or_else(|_| "30".into())
+    );
 
     for stream in listener.incoming() {
         let mut stream = match stream {
             Ok(s) => s,
             Err(_) => continue,
         };
+        let peer = stream
+            .peer_addr()
+            .map(|a| a.ip().to_string())
+            .unwrap_or_else(|_| "unknown".into());
         let mut buf = vec![0u8; sec.max_body_bytes.saturating_add(8192).min(2 * 1024 * 1024)];
         let n = match stream.read(&mut buf) {
             Ok(n) => n,
@@ -1641,6 +1656,52 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
                 "<html><body><h1>/audit</h1><p>missing web/audit.html</p></body></html>".into()
             });
             ("200 OK", "text/html; charset=utf-8", html.into_bytes())
+        } else if method == "GET" && (path == "/status" || path == "/status.html") {
+            let html = fs::read_to_string(web_dir.join("status.html")).unwrap_or_else(|_| {
+                "<html><body><h1>/status</h1><p>missing web/status.html</p></body></html>".into()
+            });
+            ("200 OK", "text/html; charset=utf-8", html.into_bytes())
+        } else if method == "GET"
+            && (path == "/artifacts/public/manifest.json"
+                || path == "/manifest.json"
+                || path.starts_with("/artifacts/public/"))
+        {
+            let rel = path
+                .trim_start_matches("/artifacts/public/")
+                .trim_start_matches('/');
+            let name = if path == "/manifest.json" || path.ends_with("manifest.json") {
+                "manifest.json"
+            } else if path.ends_with("s3-rgbmvp-live.json") {
+                "s3-rgbmvp-live.json"
+            } else if is_safe_path_id(rel) {
+                rel
+            } else {
+                ""
+            };
+            if name.is_empty() || name.contains("..") {
+                (
+                    "400 Bad Request",
+                    "application/json",
+                    br#"{"error":"bad artifact path","status":"error"}"#.to_vec(),
+                )
+            } else {
+                let p = artifacts_dir.join(name);
+                match fs::read(&p) {
+                    Ok(b) => {
+                        let ct = if name.ends_with(".json") {
+                            "application/json"
+                        } else {
+                            "text/plain; charset=utf-8"
+                        };
+                        ("200 OK", ct, b)
+                    }
+                    Err(_) => (
+                        "404 Not Found",
+                        "application/json",
+                        br#"{"error":"artifact not found","status":"error"}"#.to_vec(),
+                    ),
+                }
+            }
         } else if method == "GET" && path == "/v1" {
             let j = serde_json::to_vec_pretty(&lab_api::root_json()).unwrap();
             ("200 OK", "application/json", j)
@@ -1835,6 +1896,19 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
             }
             }
         } else if method == "POST" && path == "/v1/rgb/verify" {
+            // Rate-limit verify (Esplora-backed) per peer IP — U4 public soak.
+            if !verify_limiter.check(&peer) {
+                (
+                    "429 Too Many Requests",
+                    "application/json",
+                    serde_json::to_vec(&serde_json::json!({
+                        "error": "verify rate limit exceeded; retry later",
+                        "status": "error",
+                        "code": "rate_limited"
+                    }))
+                    .unwrap(),
+                )
+            } else {
             let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(req.len());
             let body_str = &req[body_start..];
             match handle_verify_post(cfg, &store, body_str) {
@@ -1848,6 +1922,7 @@ fn serve_labd(cfg: &Config, bind: &str) -> Result<()> {
                     "application/json",
                     serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
                 ),
+            }
             }
         } else if method == "POST" && path == "/v1/rgb/issue" {
             let body_start = req.find("\r\n\r\n").map(|i| i + 4).unwrap_or(req.len());

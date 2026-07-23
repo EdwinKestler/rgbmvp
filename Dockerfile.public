@@ -25,16 +25,18 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /src/target/release/rgbmvp /usr/local/bin/rgbmvp
 COPY web ./web
+COPY artifacts/public ./artifacts/public
 
 ENV LABD_PUBLIC_READ_ONLY=1
 ENV LABD_WEB_DIR=/app/web
+ENV LABD_ARTIFACTS_DIR=/app/artifacts/public
 ENV RGBMVP_NETWORK=liquid-testnet
 ENV RGBMVP_DATA_DIR=/tmp/rgbmvp-public
 # Cloud Run sets PORT; LABD_BIND left unset so Config uses 0.0.0.0:$PORT
 ENV PORT=8080
+ENV LABD_VERIFY_RATE_LIMIT=30
 
-# Empty data dir: no wallets in the image. Mount read-only proofs if desired:
-#   -v $PWD/artifacts/public:/tmp/rgbmvp-public/rgb/proofs:ro
+# Empty data dir: no wallets in the image.
 
 EXPOSE 8080
 USER nobody

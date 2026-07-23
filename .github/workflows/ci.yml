@@ -1,0 +1,54 @@
+# Phase 4/5: continuous integration for the public monorepo.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: cargo test / compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.85"
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test (workspace libs)
+        run: |
+          cargo test -p lab-core -p lab-api -p lab-rgb -p lab-simplicity --lib
+      - name: cargo build lab-cli
+        run: cargo build -p lab-cli
+      - name: public artifacts present
+        run: |
+          test -f artifacts/public/manifest.json
+          test -f artifacts/public/s3-rgbmvp-live.json
+          python3 -c "import json; json.load(open('artifacts/public/manifest.json'))"
+
+  gitleaks:
+    name: secrets scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  python:
+    name: pytest (optional glue)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q

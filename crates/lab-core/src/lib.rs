@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 pub use security::{
     constant_time_eq, cors_allow_origin, is_loopback_bind, is_mutation_method, is_safe_path_id,
-    parse_cors_origins, validate_path_id, AuthDecision, MutationPolicy,
+    parse_cors_origins, validate_path_id, AuthDecision, MutationPolicy, RateLimiter,
 };
 
 pub const PRODUCT: &str = "rgbmvp";

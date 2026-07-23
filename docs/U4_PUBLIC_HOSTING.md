@@ -89,8 +89,12 @@ curl -s -X POST http://127.0.0.1:8080/v1/rgb/verify \
 - Hosting hot wallets or Simplicity regtest on the public Internet  
 - Mainnet  
 
+## Content / CI / launch
+
+See **[PUBLIC_LAUNCH.md](./PUBLIC_LAUNCH.md)** for Phase 4 artifacts+CI and Phase 5 soak/announce.
+
 ## Next
 
-- Deploy preview (Vercel + optional Cloud Run)  
-- Publish canned proofs under `artifacts/public/` if desired  
-- Independent review before marketing a public URL  
+- Enable deploy secrets (Vercel / Cloud Run OIDC)  
+- 24–48h GET-only soak on first public URL  
+- Independent review before marketing the URL  

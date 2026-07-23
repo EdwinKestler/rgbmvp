@@ -1,0 +1,63 @@
+# Optional: deploy public labd to Cloud Run via Workload Identity Federation (OIDC).
+# Disabled until repository secrets/variables are configured (see deploy/README.md).
+#
+# Required:
+#   secrets.GCP_WORKLOAD_IDENTITY_PROVIDER
+#   secrets.GCP_SERVICE_ACCOUNT
+#   vars.GCP_PROJECT_ID
+#   vars.GCP_REGION (e.g. us-central1)
+#   vars.GCP_AR_REPO (e.g. rgbmvp)
+name: deploy-cloudrun
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile.public"
+      - "deploy/cloudrun.yaml"
+      - "crates/**"
+      - "web/**"
+      - "artifacts/public/**"
+      - ".github/workflows/deploy-cloudrun.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    if: ${{ vars.GCP_PROJECT_ID != '' }}
+    runs-on: ubuntu-latest
+    environment: public-demo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+      - name: Build & push image
+        run: |
+          set -euo pipefail
+          IMAGE="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_AR_REPO }}/rgbmvp-public:${{ github.sha }}"
+          docker build -f Dockerfile.public -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+      - name: Deploy Cloud Run
+        run: |
+          set -euo pipefail
+          CORS="${{ vars.LABD_CORS_ORIGINS }}"
+          CORS="${CORS:-https://example.vercel.app}"
+          gcloud run deploy rgbmvp-public \
+            --image="$IMAGE" \
+            --region="${{ vars.GCP_REGION }}" \
+            --project="${{ vars.GCP_PROJECT_ID }}" \
+            --allow-unauthenticated \
+            --min-instances=0 \
+            --max-instances=2 \
+            --memory=512Mi \
+            --cpu=1 \
+            --set-env-vars="LABD_PUBLIC_READ_ONLY=1,RGBMVP_NETWORK=liquid-testnet,LABD_CORS_ORIGINS=${CORS}"

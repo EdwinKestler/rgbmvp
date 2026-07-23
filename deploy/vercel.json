@@ -2,12 +2,13 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
   "name": "rgbmvp-public",
-  "buildCommand": "mkdir -p public && cp -r web/* public/ && cp docs/U4_PUBLIC_HOSTING.md public/ 2>/dev/null || true",
+  "buildCommand": "mkdir -p public/artifacts/public && cp -r web/* public/ && cp -r artifacts/public/* public/artifacts/public/ && cp artifacts/public/manifest.json public/manifest.json",
   "outputDirectory": "public",
   "rewrites": [
     { "source": "/", "destination": "/index.html" },
     { "source": "/demo", "destination": "/demo.html" },
-    { "source": "/audit", "destination": "/audit.html" }
+    { "source": "/audit", "destination": "/audit.html" },
+    { "source": "/status", "destination": "/status.html" }
   ],
   "headers": [
     {
