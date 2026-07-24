@@ -29,18 +29,21 @@ secrets or hot wallets on the Internet.
 
 Full name table + `gh` commands: **[deploy/README.md](../deploy/README.md#github-actions--variables--secrets)**.
 
-**Cloud Run (OIDC) — primary public origin**
+**Cloud Run (OIDC) — primary public origin (freeze)**
 
 | Kind | Names |
 |------|--------|
-| Variables | `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_AR_REPO`, optional `LABD_CORS_ORIGINS` |
-| Secrets | `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT` |
+| Variables | `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_AR_REPO`; optional `GCP_RUNTIME_SERVICE_ACCOUNT`, `LABD_CORS_ORIGINS` |
+| Secrets | `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT` (**deploy** SA only) |
 | Environment | `public-demo` |
+| Runtime SA | `rgbmvp-public-run@…` — dedicated, **no** project roles |
 
-1. GCP project + enable APIs + Artifact Registry repo `rgbmvp`.  
-2. Workload Identity Federation for GitHub → fill the two secrets.  
+**First revision profile:** service `rgbmvp-public` · public auth · ingress all · min 0 / max **1** · 1 CPU · 512 MiB · `LABD_PUBLIC_READ_ONLY=1` · `RGBMVP_NETWORK=liquid-testnet` · **no** `LABD_API_TOKEN` · **no** wallets/volumes. See [`deploy/cloudrun.yaml`](../deploy/cloudrun.yaml).
+
+1. GCP project + enable APIs + Artifact Registry repo `rgbmvp` + create runtime SA.  
+2. Workload Identity Federation for GitHub → fill the two **deploy** secrets.  
 3. Set vars (example project: `silicon-pointer-490721-r0`, region `us-central1`, AR `rgbmvp`).  
-4. **Actions → deploy-cloudrun → Run** (or push paths that trigger it).
+4. **Actions → deploy-cloudrun → Run** (workflow deploys freeze profile + post-deploy smoke).
 
 **Vercel (optional / secondary)**
 
@@ -68,13 +71,14 @@ administrator approval are still required before announcement.
 
 ### Soak procedure (operator)
 
-1. Deploy public image / Vercel with `LABD_PUBLIC_READ_ONLY=1` (image default).  
-2. Confirm:
+1. Deploy Cloud Run freeze revision (`rgbmvp-public`, max 1 instance, runtime SA no privileges).  
+2. Confirm (also automated in `deploy-cloudrun` smoke step):
    - `GET /v1/security` → `public_read_only: true`
    - `POST /v1/*` without token → **403**
-   - `GET /status` loads phase chips from manifest  
-3. Leave live **24–48h**; watch Cloud Run/Vercel metrics and budget alerts.  
-4. Only GET traffic; no wallet mounts.  
+   - Security headers present (`nosniff`, `DENY`, CSP)
+   - `GET /status` and `/v1/health` OK  
+3. Leave live **24–48h**; watch Cloud Run metrics and budget alerts.  
+4. Only GET traffic; no wallet mounts; no `LABD_API_TOKEN`.  
 5. Then announce (README already states read-only demo).
 
 ### Announce blurb (copy)

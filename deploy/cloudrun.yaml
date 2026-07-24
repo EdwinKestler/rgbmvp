@@ -1,40 +1,58 @@
-# Cloud Run service sketch (U4 public read-only labd).
-# Deploy after building/pushing the image to Artifact Registry or GHCR.
+# Cloud Run — publication freeze first revision (U4 public read-only labd).
 #
-# Example:
-#   gcloud auth login
-#   gcloud config set project YOUR_PROJECT
-#   gcloud services enable run.googleapis.com artifactregistry.googleapis.com
-#   gcloud builds submit --tag REGION-docker.pkg.dev/PROJECT/rgbmvp/rgbmvp-public:latest -f Dockerfile.public
-#   gcloud run services replace deploy/cloudrun.yaml --region=REGION
+# Freeze profile (single public origin; no Vercel-first):
+#   Service:              rgbmvp-public
+#   Authentication:       public (allUsers invoker)
+#   Ingress:              all
+#   Min / max instances:  0 / 1
+#   CPU / memory:         1 / 512Mi
+#   Runtime SA:           dedicated, no project roles (rgbmvp-public-run@…)
+#   Env:                  LABD_PUBLIC_READ_ONLY=1, RGBMVP_NETWORK=liquid-testnet
+#   Forbidden:            LABD_API_TOKEN, wallet mounts, secret volumes
 #
-# Or one-shot:
+# Replace REGION / PROJECT before apply, or prefer the GitHub workflow
+# (deploy-cloudrun.yml) which injects image + project from vars.
+#
+# One-shot (after image push):
 #   gcloud run deploy rgbmvp-public \
-#     --image=REGION-docker.pkg.dev/PROJECT/rgbmvp/rgbmvp-public:latest \
+#     --image=REGION-docker.pkg.dev/PROJECT/rgbmvp/rgbmvp-public:TAG \
 #     --region=REGION \
+#     --project=PROJECT \
 #     --allow-unauthenticated \
+#     --ingress=all \
 #     --min-instances=0 \
-#     --max-instances=2 \
-#     --memory=512Mi \
+#     --max-instances=1 \
 #     --cpu=1 \
+#     --memory=512Mi \
+#     --service-account=rgbmvp-public-run@PROJECT.iam.gserviceaccount.com \
 #     --set-env-vars=LABD_PUBLIC_READ_ONLY=1,RGBMVP_NETWORK=liquid-testnet \
-#     --set-env-vars=LABD_CORS_ORIGINS=https://YOUR_VERCEL_DOMAIN
+#     --clear-secrets \
+#     --execution-environment=gen2
 
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
   name: rgbmvp-public
   annotations:
-    run.googleapis.com/description: "rgbmvp U4 public read-only labd"
+    run.googleapis.com/description: "rgbmvp public freeze — read-only labd (no wallets)"
+    run.googleapis.com/ingress: all
+    run.googleapis.com/ingress-status: all
 spec:
   template:
     metadata:
       annotations:
         autoscaling.knative.dev/minScale: "0"
-        autoscaling.knative.dev/maxScale: "2"
+        autoscaling.knative.dev/maxScale: "1"
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/startup-cpu-boost: "true"
     spec:
+      # Dedicated runtime identity — grant **no** project IAM roles for freeze.
+      # Create once: gcloud iam service-accounts create rgbmvp-public-run \
+      #   --display-name="rgbmvp public Cloud Run runtime (no privileges)"
+      serviceAccountName: rgbmvp-public-run@PROJECT.iam.gserviceaccount.com
       containerConcurrency: 80
       timeoutSeconds: 60
+      # No volumes — image is self-contained (web + public artifacts only).
       containers:
         - image: REGION-docker.pkg.dev/PROJECT/rgbmvp/rgbmvp-public:latest
           ports:
@@ -47,16 +65,18 @@ spec:
               value: liquid-testnet
             - name: LABD_WEB_DIR
               value: /app/web
+            - name: LABD_ARTIFACTS_DIR
+              value: /app/artifacts/public
             - name: RGBMVP_DATA_DIR
               value: /tmp/rgbmvp-public
-            # Set after Vercel domain is known:
+            - name: LABD_VERIFY_RATE_LIMIT
+              value: "30"
+            # Do NOT set LABD_API_TOKEN on the public freeze revision.
+            # Optional same-origin CORS allowlist only if a second origin is added later:
             # - name: LABD_CORS_ORIGINS
-            #   value: https://your-app.vercel.app
-            # Optional: allow authenticated mutations from operators only
-            # - name: LABD_API_TOKEN
-            #   valueFrom:
-            #     secretKeyRef: ...
+            #   value: https://YOUR_PUBLIC_ORIGIN
           resources:
             limits:
               cpu: "1"
               memory: 512Mi
+          # No volumeMounts, no secretKeyRef.

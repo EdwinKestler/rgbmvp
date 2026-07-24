@@ -1,12 +1,19 @@
-# Optional: deploy public labd to Cloud Run via Workload Identity Federation (OIDC).
-# Disabled until repository secrets/variables are configured (see deploy/README.md).
+# Deploy public labd to Cloud Run (publication freeze profile).
+# See deploy/cloudrun.yaml and deploy/README.md.
 #
 # Required:
-#   secrets.GCP_WORKLOAD_IDENTITY_PROVIDER
-#   secrets.GCP_SERVICE_ACCOUNT
+#   secrets.GCP_WORKLOAD_IDENTITY_PROVIDER  — deploy OIDC (GitHub → GCP)
+#   secrets.GCP_SERVICE_ACCOUNT             — deploy SA (push image + run.admin)
 #   vars.GCP_PROJECT_ID
 #   vars.GCP_REGION (e.g. us-central1)
 #   vars.GCP_AR_REPO (e.g. rgbmvp)
+# Optional:
+#   vars.GCP_RUNTIME_SERVICE_ACCOUNT — container identity (default: rgbmvp-public-run@PROJECT)
+#   vars.LABD_CORS_ORIGINS           — only if a second browser origin is needed
+#
+# Freeze first revision:
+#   service rgbmvp-public · public invoker · ingress all · 0/1 instances · 1 CPU · 512Mi
+#   LABD_PUBLIC_READ_ONLY=1 · liquid-testnet · no LABD_API_TOKEN · no volume mounts
 name: deploy-cloudrun
 
 on:
@@ -31,33 +38,103 @@ jobs:
     runs-on: ubuntu-latest
     environment: public-demo
     steps:
+      - name: Require GCP deploy secrets
+        id: gate
+        env:
+          WIF: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          SA: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "${WIF}" ] || [ -z "${SA}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "GCP_WORKLOAD_IDENTITY_PROVIDER / GCP_SERVICE_ACCOUNT not set — freeze profile is in-repo; configure OIDC secrets to deploy."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
       - uses: google-github-actions/auth@v2
+        if: steps.gate.outputs.skip != 'true'
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@v2
+        if: steps.gate.outputs.skip != 'true'
       - name: Configure Docker for Artifact Registry
+        if: steps.gate.outputs.skip != 'true'
         run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
       - name: Build & push image
+        if: steps.gate.outputs.skip != 'true'
         run: |
           set -euo pipefail
           IMAGE="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_AR_REPO }}/rgbmvp-public:${{ github.sha }}"
           docker build -f Dockerfile.public -t "$IMAGE" .
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
-      - name: Deploy Cloud Run
+      - name: Deploy Cloud Run (freeze profile)
+        if: steps.gate.outputs.skip != 'true'
         run: |
           set -euo pipefail
+          PROJECT="${{ vars.GCP_PROJECT_ID }}"
+          REGION="${{ vars.GCP_REGION }}"
+          RUNTIME_SA="${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}"
+          RUNTIME_SA="${RUNTIME_SA:-rgbmvp-public-run@${PROJECT}.iam.gserviceaccount.com}"
+
+          # Env: read-only liquid-testnet only. Never inject LABD_API_TOKEN.
+          ENV_VARS="LABD_PUBLIC_READ_ONLY=1,RGBMVP_NETWORK=liquid-testnet,LABD_WEB_DIR=/app/web,LABD_ARTIFACTS_DIR=/app/artifacts/public,RGBMVP_DATA_DIR=/tmp/rgbmvp-public,LABD_VERIFY_RATE_LIMIT=30"
           CORS="${{ vars.LABD_CORS_ORIGINS }}"
-          CORS="${CORS:-https://example.vercel.app}"
+          if [ -n "${CORS}" ]; then
+            ENV_VARS="${ENV_VARS},LABD_CORS_ORIGINS=${CORS}"
+          fi
+
           gcloud run deploy rgbmvp-public \
             --image="$IMAGE" \
-            --region="${{ vars.GCP_REGION }}" \
-            --project="${{ vars.GCP_PROJECT_ID }}" \
+            --region="$REGION" \
+            --project="$PROJECT" \
+            --platform=managed \
             --allow-unauthenticated \
+            --ingress=all \
             --min-instances=0 \
-            --max-instances=2 \
-            --memory=512Mi \
+            --max-instances=1 \
             --cpu=1 \
-            --set-env-vars="LABD_PUBLIC_READ_ONLY=1,RGBMVP_NETWORK=liquid-testnet,LABD_CORS_ORIGINS=${CORS}"
+            --memory=512Mi \
+            --service-account="$RUNTIME_SA" \
+            --execution-environment=gen2 \
+            --set-env-vars="$ENV_VARS" \
+            --clear-secrets \
+            --quiet
+
+          URL="$(gcloud run services describe rgbmvp-public \
+            --region="$REGION" \
+            --project="$PROJECT" \
+            --format='value(status.url)')"
+          echo "Deployed: $URL"
+          echo "SERVICE_URL=$URL" >> "$GITHUB_ENV"
+      - name: Post-deploy smoke (freeze)
+        run: |
+          set -euo pipefail
+          BASE="${SERVICE_URL}"
+          test -n "$BASE"
+
+          echo "== GET /v1/security =="
+          curl -fsS "$BASE/v1/security" | tee /tmp/sec.json
+          python3 -c 'import json,sys; j=json.load(open("/tmp/sec.json")); assert j.get("public_read_only") is True, j'
+
+          echo "== POST mutation must 403 =="
+          code=$(curl -s -o /tmp/post.json -w '%{http_code}' \
+            -X POST "$BASE/v1/swap/init" \
+            -H 'content-type: application/json' \
+            -d '{}')
+          test "$code" = "403"
+
+          echo "== security headers =="
+          hdrs=$(curl -sI "$BASE/v1/security")
+          echo "$hdrs" | grep -qi 'x-content-type-options: *nosniff'
+          echo "$hdrs" | grep -qi 'x-frame-options: *DENY'
+          echo "$hdrs" | grep -qi 'content-security-policy:'
+
+          echo "== static surfaces =="
+          curl -fsS -o /dev/null "$BASE/v1/health"
+          curl -fsS -o /dev/null "$BASE/status"
+          curl -fsS -o /dev/null "$BASE/"
+
+          echo "Smoke OK: $BASE"
