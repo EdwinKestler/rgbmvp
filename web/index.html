@@ -399,12 +399,18 @@
       }
     }
 
+    let swapActionBusy = false;
     async function runSwapAction(a) {
       const id = $('swap-id').value.trim();
-      if (!id) return;
+      if (!id || swapActionBusy) return;
       const body = Object.assign({ action: a.action }, a.defaults || {});
       if (a.action.startsWith('refund') && !confirm(a.label + '?\n' + (a.caution || ''))) return;
-      $('swap-out').textContent = 'Running ' + a.action + '…';
+      swapActionBusy = true;
+      const actEl = $('swap-actions');
+      if (actEl) {
+        actEl.querySelectorAll('button').forEach(b => { b.disabled = true; });
+      }
+      $('swap-out').textContent = 'Running ' + a.action + '… (may take ~30s on testnet)';
       try {
         const r = await fetch('/v1/swap/' + encodeURIComponent(id) + '/action', {
           method: 'POST',
@@ -412,17 +418,21 @@
           body: JSON.stringify(body)
         });
         const j = await r.json();
-        if (!r.ok) throw new Error(j.error || r.statusText);
-        if (j.swap) {
-          renderSwap(j.swap);
-          $('swap-out').textContent = JSON.stringify(j, null, 2);
+        if (!r.ok) throw new Error(j.error || (j.result && j.result.error) || r.statusText);
+        // Prefer nested result.swap, then top-level swap
+        const sw = (j.result && j.result.swap) || j.swap;
+        if (sw) {
+          renderSwap(sw);
         } else {
-          $('swap-out').textContent = JSON.stringify(j, null, 2);
           await loadSwap();
         }
+        $('swap-out').textContent = JSON.stringify(j, null, 2);
       } catch (e) {
         $('swap-out').textContent = String(e);
         $('swap-summary').innerHTML = '<span class="bad">' + e + '</span>';
+        try { await loadSwap(); } catch (_) {}
+      } finally {
+        swapActionBusy = false;
       }
     }
 
@@ -453,12 +463,17 @@
           const sel = $('swap-contract-pick');
           sel.style.display = 'block';
           sel.innerHTML = '<option value="">— pick contract to fill BTC or LQ field —</option>';
-          list.forEach(c => {
+          // Prefer freshest contracts (API returns sorted by id); show chain_net.
+          const items = list.slice().sort((a, b) => {
+            const ta = (a.ticker || '').localeCompare(b.ticker || '');
+            return ta !== 0 ? ta : String(a.contract_id||'').localeCompare(String(b.contract_id||''));
+          });
+          items.forEach(c => {
             const id = c.contract_id || c.id || c;
-            const chain = c.chain || c.network || '';
+            const chain = c.chain_net || c.chain || c.network || '';
             const o = document.createElement('option');
             o.value = typeof id === 'string' ? id : JSON.stringify(id);
-            o.textContent = (c.ticker || '') + ' ' + String(id).slice(0, 48) + (chain ? ' (' + chain + ')' : '');
+            o.textContent = (c.ticker || '?') + ' · ' + String(id).slice(0, 42) + (chain ? ' · ' + chain : '');
             o.dataset.chain = chain;
             sel.appendChild(o);
           });
@@ -466,12 +481,11 @@
             const o = sel.selectedOptions[0];
             if (!o || !o.value) return;
             const chain = (o.dataset.chain || '').toLowerCase();
-            if (chain.includes('bitcoin') || chain.includes('btc')) {
+            if (chain.includes('bitcoin') || chain.includes('btc') || chain === 'tb') {
               $('swap-btc-contract').value = o.value;
             } else if (chain.includes('liquid') || chain.includes('elements')) {
               $('swap-lq-contract').value = o.value;
             } else {
-              // toggle: fill empty field
               if (!$('swap-btc-contract').value) $('swap-btc-contract').value = o.value;
               else $('swap-lq-contract').value = o.value;
             }

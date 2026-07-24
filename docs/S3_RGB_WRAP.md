@@ -1,6 +1,6 @@
 # S3 — RGB-wrapped HTLC claim (CLI-first)
 
-**Status:** Implemented (CLI) — 2026-07-22  
+**Status:** Implemented (CLI + HTTP/browser) — live HTTP path `s3-browser-20260724-0112` → phase=done  
 **Scenario:** [SCENARIOS.md](./SCENARIOS.md) `S3`  
 **Roadmap:** [ROADMAP_NEXT.md](./ROADMAP_NEXT.md)
 
@@ -76,6 +76,82 @@ rgbmvp swap init --id value-only --csv-delay 6   # no --rgb-wrap
 rgbmvp swap fund-btc --id value-only
 # … same as P1
 ```
+
+## Browser / HTTP runbook (localhost labd)
+
+Prerequisites: funded `btc-alice` + `bob`, Axum labd (`rgbmvp serve`), two UTXOs on bob so LWK coin selection does not spend the RGB **issue seal** when funding the HTLC.
+
+### Seal safety (important)
+
+LWK may consolidate **all** L-BTC UTXOs when sending HTLC value. If the only large UTXO is the RGB issue seal, wrap fails with `Missing wallet UTXO` for the seal.
+
+**Recommended order:**
+
+1. Split bob: `rgbmvp wallet send --from bob --to bob --amount-sats 20000`
+2. Issue Liquid RGB on the **smaller** UTXO (`--seal txid:vout`)
+3. Keep a **larger non-seal** UTXO for HTLC value  
+4. Or: fund HTLC value first, re-issue RGB on remaining change, then `fund_lq` with `rgb_wrap` (wrap-only / reuse HTLC)
+
+### Console steps
+
+1. Open `http://127.0.0.1:8080` → **Swap**
+2. Mode = **RGB-wrapped S3**
+3. Issue twins (Issue tab or CLI), **Load contracts from lab…**
+4. Init swap with both `rgb:` ids
+5. Guided buttons: Fund BTC+wrap → Fund LQ+wrap → Claim LQ → Claim BTC (from_witness)
+6. Phase **done** only when both legs show `claim_verify=valid`
+7. Preimage never appears in UI / `GET /v1/swap/*`
+
+### HTTP equivalent (operator)
+
+```bash
+# init
+curl -sS -X POST http://127.0.0.1:8080/v1/swap/init -H 'content-type: application/json' -d '{
+  "id": "s3-browser-demo",
+  "csv_delay": 6,
+  "alice_btc": "btc-alice",
+  "bob_lq": "bob",
+  "btc_contract": "rgb:…",
+  "lq_contract": "rgb:…",
+  "rgb_wrap": true
+}'
+
+# fund + wrap (idempotent re-run OK)
+curl -sS -X POST http://127.0.0.1:8080/v1/swap/s3-browser-demo/action \
+  -H 'content-type: application/json' \
+  -d '{"action":"fund_btc","amount_sats":5000,"fee_sats":800,"rgb_wrap":true}'
+
+curl -sS -X POST http://127.0.0.1:8080/v1/swap/s3-browser-demo/action \
+  -H 'content-type: application/json' \
+  -d '{"action":"fund_lq","amount_sats":5000,"rgb_wrap":true}'
+
+curl -sS -X POST http://127.0.0.1:8080/v1/swap/s3-browser-demo/action \
+  -H 'content-type: application/json' \
+  -d '{"action":"claim_lq","fee_sats":300}'
+
+# from_witness defaults true for S3 sessions
+curl -sS -X POST http://127.0.0.1:8080/v1/swap/s3-browser-demo/action \
+  -H 'content-type: application/json' \
+  -d '{"action":"claim_btc","from_witness":true,"fee_sats":500}'
+
+curl -sS http://127.0.0.1:8080/v1/swap/s3-browser-demo | jq '{phase, mode, not_done_reason, btc: .btc_rgb.claim_verify, lq: .lq_rgb.claim_verify, preimage_hex}'
+```
+
+### Live evidence (HTTP path, 2026-07-24)
+
+| Field | Value |
+|-------|--------|
+| Session | `s3-browser-20260724-0112` |
+| Phase | `done` |
+| BTC `claim_verify` | `valid` |
+| LQ `claim_verify` | `valid` |
+| GET preimage | `null` / redacted |
+| BTC fund | `cd07bf4a…7995` |
+| LQ fund | `4064c864…75bd` |
+| LQ claim | `ee39d13b…d6af` |
+| BTC claim | (session `btc_claim_txid` after claim) |
+
+Recover path used when LWK spent the first LQ issue seal during fund: re-issue on change UTXO + `set_contracts` + wrap-only `fund_lq`.
 
 ## Layout of claim txs
 

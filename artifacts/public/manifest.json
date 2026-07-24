@@ -1,6 +1,6 @@
 {
   "product": "rgbmvp",
-  "generated": "2026-07-23",
+  "generated": "2026-07-24",
   "public_demo": "read-only",
   "mainnet": false,
   "networks": {
@@ -28,7 +28,13 @@
       "name": "Simplicity + BFA",
       "status": "closed",
       "doc": "docs/P2_CLOSED.md",
-      "slices": ["C0", "C1", "C2", "C3", "C4"],
+      "slices": [
+        "C0",
+        "C1",
+        "C2",
+        "C3",
+        "C4"
+      ],
       "surface": "elements-regtest"
     },
     {
@@ -44,7 +50,14 @@
       "status": "done",
       "doc": "docs/S3_RGB_WRAP.md",
       "surface": "bitcoin-testnet + liquid-testnet",
-      "evidence": "artifacts/public/s3-rgbmvp-live.json"
+      "evidence": [
+        "artifacts/public/s3-rgbmvp-live.json",
+        "artifacts/public/s3-browser-20260724.json"
+      ],
+      "surfaces": [
+        "CLI",
+        "HTTP/browser (Axum)"
+      ]
     },
     {
       "id": "C0",
@@ -148,5 +161,8 @@
       "demo": "./scripts/demo_c4_stake.sh"
     }
   },
-  "secrets_policy": "This directory must never contain seeds, WIFs, preimages, or mnemonics."
+  "secrets_policy": "This directory must never contain seeds, WIFs, preimages, or mnemonics.",
+  "files": [
+    "artifacts/public/s3-browser-20260724.json"
+  ]
 }

@@ -365,6 +365,13 @@ pub(crate) fn handle_swap_action_post(
                 .filter(|s| !s.is_empty())
             {
                 s.btc_contract_id = Some(c.to_string());
+                // Keep leg contract_id in sync when not yet wrap-funded.
+                if !leg_wrapped(&s.btc_rgb) {
+                    s.btc_rgb = Some(lab_rgb::swap::SwapLegRgb {
+                        contract_id: c.to_string(),
+                        ..Default::default()
+                    });
+                }
             }
             if let Some(c) = v
                 .get("lq_contract")
@@ -373,6 +380,12 @@ pub(crate) fn handle_swap_action_post(
                 .filter(|s| !s.is_empty())
             {
                 s.lq_contract_id = Some(c.to_string());
+                if !leg_wrapped(&s.lq_rgb) {
+                    s.lq_rgb = Some(lab_rgb::swap::SwapLegRgb {
+                        contract_id: c.to_string(),
+                        ..Default::default()
+                    });
+                }
             }
             store.save(&s)?;
             serde_json::json!({
@@ -381,7 +394,7 @@ pub(crate) fn handle_swap_action_post(
                 "lq_contract_id": s.lq_contract_id,
                 "rgb_wrap": s.rgb_wrap,
                 "note": if s.rgb_wrap {
-                    "Twin contracts stored. S3 fund_* with rgb_wrap will assign RGB to HTLC seals."
+                    "Twin contracts stored. Prefer: value-fund HTLC first (or keep issue seal on a UTXO LWK will not coin-select), then fund_* with rgb_wrap."
                 } else {
                     "Twin RGB ids stored. For S3 re-anchor, re-init with rgb_wrap:true (or use CLI)."
                 },

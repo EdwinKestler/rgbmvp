@@ -1,0 +1,30 @@
+{
+  "id": "s3-browser-20260724-0112",
+  "phase": "done",
+  "rgb_wrap": true,
+  "btc_contract_id": "rgb:XwtT8hz9-PF6TcUn-vjEb6ZH-LgaoPxT-K~57j2D-h2l6ANc",
+  "lq_contract_id": "rgb:6~SnaNYR-UIqLaVm-5LNjXwr-iabFmGe-vU9ru3y-3i59Qjg",
+  "btc_fund_txid": "cd07bf4ad9d495d49f384fd80dcdc8d6f4de52e9591ec00b2761009c8f887995",
+  "lq_fund_txid": "4064c8649f8bf8a27db0228ecaa50fa2f9acabd72c515369d22169381a3b75bd",
+  "lq_claim_txid": "ee39d13b86e76f336bf1ebef9f037769322a96d01d4488356735f2197651d6af",
+  "btc_claim_txid": "7fa10168fad8803d37a3217445a40ac94cf80e1ae1fa1089bb6ed27e0fdf7d9c",
+  "btc_rgb": {
+    "contract_id": "rgb:XwtT8hz9-PF6TcUn-vjEb6ZH-LgaoPxT-K~57j2D-h2l6ANc",
+    "htlc_seal": "cd07bf4ad9d495d49f384fd80dcdc8d6f4de52e9591ec00b2761009c8f887995:0",
+    "fund_verify": "valid",
+    "claim_verify": "valid",
+    "claim_anchor_txid": "7fa10168fad8803d37a3217445a40ac94cf80e1ae1fa1089bb6ed27e0fdf7d9c",
+    "successor_seal": "7fa10168fad8803d37a3217445a40ac94cf80e1ae1fa1089bb6ed27e0fdf7d9c:1"
+  },
+  "lq_rgb": {
+    "contract_id": "rgb:6~SnaNYR-UIqLaVm-5LNjXwr-iabFmGe-vU9ru3y-3i59Qjg",
+    "htlc_seal": "4064c8649f8bf8a27db0228ecaa50fa2f9acabd72c515369d22169381a3b75bd:0",
+    "fund_verify": "valid",
+    "claim_verify": "valid",
+    "claim_anchor_txid": "ee39d13b86e76f336bf1ebef9f037769322a96d01d4488356735f2197651d6af",
+    "successor_seal": "ee39d13b86e76f336bf1ebef9f037769322a96d01d4488356735f2197651d6af:1"
+  },
+  "surface": "HTTP / browser path (lab_api SwapService via Axum)",
+  "preimage_redacted": true,
+  "note": "Live testnet S3 via POST /v1/swap/*/action; preimage never in GET."
+}
