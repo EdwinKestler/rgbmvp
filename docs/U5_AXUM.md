@@ -1,8 +1,18 @@
 # U5 — labd HTTP platform (Axum / Hyper)
 
-**Status:** Planned (not implemented)  
+**Status:** Implemented (default labd backend) — 2026-07-24  
 **Scenario:** extension of P3/U4 surfaces — **does not reopen** closed P3 or U4 scopes  
 **Roadmap:** [ROADMAP_NEXT.md](./ROADMAP_NEXT.md)
+
+## Run
+
+```bash
+rgbmvp serve --bind 127.0.0.1:8080
+# logs: labd (axum/U5) listening on …
+
+# optional: previous handwritten TCP server
+LABD_HTTP=legacy rgbmvp serve
+```
 
 ## Why U5
 
@@ -50,7 +60,10 @@ Blocking LWK / filesystem / `reqwest::blocking` must not occupy Tokio workers
 
 ## Acceptance
 
-- `/v1` shapes compatible with current console
-- U4 security tests pass against Axum
-- GET `/v1/swap/*` never exposes preimage
-- Feature-flag or one-release dual path, then remove handwritten server
+- [x] `/v1` shapes compatible with current console  
+- [x] U4 mutation gate + CORS on Axum middleware  
+- [x] GET `/v1/swap/*` uses `public_swap_view` (preimage redacted)  
+- [x] Dual path: `LABD_HTTP=legacy` keeps handwritten TCP server for one release  
+- [x] Blocking LWK/verify work via `spawn_blocking`  
+- [ ] Full parity automated suite vs legacy (expand tests as needed)  
+- [ ] Remove legacy after soak

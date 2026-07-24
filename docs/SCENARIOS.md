@@ -165,7 +165,7 @@ Not a new consensus phase—**UX only**.
 | U2 | Swap wizard | **CLOSED** — guided **value** HTLC fund/claim; demo-u2 phase done |
 | U3 | Hardware / Marina path (optional) | Deferred |
 | **U4** | Public hosting security gate | **Implemented** — [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md); public read-only + Bearer mutations; deploy sketches in `deploy/` |
-| **U5** | labd Axum/Hyper platform | **Planned** — [U5_AXUM.md](./U5_AXUM.md); shared services + `/v1` parity; does **not** reopen U4 or P3 |
+| **U5** | labd Axum/Hyper platform | **Implemented** — [U5_AXUM.md](./U5_AXUM.md); default `rgbmvp serve`; `LABD_HTTP=legacy` fallback; does **not** reopen U4 or P3 |
 
 P0 web verifier must not hard-code assumptions that block U0–U2 (shared API types, CORS, versioned errors).  
 **P3 closed** remains valid for localhost operator console; U4 is a **new** ops/security scenario, not a silent reopening of P3.  

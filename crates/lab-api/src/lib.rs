@@ -30,8 +30,8 @@ pub fn root_json() -> Value {
     json!({
         "product": lab_core::PRODUCT,
         "api": lab_core::API_VERSION,
-        "phase": "u4-public-ready",
-        "message": "RGB Liquid Testnet Lab — U4 security gate: public demos are read-only; keys stay off the Internet.",
+        "phase": "u5-axum",
+        "message": "RGB Liquid Testnet Lab — U5 labd on Axum; U4 security gate: public demos are read-only; keys stay off the Internet.",
         "security": {
             "browser_seeds": false,
             "preimage_redacted_on_swap_get": true,
@@ -134,7 +134,7 @@ pub fn phases_json() -> Value {
             {"id": "S3", "name": "RGB-wrapped claim", "status": "done", "doc": "docs/S3_RGB_WRAP.md",
              "negatives": "partial-ci"},
             {"id": "U4", "name": "Public hosting security", "status": "implemented", "doc": "docs/U4_PUBLIC_HOSTING.md"},
-            {"id": "U5", "name": "labd Axum platform", "status": "planned", "doc": "docs/U5_AXUM.md"},
+            {"id": "U5", "name": "labd Axum platform", "status": "implemented", "doc": "docs/U5_AXUM.md"},
             {"id": "S5", "name": "Round-trip swap", "status": "deferred", "doc": "docs/ROADMAP_NEXT.md"},
             {"id": "C5", "name": "LiquiDEX comparison", "status": "docs", "doc": "docs/C5_LIQUIDEX_COMPARISON.md"}
         ]
