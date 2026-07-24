@@ -134,6 +134,52 @@ MVP delivered: loopback RPC ports, `LABD_PUBLIC_READ_ONLY`, Bearer on POST, id r
 
 ---
 
+## Engineering ladder (approved sequence)
+
+**Order:** S3 negatives → application services → **U5** Axum → S3 HTTP/browser → **S5**; **C5** docs in parallel.  
+Do **not** add S3 mutation business logic to the handwritten HTTP server and then rewrite it.
+
+| Phase | Work | Scenario | Status |
+|-------|------|----------|--------|
+| 0a | Docker Trivy `load: true` | CI | **Done** (`.github/workflows/docker-public.yml`) |
+| 0b | Thin services + public swap view shared | prep for U5 | **Started** — `lab_api::SwapService`, `public_swap_view` |
+| 1 | S3 offline negative matrix + witness extract tests | S3 harden | **Started** — `lab_rgb::swap` / `htlc` unit tests |
+| 2 | Axum/Hyper labd | **U5** — [U5_AXUM.md](./U5_AXUM.md) | Planned |
+| 3 | Authenticated S3 HTTP + browser (preserve U2/U4) | S3 surfaces | After U5 |
+| 4 | Round-trip twin swaps | **S5** | Deferred |
+| ∥ | LiquiDEX comparison writeup | **C5** — [C5_LIQUIDEX_COMPARISON.md](./C5_LIQUIDEX_COMPARISON.md) | Docs skeleton |
+
+**U5** is a new ops/platform scenario. It must not silently reopen **U4** or **P3**.  
+**Mainnet** remains out of scope throughout.
+
+### Service boundary (target)
+
+```text
+lab-cli     → Clap; calls services
+lab-api     → SwapService, public_swap_view, /v1 JSON helpers
+lab-rgb     → session phase, S3 gates, HTLC, RGB domain
+labd/Axum   → HTTP only; same services (U5)
+```
+
+### S3 negatives (CI)
+
+Required: offline domain + fixture extract tests (no public faucet).  
+Optional: live testnet happy path via `workflow_dispatch` only.
+
+### Effort (indicative)
+
+~6–9 weeks sequential if all phases ship; C5 parallel 2–4 days.
+
+### Priority if partial approval
+
+1. S3 negative automation  
+2. Service extraction + U5  
+3. S3 browser/API  
+4. S5  
+5. C5  
+
+---
+
 ## Next concrete actions
 
 1. ~~Lock strategy: protocol first, localhost.~~  
@@ -143,4 +189,8 @@ MVP delivered: loopback RPC ports, `LABD_PUBLIC_READ_ONLY`, Bearer on POST, id r
 5. ~~**C4** staking.~~ → [C4_CLOSED.md](./C4_CLOSED.md)  
 6. ~~**U4** security engineering.~~ → [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md)  
 7. ~~Public content + CI + harden.~~ → [PUBLIC_LAUNCH.md](./PUBLIC_LAUNCH.md) · `artifacts/public/` · `.github/workflows/*`  
-8. Operator: enable deploy secrets → 24–48h soak → announce.  
+8. Operator: enable deploy secrets → 24–48h soak → announce (ops; parallel).  
+9. **S3 negatives + services** (in progress) → full matrix + extract fund/claim from `main.rs`.  
+10. **U5** Axum parity → [U5_AXUM.md](./U5_AXUM.md).  
+11. S3 HTTP/browser mutations (post-U5).  
+12. **S5** round-trip; **C5** docs polish.  

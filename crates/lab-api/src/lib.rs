@@ -1,4 +1,12 @@
-//! HTTP `/v1` surface helpers and route catalog (P3 lab console).
+//! HTTP `/v1` surface helpers, public views, and application services.
+//!
+//! CLI and labd should share these modules so validation is not forked into UI JS.
+
+mod services;
+mod swap_view;
+
+pub use services::SwapService;
+pub use swap_view::{public_leg, public_swap_view};
 
 use lab_core::HealthReport;
 use serde_json::{json, Value};
@@ -63,7 +71,11 @@ pub fn root_json() -> Value {
             "rgbmvp bfa audit --history …",
             "rgbmvp covenant demo|demo-c1|demo-c2|demo-c4",
             "rgbmvp serve"
-        ]
+        ],
+        "roadmap": {
+            "next": "docs/ROADMAP_NEXT.md",
+            "ladder": ["S3-negatives", "services", "U5-axum", "S3-http", "S5", "C5"]
+        }
     })
 }
 
@@ -114,8 +126,12 @@ pub fn phases_json() -> Value {
              "slices": ["C0", "C1", "C2", "C3", "C4"]},
             {"id": "P3", "name": "Browser lab console", "status": "closed", "doc": "docs/P3_CLOSED.md",
              "slices": ["U0", "U1", "U2", "audit"]},
-            {"id": "S3", "name": "RGB-wrapped claim", "status": "done", "doc": "docs/S3_RGB_WRAP.md"},
-            {"id": "U4", "name": "Public hosting security", "status": "implemented", "doc": "docs/U4_PUBLIC_HOSTING.md"}
+            {"id": "S3", "name": "RGB-wrapped claim", "status": "done", "doc": "docs/S3_RGB_WRAP.md",
+             "negatives": "partial-ci"},
+            {"id": "U4", "name": "Public hosting security", "status": "implemented", "doc": "docs/U4_PUBLIC_HOSTING.md"},
+            {"id": "U5", "name": "labd Axum platform", "status": "planned", "doc": "docs/U5_AXUM.md"},
+            {"id": "S5", "name": "Round-trip swap", "status": "deferred", "doc": "docs/ROADMAP_NEXT.md"},
+            {"id": "C5", "name": "LiquiDEX comparison", "status": "docs", "doc": "docs/C5_LIQUIDEX_COMPARISON.md"}
         ]
     })
 }

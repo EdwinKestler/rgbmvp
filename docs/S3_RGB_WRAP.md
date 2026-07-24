@@ -86,24 +86,37 @@ vout1: claimer P2WPKH (RGB successor seal = WitnessTx:1)
 [+ fee output on Liquid]
 ```
 
-## Negative checks (manual / future CI)
+## Negative checks
 
-| Case | Expected |
-|------|----------|
-| claim without fund-wrap | error: missing `fund_transition_opid_hex` |
-| wrong commitment SPK | `claim_verify=invalid` → phase stays `claimed_btc` not `done` |
-| extract from refund witness | error (empty IF branch) |
-| `--from-witness` hash mismatch | error |
-| value-only path | unchanged; no RGB fields required |
+| Case | Expected | Automation |
+|------|----------|------------|
+| claim without fund-wrap | error: missing `fund_transition_opid_hex` | `lab_rgb::swap::require_fund_wrap_for_claim` unit test |
+| wrong / invalid claim_verify | phase stays `claimed_btc` not `done` | `invalid_claim_verify_never_done` |
+| one valid + one invalid leg | not `done` | `one_valid_one_invalid_leg_blocks_done` |
+| extract from refund witness | error (empty IF / short stack) | `htlc` refund extract tests |
+| wrong preimage length | error | `extract_rejects_wrong_preimage_length` |
+| `--from-witness` hash mismatch | error | `check_preimage_matches_session` |
+| malformed tx hex | error | `extract_rejects_malformed_tx_hex` |
+| contract id mismatch | error | `check_leg_contract_matches_session` |
+| value-only path | unchanged; no RGB fields required | `value_only_done_without_rgb_fields` |
+| GET public view | preimage never present | `lab_api::public_swap_view` test |
+
+Still **manual / live CI (optional):** full RGB client verify with wrong commitment SPK on testnet, dual-leg broadcast+verify matrix, consignment corruption end-to-end.
+
+Run offline matrix:
+
+```bash
+cargo test -p lab-rgb -p lab-api --lib
+```
 
 ## Surfaces
 
 | Surface | S3 status |
 |---------|-----------|
 | CLI `swap *` | **Primary** |
-| `GET /v1/swap/{id}` | Exposes public RGB leg metadata (no preimage) |
-| Browser console mutations | Value path; RGB wrap optional later |
-| Public Internet | **Blocked until U4** |
+| `GET /v1/swap/{id}` | Public RGB leg metadata via `lab_api::public_swap_view` (no preimage) |
+| Browser console mutations | Value path; RGB wrap after U5 ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)) |
+| Public Internet | U4 read-only; mutations require Bearer |
 
 ## Related
 

@@ -234,6 +234,70 @@ pub fn rgb_done_ok(s: &SwapSession) -> bool {
     btc_ok && lq_ok
 }
 
+/// S3 gate: RGB claim requires a prior fund-wrap transition id on the leg.
+pub fn require_fund_wrap_for_claim(leg: Option<&SwapLegRgb>, side: &str) -> Result<()> {
+    let leg = leg.with_context(|| format!("{side}_rgb missing; fund --rgb-wrap first"))?;
+    if leg
+        .fund_transition_opid_hex
+        .as_ref()
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
+        bail!("fund_transition_opid_hex missing (fund-{side} --rgb-wrap first)");
+    }
+    Ok(())
+}
+
+/// Which leg's RGB claim_verify to update (S3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RgbClaimLeg {
+    Btc,
+    Lq,
+}
+
+/// Record claim_verify on a leg and recompute phase.
+/// Invalid / missing verify can never yield [`SwapPhase::Done`] when `rgb_wrap`.
+pub fn set_claim_verify(s: &mut SwapSession, leg: RgbClaimLeg, status: impl Into<String>) {
+    let status = status.into();
+    match leg {
+        RgbClaimLeg::Btc => {
+            if let Some(r) = s.btc_rgb.as_mut() {
+                r.claim_verify = Some(status);
+            }
+        }
+        RgbClaimLeg::Lq => {
+            if let Some(r) = s.lq_rgb.as_mut() {
+                r.claim_verify = Some(status);
+            }
+        }
+    }
+    recompute_phase(s);
+}
+
+/// Reject extracted preimage that does not hash to the session commitment.
+pub fn check_preimage_matches_session(preimage: &[u8], session_hash_hex: &str) -> Result<()> {
+    let hash = htlc::sha256_preimage(preimage);
+    let session_hash = hex::decode(session_hash_hex.trim()).context("session hash_hex")?;
+    if session_hash.as_slice() != hash.as_slice() {
+        bail!("extracted preimage hash does not match session hash_hex");
+    }
+    Ok(())
+}
+
+/// Contract id on leg must match session field when both are set (S3 negative).
+pub fn check_leg_contract_matches_session(
+    leg: &SwapLegRgb,
+    session_contract: Option<&str>,
+    side: &str,
+) -> Result<()> {
+    if let Some(want) = session_contract {
+        if leg.contract_id != want {
+            bail!("{side} contract_id mismatch: leg={} session={want}", leg.contract_id);
+        }
+    }
+    Ok(())
+}
+
 pub fn recompute_phase(s: &mut SwapSession) {
     if matches!(s.phase, SwapPhase::Refunded) {
         return;
@@ -253,9 +317,39 @@ pub fn recompute_phase(s: &mut SwapSession) {
     };
 }
 
+/// Mark both value claims complete (test / offline helper). Does not set RGB verifies.
+pub fn mark_value_claims_complete(s: &mut SwapSession) {
+    if s.btc_fund_txid.is_none() {
+        s.btc_fund_txid = Some("btc-fund".into());
+    }
+    if s.lq_fund_txid.is_none() {
+        s.lq_fund_txid = Some("lq-fund".into());
+    }
+    if s.lq_claim_txid.is_none() {
+        s.lq_claim_txid = Some("lq-claim".into());
+    }
+    if s.btc_claim_txid.is_none() {
+        s.btc_claim_txid = Some("btc-claim".into());
+    }
+    recompute_phase(s);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dual_wrap_session() -> SwapSession {
+        init_swap(
+            "s3-neg",
+            6,
+            "btc-alice",
+            "bob",
+            Some("rgb:btc-c1".into()),
+            Some("rgb:lq-c1".into()),
+            true,
+        )
+        .unwrap()
+    }
 
     #[test]
     fn legacy_session_deserializes() {
@@ -279,6 +373,94 @@ mod tests {
     }
 
     #[test]
+    fn value_only_done_without_rgb_fields() {
+        let mut s = init_swap("vo", 6, "btc-alice", "bob", None, None, false).unwrap();
+        assert!(!s.rgb_wrap);
+        mark_value_claims_complete(&mut s);
+        assert_eq!(s.phase, SwapPhase::Done);
+        assert!(rgb_done_ok(&s));
+    }
+
+    #[test]
+    fn claim_without_fund_wrap_errors() {
+        let s = dual_wrap_session();
+        let err = require_fund_wrap_for_claim(s.lq_rgb.as_ref(), "lq").unwrap_err();
+        assert!(
+            err.to_string().contains("fund_transition_opid_hex"),
+            "got {err}"
+        );
+        let err = require_fund_wrap_for_claim(None, "btc").unwrap_err();
+        assert!(err.to_string().contains("btc_rgb missing"));
+    }
+
+    #[test]
+    fn invalid_claim_verify_never_done() {
+        let mut s = dual_wrap_session();
+        // Simulate fund-wrap transition ids present.
+        if let Some(r) = s.btc_rgb.as_mut() {
+            r.fund_transition_opid_hex = Some("aa".repeat(32));
+        }
+        if let Some(r) = s.lq_rgb.as_mut() {
+            r.fund_transition_opid_hex = Some("bb".repeat(32));
+        }
+        mark_value_claims_complete(&mut s);
+        assert_eq!(s.phase, SwapPhase::ClaimedBtc);
+        set_claim_verify(&mut s, RgbClaimLeg::Lq, "valid");
+        set_claim_verify(&mut s, RgbClaimLeg::Btc, "invalid");
+        assert_eq!(s.phase, SwapPhase::ClaimedBtc);
+        assert!(!rgb_done_ok(&s));
+    }
+
+    #[test]
+    fn one_valid_one_invalid_leg_blocks_done() {
+        let mut s = dual_wrap_session();
+        mark_value_claims_complete(&mut s);
+        set_claim_verify(&mut s, RgbClaimLeg::Lq, "valid");
+        // BTC still missing verify
+        assert_eq!(s.phase, SwapPhase::ClaimedBtc);
+        set_claim_verify(&mut s, RgbClaimLeg::Btc, "pending");
+        assert_ne!(s.phase, SwapPhase::Done);
+    }
+
+    #[test]
+    fn both_valid_claims_reach_done() {
+        let mut s = dual_wrap_session();
+        mark_value_claims_complete(&mut s);
+        set_claim_verify(&mut s, RgbClaimLeg::Lq, "valid");
+        set_claim_verify(&mut s, RgbClaimLeg::Btc, "valid");
+        assert_eq!(s.phase, SwapPhase::Done);
+    }
+
+    #[test]
+    fn wrong_commitment_style_status_blocks_done() {
+        // wrong commitment SPK → verifier returns invalid (recorded as claim_verify)
+        let mut s = dual_wrap_session();
+        mark_value_claims_complete(&mut s);
+        set_claim_verify(&mut s, RgbClaimLeg::Lq, "valid");
+        set_claim_verify(&mut s, RgbClaimLeg::Btc, "invalid");
+        assert_eq!(s.phase, SwapPhase::ClaimedBtc);
+    }
+
+    #[test]
+    fn contract_id_mismatch_detected() {
+        let s = dual_wrap_session();
+        let leg = s.btc_rgb.as_ref().unwrap();
+        let err = check_leg_contract_matches_session(leg, Some("rgb:other"), "btc").unwrap_err();
+        assert!(err.to_string().contains("mismatch"));
+        check_leg_contract_matches_session(leg, Some("rgb:btc-c1"), "btc").unwrap();
+    }
+
+    #[test]
+    fn preimage_hash_mismatch_rejected() {
+        let s = dual_wrap_session();
+        let wrong = [0u8; 32];
+        let err = check_preimage_matches_session(&wrong, &s.hash_hex).unwrap_err();
+        assert!(err.to_string().contains("does not match"));
+        let pre = hex::decode(&s.preimage_hex).unwrap();
+        check_preimage_matches_session(&pre, &s.hash_hex).unwrap();
+    }
+
+    #[test]
     fn rgb_done_requires_verify_when_wrap() {
         let mut s = init_swap("x", 6, "btc-alice", "bob", Some("c1".into()), None, true).unwrap();
         s.btc_fund_txid = Some("a".into());
@@ -292,5 +474,18 @@ mod tests {
         }
         recompute_phase(&mut s);
         assert_eq!(s.phase, SwapPhase::Done);
+    }
+
+    #[test]
+    fn store_roundtrip_redacts_nothing_but_mode_ok() {
+        let dir = std::env::temp_dir().join(format!("rgbmvp-swap-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = SwapStore::new(&dir);
+        let s = init_swap("id1", 6, "a", "b", None, None, false).unwrap();
+        store.save(&s).unwrap();
+        let loaded = store.load("id1").unwrap();
+        assert_eq!(loaded.preimage_hex, s.preimage_hex);
+        assert_eq!(loaded.hash_hex, s.hash_hex);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

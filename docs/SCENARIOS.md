@@ -110,7 +110,8 @@ BTC fixture: [`fixtures/testnet_btc.json`](../fixtures/testnet_btc.json).
 | S3 RGB-wrapped claim | **CLI implemented** — [S3_RGB_WRAP.md](./S3_RGB_WRAP.md); fund-wrap + multi-out claim + extract-preimage; live testnet proof operator-run |
 | S4 coordinator | CLI session under `.rgbmvp/swaps/` (+ P3 guided UI) |
 | S2 refund | **CLI done** — `swap refund-btc` / `swap refund-lq` (CSV mature) |
-| S5 round-trip | Deferred |
+| S5 round-trip | Deferred — twin reverse sessions; see [ROADMAP_NEXT.md](./ROADMAP_NEXT.md) |
+| S3 negatives (CI) | **Partial** — offline phase/`claim_verify` + preimage extract tests; live path still operator |
 | P1 closure | **CLOSED** for **value** HTLC path — [`P1_CLOSED.md`](./P1_CLOSED.md); S3 was always deferred there |
 
 **HTLC live path (`p1-live`, 2026-07-21):**
@@ -145,7 +146,7 @@ BTC RGB anchor (earlier): [`2a573998…1806`](https://blockstream.info/testnet/t
 | C2 | Mint-gate burn variant | CLI, regtest | **CLOSED** — burn to empty SPK + recursion; not-burn reject ([C2_CLOSED.md](./C2_CLOSED.md)) |
 | C3 | BFA schema + audit | CLI, regtest | **CLOSED** — honest pass; over-mint fail; lie fails anchor |
 | C4 | Time-locked staking covenant | CLI, regtest | **CLOSED** — early reject; mature principal-home; wrong-dest/amount reject ([C4_CLOSED.md](./C4_CLOSED.md)) |
-| C5 | (Stretch) LiquiDEX / native asset swap | docs | Optional comparison: Liquid native atomic swap vs RGB twin swap |
+| C5 | (Stretch) LiquiDEX / native asset swap | docs | Optional comparison — [C5_LIQUIDEX_COMPARISON.md](./C5_LIQUIDEX_COMPARISON.md) |
 
 **Exit:** at least C0 + C3 demonstrated with public writeup; others in CI regtest.
 
@@ -164,9 +165,11 @@ Not a new consensus phase—**UX only**.
 | U2 | Swap wizard | **CLOSED** — guided **value** HTLC fund/claim; demo-u2 phase done |
 | U3 | Hardware / Marina path (optional) | Deferred |
 | **U4** | Public hosting security gate | **Implemented** — [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md); public read-only + Bearer mutations; deploy sketches in `deploy/` |
+| **U5** | labd Axum/Hyper platform | **Planned** — [U5_AXUM.md](./U5_AXUM.md); shared services + `/v1` parity; does **not** reopen U4 or P3 |
 
 P0 web verifier must not hard-code assumptions that block U0–U2 (shared API types, CORS, versioned errors).  
-**P3 closed** remains valid for localhost operator console; U4 is a **new** ops/security scenario, not a silent reopening of P3.
+**P3 closed** remains valid for localhost operator console; U4 is a **new** ops/security scenario, not a silent reopening of P3.  
+**U5** is HTTP platform parity only — same U4 security model on Axum.
 
 ---
 
@@ -188,4 +191,4 @@ P0 web verifier must not hard-code assumptions that block U0–U2 (shared API ty
 - P1 at least one public **value** HTLC swap (user↔bot acceptable).
 - P2 C0 + C3 green on CI; optional public testnet if tooling allows.
 - P3 lab console closed on localhost operator model.
-- **Next completeness (not required for historical P1–P3 close):** S3 RGB-wrapped claim; then public demo only after U4.
+- **Next completeness (not required for historical P1–P3 close):** S3 negatives → services → U5 → S3 HTTP → S5; C5 docs parallel ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)).

@@ -6,6 +6,8 @@ license.workspace = true
 description = "rgbmvp HTTP API types and helpers (labd /v1)"
 
 [dependencies]
+anyhow.workspace = true
 lab-core.workspace = true
+lab-rgb.workspace = true
 serde.workspace = true
 serde_json.workspace = true

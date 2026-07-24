@@ -2009,82 +2009,16 @@ fn write_http_response(
     let _ = stream.write_all(body);
 }
 
-/// Public swap JSON: never expose preimage.
+/// Public swap JSON: never expose preimage (shared `lab_api::public_swap_view`).
 fn public_swap_view(s: &lab_rgb::swap::SwapSession, cfg: &Config) -> serde_json::Value {
     let btc_ex = std::env::var("BTC_TESTNET_EXPLORER")
         .unwrap_or_else(|_| "https://blockstream.info/testnet".into());
-    let lq_ex = cfg.explorer_base.clone();
-    let tx_link = |ex: &str, tx: &Option<String>| {
-        tx.as_ref()
-            .map(|t| format!("{}/tx/{}", ex.trim_end_matches('/'), t))
-    };
-    let leg_public = |leg: &Option<lab_rgb::swap::SwapLegRgb>| {
-        leg.as_ref().map(|r| {
-            serde_json::json!({
-                "contract_id": r.contract_id,
-                "amount": r.amount,
-                "htlc_seal": r.htlc_seal,
-                "fund_plan_id": r.fund_plan_id,
-                "fund_anchor_txid": r.fund_anchor_txid,
-                "fund_verify": r.fund_verify,
-                "claim_plan_id": r.claim_plan_id,
-                "claim_anchor_txid": r.claim_anchor_txid,
-                "claim_verify": r.claim_verify,
-                "successor_seal": r.successor_seal,
-            })
-        })
-    };
-    serde_json::json!({
-        "id": s.id,
-        "version": s.version,
-        "phase": s.phase,
-        "csv_delay": s.csv_delay,
-        "hash_hex": s.hash_hex,
-        "preimage_hex": null,
-        "preimage_redacted": true,
-        "rgb_wrap": s.rgb_wrap,
-        "alice_btc_wallet": s.alice_btc_wallet,
-        "bob_lq_wallet": s.bob_lq_wallet,
-        "btc_contract_id": s.btc_contract_id,
-        "lq_contract_id": s.lq_contract_id,
-        "btc_rgb": leg_public(&s.btc_rgb),
-        "lq_rgb": leg_public(&s.lq_rgb),
-        "htlc_btc": {
-            "address": s.htlc_btc.address_btc,
-            "claimer_label": s.htlc_btc.claimer_label,
-            "refund_label": s.htlc_btc.refund_label,
-            "csv_delay": s.htlc_btc.csv_delay,
-        },
-        "htlc_lq": {
-            "address": s.htlc_lq.address_liquid_unconf,
-            "claimer_label": s.htlc_lq.claimer_label,
-            "refund_label": s.htlc_lq.refund_label,
-            "csv_delay": s.htlc_lq.csv_delay,
-        },
-        "btc_fund_txid": s.btc_fund_txid,
-        "btc_fund_sats": s.btc_fund_sats,
-        "lq_fund_txid": s.lq_fund_txid,
-        "lq_fund_sats": s.lq_fund_sats,
-        "lq_claim_txid": s.lq_claim_txid,
-        "btc_claim_txid": s.btc_claim_txid,
-        "links": {
-            "btc_fund": tx_link(&btc_ex, &s.btc_fund_txid),
-            "lq_fund": tx_link(&lq_ex, &s.lq_fund_txid),
-            "lq_claim": tx_link(&lq_ex, &s.lq_claim_txid),
-            "btc_claim": tx_link(&btc_ex, &s.btc_claim_txid),
-        },
-        "notes": s.notes,
-        "steps": [
-            {"id": "created", "done": true, "label": "Created"},
-            {"id": "funded_btc", "done": s.btc_fund_txid.is_some(), "label": "Fund BTC HTLC"},
-            {"id": "funded_lq", "done": s.lq_fund_txid.is_some(), "label": "Fund Liquid HTLC"},
-            {"id": "claimed_lq", "done": s.lq_claim_txid.is_some(), "label": "Alice claims LQ (reveals preimage)"},
-            {"id": "claimed_btc", "done": s.btc_claim_txid.is_some(), "label": "Bob claims BTC"},
-            {"id": "done", "done": matches!(s.phase, lab_rgb::swap::SwapPhase::Done), "label": "Done"},
-        ],
-        "next_actions": swap_next_actions(s),
-        "guide": swap_guide(s),
-    })
+    let mut v = lab_api::public_swap_view(s, &cfg.explorer_base, &btc_ex);
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("next_actions".into(), serde_json::json!(swap_next_actions(s)));
+        obj.insert("guide".into(), serde_json::json!(swap_guide(s)));
+    }
+    v
 }
 
 /// Which mutations the lab console should offer (server-side keys).
@@ -3175,15 +3109,17 @@ fn s3_claim_lq_rgb(
     commitment_sats: u64,
     entropy: u64,
 ) -> Result<serde_json::Value> {
-    let leg = s
-        .lq_rgb
-        .as_ref()
-        .context("lq_rgb missing; fund-lq --rgb-wrap first")?
-        .clone();
+    lab_rgb::swap::require_fund_wrap_for_claim(s.lq_rgb.as_ref(), "lq")?;
+    let leg = s.lq_rgb.as_ref().expect("checked").clone();
+    lab_rgb::swap::check_leg_contract_matches_session(
+        &leg,
+        s.lq_contract_id.as_deref(),
+        "lq",
+    )?;
     let prev_opid = leg
         .fund_transition_opid_hex
         .clone()
-        .context("fund_transition_opid_hex missing (fund-lq --rgb-wrap first)")?;
+        .expect("checked by require_fund_wrap");
     let amount_rgb = if leg.amount > 0 {
         leg.amount
     } else {
@@ -3338,15 +3274,17 @@ fn s3_claim_btc_rgb(
     entropy: u64,
 ) -> Result<serde_json::Value> {
     let btc = lab_btc::BtcConfig::from_env();
-    let leg = s
-        .btc_rgb
-        .as_ref()
-        .context("btc_rgb missing; fund-btc --rgb-wrap first")?
-        .clone();
+    lab_rgb::swap::require_fund_wrap_for_claim(s.btc_rgb.as_ref(), "btc")?;
+    let leg = s.btc_rgb.as_ref().expect("checked").clone();
+    lab_rgb::swap::check_leg_contract_matches_session(
+        &leg,
+        s.btc_contract_id.as_deref(),
+        "btc",
+    )?;
     let prev_opid = leg
         .fund_transition_opid_hex
         .clone()
-        .context("fund_transition_opid_hex missing")?;
+        .expect("checked by require_fund_wrap");
     let amount_rgb = if leg.amount > 0 {
         leg.amount
     } else {
@@ -3443,11 +3381,7 @@ fn resolve_preimage_from_lq_claim(cfg: &Config, s: &lab_rgb::swap::SwapSession) 
         .as_ref()
         .context("no lq_claim_txid; claim-lq first or omit --from-witness")?;
     let pre = extract_preimage_cli(cfg, "liquid", txid)?;
-    let hash = htlc::sha256_preimage(&pre);
-    let session_hash = hex::decode(&s.hash_hex)?;
-    if session_hash.as_slice() != hash.as_slice() {
-        anyhow::bail!("extracted preimage hash does not match session hash_hex");
-    }
+    lab_rgb::swap::check_preimage_matches_session(&pre, &s.hash_hex)?;
     Ok(pre.to_vec())
 }
 

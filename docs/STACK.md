@@ -124,8 +124,8 @@ Regtest node: Elements **23.3.0**, `evbparams=simplicity:-1:::`, RPC **:7042** (
 | Issue **Liquid** test asset (backing) | LWK `issue_asset` + optional registry metadata |
 | Issue **RGB20** on Liquid | RGB stack + Liquid witness tx (often built/signed via LWK PSET) |
 | Hide amounts on Liquid | CT (default in LWK); RGB commitment stays in scriptPubKey |
-| Swap two **Liquid native** assets | LiquiDEX / PSET (comparison only) |
-| Swap **RGB** across chains | HTLC + consignments (P1) |
+| Swap two **Liquid native** assets | LiquiDEX / PSET (comparison only) — [C5](./C5_LIQUIDEX_COMPARISON.md) |
+| Swap **RGB** across chains | HTLC + consignments (P1/S3) — twins, not one contract id |
 | LBTC ↔ LN | LWK Boltz (optional, non-goal) |
 
 ## Spike reuse

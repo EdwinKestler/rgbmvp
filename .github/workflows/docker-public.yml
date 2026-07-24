@@ -36,6 +36,9 @@ jobs:
           context: .
           file: Dockerfile.public
           push: false
+          # Required so Trivy can scan the image from the local Docker daemon
+          # (Buildx otherwise leaves the image only in the build cache).
+          load: true
           tags: rgbmvp-public:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max

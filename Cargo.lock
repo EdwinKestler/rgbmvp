@@ -1837,7 +1837,9 @@ dependencies = [
 name = "lab-api"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "lab-core",
+ "lab-rgb",
  "serde",
  "serde_json",
 ]

@@ -311,6 +311,44 @@ mod tests {
     }
 
     #[test]
+    fn extract_rejects_refund_empty_if_branch() {
+        // Refund: [sig, empty, script] — stack len 3 and/or empty IF marker.
+        let short = vec![vec![0x30], vec![], vec![0x63]];
+        assert!(extract_preimage_from_witness_stack(&short).is_err());
+        let refundish = vec![vec![0x30], vec![0x11; 32], vec![], vec![0x63]];
+        let err = extract_preimage_from_witness_stack(&refundish).unwrap_err();
+        assert!(
+            err.to_string().contains("refund") || err.to_string().contains("empty IF"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn extract_rejects_wrong_preimage_length() {
+        let stack = vec![
+            vec![0x30],
+            vec![0x11; 16], // not 32
+            vec![0x01],
+            vec![0x63],
+        ];
+        let err = extract_preimage_from_witness_stack(&stack).unwrap_err();
+        assert!(err.to_string().contains("32 bytes"), "got {err}");
+    }
+
+    #[test]
+    fn extract_rejects_malformed_tx_hex() {
+        assert!(extract_preimage_from_btc_tx_hex("not-hex").is_err());
+        assert!(extract_preimage_from_btc_tx_hex("deadbeef").is_err());
+        assert!(extract_preimage_from_liquid_tx_hex("zz").is_err());
+    }
+
+    #[test]
+    fn extract_rejects_unrelated_empty_witness() {
+        // Minimal invalid: decode may succeed on random bytes rarely; empty string fails.
+        assert!(extract_preimage_from_btc_tx_hex("").is_err());
+    }
+
+    #[test]
     fn multi_out_btc_claim_builds() {
         let h = [0x42u8; 32];
         let info = build_htlc_addresses(&h, "claimer", "refund", 6).unwrap();
@@ -334,6 +372,63 @@ mod tests {
         .unwrap();
         assert!(!hex_tx.is_empty());
         let got = extract_preimage_from_btc_tx_hex(&hex_tx).unwrap();
+        assert_eq!(got, pre);
+    }
+
+    #[test]
+    fn refund_btc_witness_rejects_preimage_extract() {
+        let h = [0x42u8; 32];
+        let info = build_htlc_addresses(&h, "claimer", "refund", 6).unwrap();
+        let (sk, _) = demo_keypair("refund").unwrap();
+        let ws = hex::decode(&info.witness_script_hex).unwrap();
+        let dest = p2wsh_spk(&ws);
+        let hex_tx = build_htlc_spend_btc(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            0,
+            10_000,
+            9_500,
+            dest.as_slice(),
+            &ws,
+            HtlcSpend::Refund,
+            6,
+            &sk,
+        )
+        .unwrap();
+        let err = extract_preimage_from_btc_tx_hex(&hex_tx).unwrap_err();
+        assert!(
+            err.to_string().contains("claim")
+                || err.to_string().contains("refund")
+                || err.to_string().contains("short"),
+            "got {err}"
+        );
+    }
+
+    #[test]
+    fn multi_out_liquid_claim_extracts_preimage() {
+        let h = [0x42u8; 32];
+        let info = build_htlc_addresses(&h, "claimer", "refund", 6).unwrap();
+        let (sk, _) = demo_keypair("claimer").unwrap();
+        let pre = [0x22u8; 32];
+        let ws = hex::decode(&info.witness_script_hex).unwrap();
+        let dest = p2wsh_spk(&ws);
+        // Liquid testnet policy asset (explicit L-BTC).
+        let lbtc = "144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49";
+        let mut commit_spk = vec![0x51, 0x20];
+        commit_spk.extend_from_slice(&[0x33u8; 32]);
+        let hex_tx = build_htlc_spend_liquid_outs(
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            0,
+            10_000,
+            &[(330, commit_spk.as_slice()), (9_170, dest.as_slice())],
+            500,
+            lbtc,
+            &ws,
+            HtlcSpend::Claim { preimage: &pre },
+            6,
+            &sk,
+        )
+        .unwrap();
+        let got = extract_preimage_from_liquid_tx_hex(&hex_tx).unwrap();
         assert_eq!(got, pre);
     }
 }
