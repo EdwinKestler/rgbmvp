@@ -132,11 +132,13 @@ pub fn phases_json() -> Value {
             {"id": "P3", "name": "Browser lab console", "status": "closed", "doc": "docs/P3_CLOSED.md",
              "slices": ["U0", "U1", "U2", "audit"]},
             {"id": "S3", "name": "RGB-wrapped claim", "status": "done", "doc": "docs/S3_RGB_WRAP.md",
-             "negatives": "partial-ci"},
+             "surfaces": ["CLI", "HTTP", "browser"],
+             "negatives": "partial-ci",
+             "evidence": "artifacts/public/s3-browser-20260724.json"},
             {"id": "U4", "name": "Public hosting security", "status": "implemented", "doc": "docs/U4_PUBLIC_HOSTING.md"},
             {"id": "U5", "name": "labd Axum platform", "status": "implemented", "doc": "docs/U5_AXUM.md"},
-            {"id": "S5", "name": "Round-trip swap", "status": "deferred", "doc": "docs/ROADMAP_NEXT.md"},
-            {"id": "C5", "name": "LiquiDEX comparison", "status": "docs", "doc": "docs/C5_LIQUIDEX_COMPARISON.md"}
+            {"id": "S5", "name": "Round-trip swap", "status": "open", "doc": "docs/ROADMAP_NEXT.md"},
+            {"id": "C5", "name": "LiquiDEX comparison", "status": "docs-skeleton", "doc": "docs/C5_LIQUIDEX_COMPARISON.md"}
         ]
     })
 }

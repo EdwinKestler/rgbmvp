@@ -16,12 +16,10 @@ LABD_HTTP=legacy rgbmvp serve
 
 ## Why U5
 
-`rgbmvp serve` currently implements TCP accept, HTTP/1.1 parsing, route matching,
-auth, CORS, static files, rate limits, and JSON errors in a large handwritten
-loop inside `lab-cli` (~1.4k lines of `serve_labd` + handlers). That is fine for
-the lab, but becomes risky as S3/S5 add mutations.
+Historically, `rgbmvp serve` used a handwritten TCP HTTP/1.1 loop (still available as
+`LABD_HTTP=legacy`). That became risky as S3/S5 added mutations.
 
-U5 replaces the **transport/platform** layer with Axum over Hyper while keeping:
+**U5 (default):** transport/platform is **Axum over Hyper**, while keeping:
 
 - Existing `/v1` request and response shapes
 - U4 security posture (read-only public, Bearer mutations, CORS allowlist, …)

@@ -107,12 +107,14 @@ BTC fixture: [`fixtures/testnet_btc.json`](../fixtures/testnet_btc.json).
 | S1 HTLC addresses | **Done** — dual HTLC (BTC claimer=bob, LQ claimer=alice) |
 | S2 fund both | **Live** — `swap fund-btc` + `swap fund-lq` |
 | S2 claim (value HTLC) | **Live** — Alice `claim-lq` then Bob `claim-btc` → **phase=done** (Script HTLC only) |
-| S3 RGB-wrapped claim | **CLI implemented** — [S3_RGB_WRAP.md](./S3_RGB_WRAP.md); fund-wrap + multi-out claim + extract-preimage; live testnet proof operator-run |
-| S4 coordinator | CLI session under `.rgbmvp/swaps/` (+ P3 guided UI) |
+| S3 RGB-wrapped claim | **Done** (CLI + HTTP/browser) — [S3_RGB_WRAP.md](./S3_RGB_WRAP.md); live CLI + HTTP evidence (`s3-browser-20260724-0112`, `artifacts/public/s3-*.json`) |
+| S4 coordinator | CLI session under `.rgbmvp/swaps/` (+ P3/S3 guided UI) |
 | S2 refund | **CLI done** — `swap refund-btc` / `swap refund-lq` (CSV mature) |
-| S5 round-trip | Deferred — twin reverse sessions; see [ROADMAP_NEXT.md](./ROADMAP_NEXT.md) |
-| S3 negatives (CI) | **Partial** — offline phase/`claim_verify` + preimage extract tests; live path still operator |
-| S3 HTTP + browser | **Done** — console mode selector + fund-wrap actions; preimage never in UI |
+| S5 round-trip | **Open / deferred** — twin reverse sessions; see [ROADMAP_NEXT.md](./ROADMAP_NEXT.md) |
+| S3 negatives (CI) | **Partial** — offline phase/`claim_verify` + preimage extract tests in `lab_rgb`; full fixture matrix open |
+| S3 HTTP + browser | **Done** — Axum `/v1` + console mode (value vs rgb_wrap); preimage never in UI; live phase=done |
+| Service extraction + U5 | **Done** — `SwapService` / `lab_api::s3`; default labd Axum ([U5_AXUM.md](./U5_AXUM.md)) |
+| C5 LiquiDEX comparison | **Partial** — [C5_LIQUIDEX_COMPARISON.md](./C5_LIQUIDEX_COMPARISON.md) skeleton |
 | P1 closure | **CLOSED** for **value** HTLC path — [`P1_CLOSED.md`](./P1_CLOSED.md); S3 was always deferred there |
 
 **HTLC live path (`p1-live`, 2026-07-21):**
@@ -192,4 +194,4 @@ P0 web verifier must not hard-code assumptions that block U0–U2 (shared API ty
 - P1 at least one public **value** HTLC swap (user↔bot acceptable).
 - P2 C0 + C3 green on CI; optional public testnet if tooling allows.
 - P3 lab console closed on localhost operator model.
-- **Next completeness (not required for historical P1–P3 close):** S3 negatives → services → U5 → S3 HTTP → S5; C5 docs parallel ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)).
+- **Ladder (2026-07-24):** services + U5 + S3 browser/API **closed**; S3 negatives **partial**; next protocol **S5**; C5 docs polish optional ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)).

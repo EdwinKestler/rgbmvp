@@ -177,7 +177,8 @@ vout1: claimer P2WPKH (RGB successor seal = WitnessTx:1)
 | value-only path | unchanged; no RGB fields required | `value_only_done_without_rgb_fields` |
 | GET public view | preimage never present | `lab_api::public_swap_view` test |
 
-Still **manual / live CI (optional):** full RGB client verify with wrong commitment SPK on testnet, dual-leg broadcast+verify matrix, consignment corruption end-to-end.
+**Status of negatives:** **Partial** — offline domain/extract tests land in normal `cargo test` / CI.  
+Still **open / optional live:** full RGB client verify with wrong commitment SPK on testnet, dual-leg broadcast+verify matrix, consignment corruption end-to-end, FakeBroadcaster-style application-service cases.
 
 Run offline matrix:
 

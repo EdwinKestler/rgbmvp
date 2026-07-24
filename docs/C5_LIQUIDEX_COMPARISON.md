@@ -1,8 +1,9 @@
 # C5 — LiquiDEX / native Liquid swap vs RGB twin HTLC
 
-**Status:** Documentation / research (stretch)  
+**Status:** Partial — comparison skeleton (not a finished ecosystem writeup)  
 **Scenario:** [SCENARIOS.md](./SCENARIOS.md) `C5`  
 **Mainnet:** out of scope in this repository  
+**Roadmap:** [ROADMAP_NEXT.md](./ROADMAP_NEXT.md) (low engineering urgency)
 
 ## Purpose
 
