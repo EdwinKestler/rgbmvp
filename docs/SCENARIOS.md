@@ -112,6 +112,7 @@ BTC fixture: [`fixtures/testnet_btc.json`](../fixtures/testnet_btc.json).
 | S2 refund | **CLI done** — `swap refund-btc` / `swap refund-lq` (CSV mature) |
 | S5 round-trip | Deferred — twin reverse sessions; see [ROADMAP_NEXT.md](./ROADMAP_NEXT.md) |
 | S3 negatives (CI) | **Partial** — offline phase/`claim_verify` + preimage extract tests; live path still operator |
+| S3 HTTP + browser | **Done** — console mode selector + fund-wrap actions; preimage never in UI |
 | P1 closure | **CLOSED** for **value** HTLC path — [`P1_CLOSED.md`](./P1_CLOSED.md); S3 was always deferred there |
 
 **HTLC live path (`p1-live`, 2026-07-21):**

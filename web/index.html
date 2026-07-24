@@ -161,9 +161,14 @@
   <div id="panel-swap" class="panel">
     <div class="card">
       <h2>Atomic swap (guided)</h2>
-      <p class="muted">Lab operator actions use server-side wallets. <strong>Preimage is never returned by the API or UI.</strong></p>
+      <p class="muted">Lab operator actions use server-side wallets. <strong>Preimage is never returned by the API or UI</strong> — claim_btc with <code>from_witness</code> extracts it on labd.</p>
+      <label>Mode</label>
+      <select id="swap-mode">
+        <option value="value_htlc" selected>Value-only HTLC (U2 / P1)</option>
+        <option value="rgb_wrap">RGB-wrapped S3 (fund-wrap + re-anchor + verify)</option>
+      </select>
       <label>Swap id</label>
-      <input id="swap-id" placeholder="demo-u2" />
+      <input id="swap-id" placeholder="demo-u2 or s3-demo" />
       <div class="row">
         <div>
           <label>CSV delay (blocks)</label>
@@ -176,17 +181,21 @@
       </div>
       <label>Bob Liquid wallet <span class="muted">(name, e.g. bob — not tlq1…)</span></label>
       <input id="swap-bob" value="bob" placeholder="bob" />
-      <div class="row">
-        <div>
-          <label>BTC twin contract <span class="muted">(optional rgb:…)</span></label>
-          <input id="swap-btc-contract" placeholder="rgb:… on bitcoin-testnet" />
+      <div id="swap-rgb-fields">
+        <div class="row">
+          <div>
+            <label>BTC twin contract <span class="muted">(rgb:… bitcoin-testnet)</span></label>
+            <input id="swap-btc-contract" placeholder="rgb:… required for S3" />
+          </div>
+          <div>
+            <label>Liquid twin contract <span class="muted">(rgb:… liquid-testnet)</span></label>
+            <input id="swap-lq-contract" placeholder="rgb:… required for S3" />
+          </div>
         </div>
-        <div>
-          <label>Liquid twin contract <span class="muted">(optional rgb:…)</span></label>
-          <input id="swap-lq-contract" placeholder="rgb:… on liquid-testnet" />
-        </div>
+        <button type="button" class="secondary" id="swap-load-contracts" style="margin-top:0.5rem">Load contracts from lab…</button>
+        <select id="swap-contract-pick" style="display:none;margin-top:0.4rem"></select>
+        <p class="muted" id="swap-mode-help" style="margin-top:0.4rem">Value path: HTLC L-BTC/BTC only. Optional contract IDs are documentation. S3 path: fund assigns RGB to HTLC seals; claim re-anchors; phase=done only when claim_verify=valid.</p>
       </div>
-      <p class="muted" style="margin-top:0.4rem">Optional IDs are stored on the session for twin-swap documentation. HTLC fund/claim is L-BTC/BTC value; full RGB-wrapped re-anchor remains a CLI/research path.</p>
       <div class="row">
         <button type="button" id="swap-init">Init swap</button>
         <button type="button" class="secondary" id="swap-load">Refresh status</button>
@@ -195,7 +204,9 @@
       </div>
       <div id="swap-celebrate" class="celebrate">Swap complete · phase done · preimage stayed off the UI</div>
       <p class="muted" id="swap-guide" style="margin-top:0.75rem"></p>
+      <div id="swap-why" class="muted" style="margin-top:0.35rem"></div>
       <div id="swap-summary" style="margin-top:0.5rem"></div>
+      <div id="swap-rgb-status" style="margin-top:0.75rem"></div>
       <div class="steps" id="swap-steps"></div>
       <div id="swap-actions" style="margin:0.75rem 0;display:flex;flex-wrap:wrap;gap:0.5rem"></div>
       <div class="links" id="swap-links"></div>
@@ -205,8 +216,8 @@
 
   <div class="card muted">
     U1: <code>POST /v1/rgb/issue|transfer</code> ·
-    U2: <code>POST /v1/swap/init</code> · <code>POST /v1/swap/&#123;id&#125;/action</code><br/>
-    Preimage redacted on all GET responses.
+    U2/S3: <code>POST /v1/swap/init</code> · <code>POST /v1/swap/&#123;id&#125;/action</code><br/>
+    Preimage redacted on all GET responses · S3 uses server-side <code>from_witness</code> for claim_btc.
   </div>
 
   <script>
@@ -242,40 +253,78 @@
       } catch (_) { /* optional */ }
     }
 
+    function legHtml(title, leg) {
+      if (!leg) return `<div class="muted"><strong>${title}</strong>: —</div>`;
+      const v = leg.claim_verify || '—';
+      const vClass = v === 'valid' ? 'ok' : (v === 'invalid' ? 'bad' : 'muted');
+      return `<div style="margin-top:0.35rem">
+        <strong>${title}</strong>
+        <div class="muted" style="font-size:0.85rem">
+          contract <code>${leg.contract_id || '—'}</code><br/>
+          htlc seal <code>${leg.htlc_seal || '—'}</code><br/>
+          fund_verify ${leg.fund_verify || '—'} ·
+          claim_verify <span class="${vClass}">${v}</span><br/>
+          successor <code>${leg.successor_seal || '—'}</code>
+        </div>
+      </div>`;
+    }
+
     function renderSwap(s) {
       const phase = s.phase || '?';
       const done = phase === 'done' || phase === 'Done';
+      const wrap = !!s.rgb_wrap;
+      if ($('swap-mode')) {
+        $('swap-mode').value = wrap ? 'rgb_wrap' : 'value_htlc';
+      }
       $('swap-guide').textContent = s.guide || '';
+      if ($('swap-why')) {
+        if (!done && s.not_done_reason) {
+          $('swap-why').innerHTML = '<span class="bad">Why not done:</span> ' + s.not_done_reason;
+        } else {
+          $('swap-why').textContent = '';
+        }
+      }
       const celeb = $('swap-celebrate');
       if (celeb) {
         if (done) {
           celeb.classList.add('show');
-          celeb.innerHTML = '✓ Swap complete <span class="chip">phase done</span> · preimage never shown in this UI · '
+          celeb.innerHTML = '✓ ' + (wrap ? 'S3 RGB-wrap ' : '') + 'complete <span class="chip">phase done</span> · preimage never shown · '
             + (s.id ? ('id <code>' + s.id + '</code>') : '');
         } else {
           celeb.classList.remove('show');
         }
       }
-      // Prefill optional contract fields from session
       if (s.btc_contract_id && $('swap-btc-contract') && !$('swap-btc-contract').value) {
         $('swap-btc-contract').value = s.btc_contract_id;
       }
       if (s.lq_contract_id && $('swap-lq-contract') && !$('swap-lq-contract').value) {
         $('swap-lq-contract').value = s.lq_contract_id;
       }
-      const twins = [];
-      if (s.btc_contract_id) twins.push('BTC twin <code>' + s.btc_contract_id + '</code>');
-      if (s.lq_contract_id) twins.push('LQ twin <code>' + s.lq_contract_id + '</code>');
+      const modeChip = wrap
+        ? '<span class="chip">S3 rgb_wrap</span>'
+        : '<span class="chip" style="border-color:#334866;background:#1a2438;color:#9fb0cc">value HTLC</span>';
       $('swap-summary').innerHTML = `
-        <div class="phase ${done ? 'ok' : ''}">phase: ${phase}${done ? ' <span class="chip">done</span>' : ''}</div>
+        <div class="phase ${done ? 'ok' : ''}">phase: ${phase}${done ? ' <span class="chip">done</span>' : ''} ${modeChip}</div>
         <div class="muted">hash <code>${(s.hash_hex||'').slice(0,16)}…</code>
           · CSV ${s.csv_delay}
           · ${s.alice_btc_wallet || '?'} ↔ ${s.bob_lq_wallet || '?'}</div>
         <div class="muted" style="margin-top:0.4rem">
           BTC HTLC: <code>${s.htlc_btc?.address || '—'}</code><br/>
           LQ HTLC: <code>${s.htlc_lq?.address || '—'}</code>
-          ${twins.length ? '<br/>' + twins.join('<br/>') : ''}
         </div>`;
+
+      if ($('swap-rgb-status')) {
+        if (wrap || s.btc_rgb || s.lq_rgb) {
+          $('swap-rgb-status').innerHTML =
+            '<div style="padding:0.65rem;border:1px solid #243352;border-radius:8px;background:#0b1220">' +
+            '<div style="font-weight:600;margin-bottom:0.35rem">RGB legs (S3)</div>' +
+            legHtml('BTC', s.btc_rgb) +
+            legHtml('Liquid', s.lq_rgb) +
+            '</div>';
+        } else {
+          $('swap-rgb-status').innerHTML = '';
+        }
+      }
 
       const stepsEl = $('swap-steps');
       stepsEl.innerHTML = '';
@@ -321,7 +370,6 @@
         }
       });
 
-      // strip any accidental preimage keys from display
       const safe = JSON.parse(JSON.stringify(s));
       delete safe.preimage_hex;
       $('swap-out').textContent = JSON.stringify(safe, null, 2);
@@ -379,6 +427,62 @@
     }
 
     $('swap-load').onclick = loadSwap;
+
+    function syncModeHelp() {
+      const m = $('swap-mode') && $('swap-mode').value;
+      const help = $('swap-mode-help');
+      if (!help) return;
+      if (m === 'rgb_wrap') {
+        help.innerHTML = '<strong>S3 mode:</strong> requires BTC + Liquid <code>rgb:</code> contracts (issue first). Fund wraps RGB onto HTLC seals; claim re-anchors; done only when both <code>claim_verify=valid</code>. Preimage never appears in the UI.';
+      } else {
+        help.textContent = 'Value path: HTLC L-BTC/BTC only. Optional contract IDs are documentation. Switch to RGB-wrapped S3 for full re-anchor.';
+      }
+    }
+    if ($('swap-mode')) {
+      $('swap-mode').onchange = syncModeHelp;
+      syncModeHelp();
+    }
+
+    if ($('swap-load-contracts')) {
+      $('swap-load-contracts').onclick = async () => {
+        try {
+          const r = await fetch('/v1/rgb/contracts');
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error || r.statusText);
+          const list = j.contracts || j.items || (Array.isArray(j) ? j : []);
+          const sel = $('swap-contract-pick');
+          sel.style.display = 'block';
+          sel.innerHTML = '<option value="">— pick contract to fill BTC or LQ field —</option>';
+          list.forEach(c => {
+            const id = c.contract_id || c.id || c;
+            const chain = c.chain || c.network || '';
+            const o = document.createElement('option');
+            o.value = typeof id === 'string' ? id : JSON.stringify(id);
+            o.textContent = (c.ticker || '') + ' ' + String(id).slice(0, 48) + (chain ? ' (' + chain + ')' : '');
+            o.dataset.chain = chain;
+            sel.appendChild(o);
+          });
+          sel.onchange = () => {
+            const o = sel.selectedOptions[0];
+            if (!o || !o.value) return;
+            const chain = (o.dataset.chain || '').toLowerCase();
+            if (chain.includes('bitcoin') || chain.includes('btc')) {
+              $('swap-btc-contract').value = o.value;
+            } else if (chain.includes('liquid') || chain.includes('elements')) {
+              $('swap-lq-contract').value = o.value;
+            } else {
+              // toggle: fill empty field
+              if (!$('swap-btc-contract').value) $('swap-btc-contract').value = o.value;
+              else $('swap-lq-contract').value = o.value;
+            }
+          };
+          $('swap-out').textContent = JSON.stringify(j, null, 2);
+        } catch (e) {
+          $('swap-summary').innerHTML = '<span class="bad">' + e + '</span>';
+        }
+      };
+    }
+
     $('swap-save-contracts').onclick = async () => {
       const id = $('swap-id').value.trim();
       if (!id) return;
@@ -400,6 +504,7 @@
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || r.statusText);
         if (j.swap) renderSwap(j.swap);
+        else await loadSwap();
         $('swap-out').textContent = JSON.stringify(j, null, 2);
       } catch (e) {
         $('swap-summary').innerHTML = '<span class="bad">' + e + '</span>';
@@ -408,16 +513,22 @@
     $('swap-init').onclick = async () => {
       const id = $('swap-id').value.trim();
       if (!id) { $('swap-out').textContent = 'enter a new swap id'; return; }
+      const rgbWrap = $('swap-mode') && $('swap-mode').value === 'rgb_wrap';
       const body = {
         id,
         csv_delay: Number($('swap-csv').value) || 6,
         alice_btc: $('swap-alice').value.trim() || 'btc-alice',
         bob_lq: $('swap-bob').value.trim() || 'bob',
+        rgb_wrap: rgbWrap,
       };
       const bc = $('swap-btc-contract') && $('swap-btc-contract').value.trim();
       const lc = $('swap-lq-contract') && $('swap-lq-contract').value.trim();
       if (bc) body.btc_contract = bc;
       if (lc) body.lq_contract = lc;
+      if (rgbWrap && !bc && !lc) {
+        $('swap-summary').innerHTML = '<span class="bad">S3 mode needs at least one rgb: contract (BTC and/or Liquid)</span>';
+        return;
+      }
       $('swap-out').textContent = 'Init…';
       try {
         const r = await fetch('/v1/swap/init', {

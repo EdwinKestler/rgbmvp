@@ -18,8 +18,87 @@ pub(crate) fn public_swap_view(s: &lab_rgb::swap::SwapSession, cfg: &Config) -> 
     if let Some(obj) = v.as_object_mut() {
         obj.insert("next_actions".into(), serde_json::json!(swap_next_actions(s)));
         obj.insert("guide".into(), serde_json::json!(swap_guide(s)));
+        obj.insert(
+            "not_done_reason".into(),
+            serde_json::json!(not_done_reason(s)),
+        );
+        obj.insert(
+            "mode".into(),
+            serde_json::json!(if s.rgb_wrap {
+                "rgb_wrap"
+            } else {
+                "value_htlc"
+            }),
+        );
     }
     v
+}
+
+fn leg_wrapped(leg: &Option<lab_rgb::swap::SwapLegRgb>) -> bool {
+    leg.as_ref()
+        .and_then(|r| r.fund_transition_opid_hex.as_ref())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+}
+
+fn leg_claim_valid(leg: &Option<lab_rgb::swap::SwapLegRgb>) -> bool {
+    leg.as_ref()
+        .and_then(|r| r.claim_verify.as_deref())
+        .map(|s| s == "valid")
+        .unwrap_or(false)
+}
+
+/// Why phase is not yet `done` (browser-facing; never mentions preimage bytes).
+pub(crate) fn not_done_reason(s: &lab_rgb::swap::SwapSession) -> Option<String> {
+    use lab_rgb::swap::SwapPhase;
+    if matches!(s.phase, SwapPhase::Done | SwapPhase::Refunded) {
+        return None;
+    }
+    if s.btc_fund_txid.is_none() {
+        return Some("BTC HTLC not funded yet".into());
+    }
+    if s.lq_fund_txid.is_none() {
+        return Some("Liquid HTLC not funded yet".into());
+    }
+    if s.rgb_wrap {
+        if s.btc_contract_id.is_some() && !leg_wrapped(&s.btc_rgb) {
+            return Some("BTC RGB fund-wrap missing (run fund_btc with rgb_wrap)".into());
+        }
+        if s.lq_contract_id.is_some() && !leg_wrapped(&s.lq_rgb) {
+            return Some("Liquid RGB fund-wrap missing (run fund_lq with rgb_wrap)".into());
+        }
+    }
+    if s.lq_claim_txid.is_none() {
+        return Some(if s.rgb_wrap {
+            "Liquid claim not done (Alice: claim_lq re-anchors RGB + publishes preimage on-chain)"
+                .into()
+        } else {
+            "Liquid claim not done (Alice: claim_lq publishes preimage on-chain)".into()
+        });
+    }
+    if s.btc_claim_txid.is_none() {
+        return Some(if s.rgb_wrap {
+            "BTC claim not done (Bob: claim_btc with from_witness — server extracts preimage)"
+                .into()
+        } else {
+            "BTC claim not done (Bob: claim_btc)".into()
+        });
+    }
+    if s.rgb_wrap {
+        if s.btc_contract_id.is_some() && !leg_claim_valid(&s.btc_rgb) {
+            return Some(format!(
+                "BTC RGB claim_verify={:?} (need valid for done)",
+                s.btc_rgb.as_ref().and_then(|r| r.claim_verify.clone())
+            ));
+        }
+        if s.lq_contract_id.is_some() && !leg_claim_valid(&s.lq_rgb) {
+            return Some(format!(
+                "Liquid RGB claim_verify={:?} (need valid for done)",
+                s.lq_rgb.as_ref().and_then(|r| r.claim_verify.clone())
+            ));
+        }
+    }
+    Some("Value claims recorded; recompute phase or refresh".into())
 }
 
 /// Which mutations the lab console should offer (server-side keys).
@@ -29,39 +108,103 @@ pub(crate) fn swap_next_actions(s: &lab_rgb::swap::SwapSession) -> Vec<serde_jso
     if matches!(s.phase, SwapPhase::Refunded | SwapPhase::Done) {
         return out;
     }
-    if s.btc_fund_txid.is_none() {
+    let wrap = s.rgb_wrap;
+    // Value fund missing, or S3 wrap still needed after value fund.
+    let need_btc_fund = s.btc_fund_txid.is_none();
+    let need_btc_wrap = wrap && s.btc_contract_id.is_some() && !leg_wrapped(&s.btc_rgb);
+    if need_btc_fund || need_btc_wrap {
+        let mut defaults = serde_json::json!({
+            "amount_sats": 10000,
+            "fee_sats": 800,
+            "commitment_sats": 330,
+            "entropy": 1,
+        });
+        if wrap {
+            defaults
+                .as_object_mut()
+                .unwrap()
+                .insert("rgb_wrap".into(), serde_json::json!(true));
+        }
         out.push(serde_json::json!({
             "action": "fund_btc",
-            "label": "1. Fund BTC HTLC",
-            "defaults": {"amount_sats": 10000, "fee_sats": 800},
+            "label": if need_btc_fund && wrap {
+                "1. Fund BTC HTLC + RGB wrap"
+            } else if need_btc_wrap {
+                "1b. RGB wrap BTC onto HTLC"
+            } else {
+                "1. Fund BTC HTLC"
+            },
+            "defaults": defaults,
             "role": "alice (btc-alice)"
         }));
     }
-    if s.lq_fund_txid.is_none() {
+    let need_lq_fund = s.lq_fund_txid.is_none();
+    let need_lq_wrap = wrap && s.lq_contract_id.is_some() && !leg_wrapped(&s.lq_rgb);
+    if need_lq_fund || need_lq_wrap {
+        let mut defaults = serde_json::json!({
+            "amount_sats": 5000,
+            "commitment_sats": 330,
+            "entropy": 1,
+        });
+        if wrap {
+            defaults
+                .as_object_mut()
+                .unwrap()
+                .insert("rgb_wrap".into(), serde_json::json!(true));
+        }
         out.push(serde_json::json!({
             "action": "fund_lq",
-            "label": "2. Fund Liquid HTLC",
-            "defaults": {"amount_sats": 5000},
+            "label": if need_lq_fund && wrap {
+                "2. Fund Liquid HTLC + RGB wrap"
+            } else if need_lq_wrap {
+                "2b. RGB wrap Liquid onto HTLC"
+            } else {
+                "2. Fund Liquid HTLC"
+            },
+            "defaults": defaults,
             "role": "bob"
         }));
     }
     if s.btc_fund_txid.is_some() && s.lq_fund_txid.is_some() && s.lq_claim_txid.is_none() {
-        out.push(serde_json::json!({
-            "action": "claim_lq",
-            "label": "3. Claim Liquid (Alice reveals preimage)",
-            "defaults": {"fee_sats": 300},
-            "role": "alice"
-        }));
+        // Wait for wraps before offering claim on S3
+        let wraps_ok = (!wrap || s.btc_contract_id.is_none() || leg_wrapped(&s.btc_rgb))
+            && (!wrap || s.lq_contract_id.is_none() || leg_wrapped(&s.lq_rgb));
+        if wraps_ok {
+            let defaults = serde_json::json!({
+                "fee_sats": 300,
+                "commitment_sats": 330,
+                "entropy": 1,
+            });
+            out.push(serde_json::json!({
+                "action": "claim_lq",
+                "label": if wrap {
+                    "3. Claim Liquid (RGB re-anchor + preimage on-chain)"
+                } else {
+                    "3. Claim Liquid (Alice reveals preimage)"
+                },
+                "defaults": defaults,
+                "role": "alice"
+            }));
+        }
     }
     if s.lq_claim_txid.is_some() && s.btc_claim_txid.is_none() {
+        let defaults = serde_json::json!({
+            "fee_sats": 500,
+            "commitment_sats": 330,
+            "entropy": 1,
+            "from_witness": wrap,
+        });
         out.push(serde_json::json!({
             "action": "claim_btc",
-            "label": "4. Claim BTC (Bob uses preimage)",
-            "defaults": {"fee_sats": 500},
+            "label": if wrap {
+                "4. Claim BTC (from_witness + RGB re-anchor)"
+            } else {
+                "4. Claim BTC (Bob uses preimage)"
+            },
+            "defaults": defaults,
             "role": "bob"
         }));
     }
-    // Refunds only offered if funded and not claimed on that leg
     if s.btc_fund_txid.is_some() && s.btc_claim_txid.is_none() {
         out.push(serde_json::json!({
             "action": "refund_btc",
@@ -85,27 +228,20 @@ pub(crate) fn swap_next_actions(s: &lab_rgb::swap::SwapSession) -> Vec<serde_jso
 
 pub(crate) fn swap_guide(s: &lab_rgb::swap::SwapSession) -> String {
     if matches!(s.phase, lab_rgb::swap::SwapPhase::Done) {
-        return "Swap complete. Preimage was revealed on Liquid claim; never shown in this UI.".into();
+        return if s.rgb_wrap {
+            "S3 complete: both value claims and required RGB claim_verify=valid. Preimage never shown in this UI."
+                .into()
+        } else {
+            "Swap complete. Preimage was revealed on Liquid claim; never shown in this UI.".into()
+        };
     }
     if matches!(s.phase, lab_rgb::swap::SwapPhase::Refunded) {
         return "Refund path used. Happy-path claim is no longer available.".into();
     }
-    if s.btc_fund_txid.is_none() && s.lq_fund_txid.is_none() {
-        return "Create or load a swap, then fund BTC (Alice) and Liquid (Bob) HTLCs.".into();
+    if let Some(why) = not_done_reason(s) {
+        return why;
     }
-    if s.btc_fund_txid.is_none() {
-        return "Fund the Bitcoin HTLC from btc-alice next.".into();
-    }
-    if s.lq_fund_txid.is_none() {
-        return "Fund the Liquid HTLC from bob next.".into();
-    }
-    if s.lq_claim_txid.is_none() {
-        return "Both legs funded. Alice should claim Liquid (this publishes the preimage on-chain).".into();
-    }
-    if s.btc_claim_txid.is_none() {
-        return "Liquid claimed. Bob can claim BTC with the published preimage.".into();
-    }
-    "Almost done — refresh status.".into()
+    "Refresh status.".into()
 }
 
 /// Map a pasted address to the lab wallet *name* when possible.
@@ -243,7 +379,13 @@ pub(crate) fn handle_swap_action_post(
                 "status": "contracts_updated",
                 "btc_contract_id": s.btc_contract_id,
                 "lq_contract_id": s.lq_contract_id,
-                "note": "Twin RGB ids stored on session for documentation; HTLC path unchanged.",
+                "rgb_wrap": s.rgb_wrap,
+                "note": if s.rgb_wrap {
+                    "Twin contracts stored. S3 fund_* with rgb_wrap will assign RGB to HTLC seals."
+                } else {
+                    "Twin RGB ids stored. For S3 re-anchor, re-init with rgb_wrap:true (or use CLI)."
+                },
+                "swap": public_swap_view(&s, cfg),
             })
         }
         "fund_btc" => {
@@ -252,26 +394,56 @@ pub(crate) fn handle_swap_action_post(
                 .and_then(|x| x.as_u64())
                 .unwrap_or(10_000);
             let fee_sats = v.get("fee_sats").and_then(|x| x.as_u64()).unwrap_or(800);
+            let commitment_sats = v
+                .get("commitment_sats")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(330);
+            let entropy = v.get("entropy").and_then(|x| x.as_u64()).unwrap_or(1);
+            let do_wrap = v
+                .get("rgb_wrap")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(s.rgb_wrap)
+                || s.rgb_wrap;
             let btc = lab_btc::BtcConfig::from_env();
             let wallet = resolve_btc_wallet_name(&s.alice_btc_wallet);
             s.alice_btc_wallet = wallet.clone();
-            let bc = lab_btc::fund_address(
-                cfg,
-                &btc,
-                &wallet,
-                &s.htlc_btc.address_btc,
-                amount_sats,
-                fee_sats,
-            )?;
-            s.btc_fund_txid = Some(bc.txid.clone());
-            s.btc_fund_vout = Some(0);
-            s.btc_fund_sats = Some(amount_sats);
-            swap::recompute_phase(&mut s);
-            store.save(&s)?;
+            let svc = lab_api::SwapService::new(&cfg.data_dir);
+            let mut broadcast = serde_json::Value::Null;
+            let mut reused = false;
+            if s.btc_fund_txid.is_some() {
+                // Idempotent: do not double-fund value HTLC.
+                reused = true;
+            } else {
+                let bc = lab_btc::fund_address(
+                    cfg,
+                    &btc,
+                    &wallet,
+                    &s.htlc_btc.address_btc,
+                    amount_sats,
+                    fee_sats,
+                )?;
+                s.btc_fund_txid = Some(bc.txid.clone());
+                s.btc_fund_vout = Some(0);
+                s.btc_fund_sats = Some(amount_sats);
+                broadcast = serde_json::to_value(&bc)?;
+            }
+            let mut rgb_meta = serde_json::Value::Null;
+            if do_wrap && s.btc_contract_id.is_some() && !leg_wrapped(&s.btc_rgb) {
+                rgb_meta =
+                    svc.fund_wrap_btc(cfg, &btc, &mut s, commitment_sats, entropy)?;
+            } else if do_wrap && leg_wrapped(&s.btc_rgb) {
+                rgb_meta = serde_json::json!({"status": "already_wrapped", "idempotent": true});
+            }
+            svc.recompute_and_save(&mut s)?;
             serde_json::json!({
                 "status": "funded_btc",
-                "broadcast": bc,
+                "phase": s.phase,
+                "rgb_wrap": do_wrap,
+                "reused_value_fund": reused,
+                "broadcast": broadcast,
                 "htlc_address": s.htlc_btc.address_btc,
+                "rgb": rgb_meta,
+                "swap": public_swap_view(&s, cfg),
             })
         }
         "fund_lq" => {
@@ -279,24 +451,120 @@ pub(crate) fn handle_swap_action_post(
                 .get("amount_sats")
                 .and_then(|x| x.as_u64())
                 .unwrap_or(5_000);
-            let bc = lab_chain::send_lbtc(
+            let commitment_sats = v
+                .get("commitment_sats")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(330);
+            let entropy = v.get("entropy").and_then(|x| x.as_u64()).unwrap_or(1);
+            let do_wrap = v
+                .get("rgb_wrap")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(s.rgb_wrap)
+                || s.rgb_wrap;
+            let svc = lab_api::SwapService::new(&cfg.data_dir);
+            let mut broadcast = serde_json::Value::Null;
+            let mut reused = false;
+            // Prefer existing HTLC UTXO (idempotent / retry after wrap failure).
+            if let Ok((tx, vo, va)) = lab_chain::find_address_utxo(
                 cfg,
-                &s.bob_lq_wallet,
                 &s.htlc_lq.address_liquid_unconf,
-                amount_sats,
-            )?;
-            s.lq_fund_txid = Some(bc.txid.clone());
-            s.lq_fund_vout = Some(0);
-            s.lq_fund_sats = Some(amount_sats);
+                amount_sats.saturating_sub(1),
+            ) {
+                s.lq_fund_txid = Some(tx.clone());
+                s.lq_fund_vout = Some(vo);
+                s.lq_fund_sats = Some(va);
+                reused = true;
+                broadcast = serde_json::json!({
+                    "txid": tx,
+                    "reused": true,
+                    "note": "reused existing HTLC UTXO",
+                });
+            } else if s.lq_fund_txid.is_none() {
+                if do_wrap {
+                    if let Some(cid) = s.lq_contract_id.as_ref() {
+                        let rgb_store = RgbStore::new(&cfg.data_dir);
+                        if let Ok(issue) = rgb_store.load_issue(cid) {
+                            let utxos = lab_chain::wallet_utxos(cfg, &s.bob_lq_wallet)?;
+                            let large: Vec<_> = utxos
+                                .iter()
+                                .filter(|u| u.value >= amount_sats.saturating_add(500))
+                                .collect();
+                            if large.len() == 1 && large[0].outpoint == issue.seal {
+                                anyhow::bail!(
+                                    "S3 fund_lq: only spendable UTXO is the RGB issue seal {}. \
+                                     Split funds first, then retry.",
+                                    issue.seal
+                                );
+                            }
+                        }
+                    }
+                }
+                let bc = lab_chain::send_lbtc(
+                    cfg,
+                    &s.bob_lq_wallet,
+                    &s.htlc_lq.address_liquid_unconf,
+                    amount_sats,
+                )?;
+                let (tx, vo, va) = lab_chain::find_address_utxo(
+                    cfg,
+                    &s.htlc_lq.address_liquid_unconf,
+                    amount_sats.saturating_sub(1),
+                )
+                .unwrap_or((bc.txid.clone(), 0, amount_sats));
+                s.lq_fund_txid = Some(tx);
+                s.lq_fund_vout = Some(vo);
+                s.lq_fund_sats = Some(va);
+                broadcast = serde_json::to_value(&bc)?;
+            } else {
+                reused = true;
+            }
+            // Persist value fund even if wrap fails.
             swap::recompute_phase(&mut s);
             store.save(&s)?;
+            let mut rgb_meta = serde_json::Value::Null;
+            if do_wrap && s.lq_contract_id.is_some() && !leg_wrapped(&s.lq_rgb) {
+                match svc.fund_wrap_lq(cfg, &mut s, commitment_sats, entropy) {
+                    Ok(m) => {
+                        rgb_meta = m;
+                        svc.recompute_and_save(&mut s)?;
+                    }
+                    Err(e) => {
+                        store.save(&s)?;
+                        anyhow::bail!(
+                            "LQ value funded (txid {}) but RGB wrap failed: {e}. \
+                             Re-run fund_lq with rgb_wrap (HTLC UTXO will be reused).",
+                            s.lq_fund_txid.as_deref().unwrap_or("?")
+                        );
+                    }
+                }
+            } else if do_wrap && leg_wrapped(&s.lq_rgb) {
+                rgb_meta = serde_json::json!({"status": "already_wrapped", "idempotent": true});
+                svc.recompute_and_save(&mut s)?;
+            } else {
+                svc.recompute_and_save(&mut s)?;
+            }
             serde_json::json!({
                 "status": "funded_lq",
-                "broadcast": bc,
+                "phase": s.phase,
+                "rgb_wrap": do_wrap,
+                "reused_htlc_utxo": reused,
+                "broadcast": broadcast,
                 "htlc_address": s.htlc_lq.address_liquid_unconf,
+                "rgb": rgb_meta,
+                "swap": public_swap_view(&s, cfg),
             })
         }
         "claim_lq" => {
+            if s.lq_claim_txid.is_some() {
+                // Idempotent success
+                return Ok(serde_json::json!({
+                    "status": "claimed_lq",
+                    "phase": s.phase,
+                    "txid": s.lq_claim_txid,
+                    "idempotent": true,
+                    "swap": public_swap_view(&s, cfg),
+                }));
+            }
             let fee_sats = v.get("fee_sats").and_then(|x| x.as_u64()).unwrap_or(300);
             let commitment_sats = v
                 .get("commitment_sats")
@@ -306,23 +574,34 @@ pub(crate) fn handle_swap_action_post(
             let svc = lab_api::SwapService::new(&cfg.data_dir);
             let mut out = svc.claim_lq(cfg, &mut s, fee_sats, commitment_sats, entropy)?;
             svc.recompute_and_save(&mut s)?;
-            // Never surface preimage on HTTP (service notes may mention it).
             out["note"] = serde_json::json!(
                 "Preimage is public on Liquid; Bob can claim BTC. Not returned in API JSON."
             );
+            out["swap"] = public_swap_view(&s, cfg);
             out
         }
         "claim_btc" => {
+            if s.btc_claim_txid.is_some() {
+                return Ok(serde_json::json!({
+                    "status": "claimed_btc",
+                    "phase": s.phase,
+                    "txid": s.btc_claim_txid,
+                    "idempotent": true,
+                    "rgb_wrap": s.rgb_wrap,
+                    "swap": public_swap_view(&s, cfg),
+                }));
+            }
             let fee_sats = v.get("fee_sats").and_then(|x| x.as_u64()).unwrap_or(500);
             let commitment_sats = v
                 .get("commitment_sats")
                 .and_then(|x| x.as_u64())
                 .unwrap_or(330);
             let entropy = v.get("entropy").and_then(|x| x.as_u64()).unwrap_or(1);
+            // S3 default: extract preimage from Liquid claim witness (never from browser).
             let from_witness = v
                 .get("from_witness")
                 .and_then(|x| x.as_bool())
-                .unwrap_or(false);
+                .unwrap_or(s.rgb_wrap);
             let svc = lab_api::SwapService::new(&cfg.data_dir);
             svc.claim_btc(
                 cfg,
@@ -333,12 +612,12 @@ pub(crate) fn handle_swap_action_post(
                 from_witness,
             )?;
             svc.recompute_and_save(&mut s)?;
-            // Drop any accidental preimage field; return public-shaped status.
             serde_json::json!({
                 "status": "claimed_btc",
                 "phase": s.phase,
                 "txid": s.btc_claim_txid,
                 "rgb_wrap": s.rgb_wrap,
+                "from_witness": from_witness,
                 "swap": public_swap_view(&s, cfg),
             })
         }

@@ -114,9 +114,10 @@ cargo test -p lab-rgb -p lab-api --lib
 | Surface | S3 status |
 |---------|-----------|
 | CLI `swap *` | **Primary** — fund-wrap/claim via `lab_api::SwapService` / `lab_api::s3` |
-| `GET /v1/swap/{id}` | Public RGB leg metadata via `lab_api::public_swap_view` (no preimage) |
-| `POST /v1/swap/{id}/action` claim_* | Same service methods as CLI (value or S3 when `rgb_wrap`) |
-| Browser console mutations | Value path; full RGB-wrap UX after U5 ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)) |
+| `GET /v1/swap/{id}` | Public RGB leg metadata + `not_done_reason` / `mode` (no preimage) |
+| `POST /v1/swap/init` | `rgb_wrap`, `btc_contract`, `lq_contract` |
+| `POST /v1/swap/{id}/action` | `fund_btc`/`fund_lq` honor `rgb_wrap` (idempotent wrap); `claim_*` via SwapService; S3 `claim_btc` defaults `from_witness` |
+| Browser console | Mode selector: value HTLC vs S3; RGB leg panel; guided actions ([web/index.html](../web/index.html)) |
 | Public Internet | U4 read-only; mutations require Bearer |
 
 ## Related
