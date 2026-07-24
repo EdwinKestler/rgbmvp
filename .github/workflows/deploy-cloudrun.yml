@@ -110,6 +110,7 @@ jobs:
           echo "Deployed: $URL"
           echo "SERVICE_URL=$URL" >> "$GITHUB_ENV"
       - name: Post-deploy smoke (freeze)
+        if: steps.gate.outputs.skip != 'true'
         run: |
           set -euo pipefail
           BASE="${SERVICE_URL}"
