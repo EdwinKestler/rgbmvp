@@ -5,13 +5,18 @@
 **Plan:** [P3_PLAN.md](./P3_PLAN.md) · ADRs 001–004 accepted  
 **Depends on:** [P1_CLOSED.md](./P1_CLOSED.md) · [P2_CLOSED.md](./P2_CLOSED.md)
 
+**Presentation refresh (2026-07-24):** implemented and validated without
+reopening P3 or changing `/v1`/protocol behavior. See
+[UI_REFRESH.md](./UI_REFRESH.md) and
+[UI_ROLLBACK_PLAN.md](./UI_ROLLBACK_PLAN.md).
+
 ---
 
 ## In scope (done)
 
 | ID | Capability | Evidence |
 |----|------------|----------|
-| **U0** | Lab console shell + board + phase chips | `web/index.html`, `/demo`, `GET /v1/phases` |
+| **U0** | Proof-first shell + board + phase chips | `web/index.html`, `/status`, `/demo`, `GET /v1/phases` |
 | **U1** | Issue / transfer wizards | `POST /v1/rgb/issue`, `transfer`, console tabs; live issue/transfer/verify on Liquid Testnet |
 | **U2** | Guided HTLC swap | `POST /v1/swap/init`, `POST /v1/swap/{id}/action`; session **demo-u2** phase **done** |
 | **Audit** | BFA history UI | `/audit` · `POST /v1/audit/bfa` |

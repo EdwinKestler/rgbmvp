@@ -16,7 +16,7 @@ Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/
 | **Status** | **P0–P3 closed** · **S3** + **C2** + **C4** + **U4** done · public artifacts + CI ([ROADMAP_NEXT](docs/ROADMAP_NEXT.md)) |
 | **Public demo** | **Read-only** status board + canned proofs — [web/status.html](web/status.html) · [artifacts/public](artifacts/public/) · [PUBLIC_LAUNCH](docs/PUBLIC_LAUNCH.md) |
 | **Full lab** | **Run locally** (CLI + wallets + regtest) — never put hot keys on the Internet |
-| **UI** | Issue / transfer / verify / guided swap · `/demo` · `/status` · BFA audit (**no browser keys**) |
+| **UI** | Proof-first landing · issue / transfer / verify / guided swap · read-only `/demo` + `/status` · BFA audit (**no browser keys**) — [refresh evidence](docs/UI_REFRESH.md) |
 
 ### Documentation (start here)
 
@@ -27,7 +27,7 @@ Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/
 | **Agents / AI** — goals, invariants, Redis project memory | **[docs/M2M.md](docs/M2M.md)** · [AGENTS.md](AGENTS.md) |
 | Architecture · scenarios · stack | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [SCENARIOS](docs/SCENARIOS.md) · [STACK](docs/STACK.md) |
 | Phase evidence | [P1_CLOSED](docs/P1_CLOSED.md) · [P2_CLOSED](docs/P2_CLOSED.md) · [P3_CLOSED](docs/P3_CLOSED.md) |
-| **Launch / deploy** | [PUBLIC_LAUNCH](docs/PUBLIC_LAUNCH.md) · [U4_PUBLIC_HOSTING](docs/U4_PUBLIC_HOSTING.md) · [deploy/](deploy/) |
+| **Launch / deploy** | [PUBLIC_LAUNCH](docs/PUBLIC_LAUNCH.md) · [U4_PUBLIC_HOSTING](docs/U4_PUBLIC_HOSTING.md) · [UI refresh + rollback](docs/UI_REFRESH.md) · [deploy/](deploy/) |
 | **Evidence** | [artifacts/public](artifacts/public/) · [S3_RGB_WRAP](docs/S3_RGB_WRAP.md) · [C4_CLOSED](docs/C4_CLOSED.md) |
 | Protocol without UI | [docs/HEADLESS.md](docs/HEADLESS.md) |
 
@@ -101,7 +101,7 @@ Never use fixture mnemonics on mainnet.
 # expect status: valid
 ```
 
-### 4) Browser lab console (~15 min tour)
+### 4) Browser lab and proof explorer (~15 min tour)
 
 ```bash
 ./target/debug/rgbmvp serve --bind 127.0.0.1:8080
@@ -181,6 +181,8 @@ cp .env.example .env
 | [docs/P2_CLOSED.md](docs/P2_CLOSED.md) | P2 phase closure (C0+C3) |
 | [docs/P3_PLAN.md](docs/P3_PLAN.md) | P3 plan + ADRs |
 | [docs/P3_CLOSED.md](docs/P3_CLOSED.md) | P3 lab console closure + browser tour |
+| [docs/UI_REFRESH.md](docs/UI_REFRESH.md) | Implemented proof-first UI refresh + validation evidence |
+| [docs/UI_ROLLBACK_PLAN.md](docs/UI_ROLLBACK_PLAN.md) | UI-only boundary, rollback triggers, and recovery procedure |
 | [docs/HEADLESS.md](docs/HEADLESS.md) | Protocol kit without UI (monorepo) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layers, `/v1` API, privacy |
 | [docs/SCENARIOS.md](docs/SCENARIOS.md) | Scenario ladder |

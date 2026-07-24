@@ -5,6 +5,10 @@
 **Scenarios:** [SCENARIOS.md](./SCENARIOS.md) U0–U3  
 **Repo strategy:** **Monorepo** (`rgbmvp`) — no P2 split (see § Repo)
 
+**Post-close presentation refresh:** implemented 2026-07-24; no protocol or
+`/v1` change. See [UI_REFRESH.md](./UI_REFRESH.md) and
+[UI_ROLLBACK_PLAN.md](./UI_ROLLBACK_PLAN.md).
+
 ---
 
 ## Intent
@@ -186,3 +190,4 @@ P2 standalone value is real (Simplicity seals + BFA audit) but splitting before 
 | 2026-07-21 | U1 issue/transfer wizards + API (server-side lab wallets) |
 | 2026-07-21 | U2 swap guided actions; preimage never on GET or UI |
 | 2026-07-21 | **P3 closed** — celebrate banner, twin contract fields, P3_CLOSED.md |
+| 2026-07-24 | Proof-first UI/UX refresh validated; accessibility, responsive, and safe-rendering polish; P3 remains closed |

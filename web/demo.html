@@ -5,13 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>rgbmvp — demo board (read-only)</title>
   <style>
-    :root { font-family: system-ui, sans-serif; color: #e8eef7; background: #0b1220; }
-    body { max-width: 960px; margin: 1.5rem auto; padding: 0 1rem; line-height: 1.4; }
-    h1 { font-size: 1.35rem; margin-bottom: 0.2rem; }
-    h2 { font-size: 1rem; margin: 1.25rem 0 0.5rem; color: #9fb0cc; font-weight: 600; }
-    .muted { color: #9fb0cc; font-size: 0.9rem; }
+    :root { color-scheme:dark; font-family:Inter,ui-sans-serif,system-ui,sans-serif; color:#f2f4ee; background:#080b0a; --ink:#f2f4ee; --muted:#a5aea3; --line:#303a32; --surface:#111713; --surface-2:#171e19; --accent:#b7ff3c; --teal:#22e1c9; --amber:#ffc857; --bad:#ff7b7b; }
+    * { box-sizing:border-box; } body { margin:0; line-height:1.5; background:radial-gradient(circle at 90% 0,rgba(34,225,201,.06),transparent 22rem),#080b0a; }
+    .shell { width:min(1120px,calc(100% - 2rem)); margin:auto; }
+    .skip { position:fixed; top:-5rem; left:1rem; z-index:10; background:var(--accent); color:#080b0a; padding:.7rem 1rem; font-weight:800; } .skip:focus{top:1rem}
+    .topbar { border-bottom:1px solid var(--line); } .topbar .shell { min-height:72px; display:flex; align-items:center; gap:1rem; }
+    .brand { color:var(--ink); text-decoration:none; font-size:1.2rem; font-weight:900; } nav { margin-left:auto; display:flex; gap:.2rem; }
+    nav a { color:var(--muted); text-decoration:none; padding:.65rem .75rem; border-radius:.45rem; } nav a:hover,nav a[aria-current="page"]{color:var(--ink);background:var(--surface-2)}
+    .network-badge { border:1px solid #8b6b21; color:var(--amber); border-radius:.35rem; padding:.35rem .55rem; font:700 .7rem ui-monospace,monospace; }
+    main { padding:3rem 0 5rem; } h1 { font-size:clamp(2.2rem,6vw,4.5rem); letter-spacing:-.05em; line-height:1; margin:.5rem 0 1rem; } h2 { font-size:1.1rem; margin:2rem 0 .7rem; color:var(--ink); }
+    .eyebrow { color:var(--accent); font:800 .75rem ui-monospace,monospace; letter-spacing:.14em; text-transform:uppercase; }
+    .lede { max-width:700px; color:var(--muted); font-size:1.05rem; } .muted { color:var(--muted); font-size:.9rem; }
     .banner {
-      background: #2a1f0a; border: 1px solid #6b5420; color: #f0d78c;
+      background:#201a0a; border:1px solid #735a20; color:#f5d67e;
       padding: 0.65rem 0.85rem; border-radius: 8px; margin: 0.75rem 0 1rem; font-size: 0.88rem;
     }
     .grid {
@@ -19,48 +25,44 @@
       gap: 0.75rem;
     }
     .card {
-      background: #141e33; border: 1px solid #243352; border-radius: 10px;
+      background:var(--surface); border:1px solid var(--line); border-radius:.75rem;
       padding: 0.85rem 1rem;
     }
     .card h3 { margin: 0 0 0.35rem; font-size: 1rem; }
-    .chain { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: #7eb6ff; }
+    .chain { font-size:.72rem; text-transform:uppercase; letter-spacing:.08em; color:var(--teal); }
     .bal { font-size: 1.15rem; font-weight: 700; margin: 0.4rem 0; }
-    .addr { font-size: 0.72rem; word-break: break-all; color: #9fb0cc; }
-    a { color: #7eb6ff; }
+    .addr { font-size:.72rem; word-break:break-all; color:var(--muted); } a { color:var(--teal); }
     table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
     th, td { text-align: left; padding: 0.4rem 0.35rem; border-bottom: 1px solid #243352; }
-    th { color: #9fb0cc; font-weight: 600; }
+    th { color:var(--muted); font-weight:600; }
     .phase { font-weight: 700; }
-    .phase.done { color: #3ddc97; }
-    .phase.created { color: #9fb0cc; }
+    .phase.done { color:var(--accent); } .phase.created { color:var(--muted); }
     button {
-      background: #243352; color: #e8eef7; border: 1px solid #334866;
-      border-radius: 6px; padding: 0.4rem 0.75rem; cursor: pointer; font-weight: 600;
+      min-height:44px; background:#263029; color:var(--ink); border:1px solid #455148; border-radius:.45rem; padding:.5rem .85rem; cursor:pointer; font-weight:700;
     }
     button:hover { filter: brightness(1.1); }
     .bar { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin: 0.5rem 0 1rem; }
-    #err { color: #ff6b6b; }
+    #err { color:var(--bad); } :focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+    @media(max-width:760px){.topbar .shell{flex-wrap:wrap;padding:.8rem 0}.topbar nav{order:3;width:100%;overflow:auto}.network-badge{margin-left:auto} main{padding-top:2rem} table{display:block;overflow-x:auto;white-space:nowrap}}
+    @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
   </style>
 </head>
 <body>
-  <h1>rgbmvp demo board</h1>
-  <p class="muted">Read-only lab overview. Keys and send/swap actions stay in the CLI (P3 operator-lab model).</p>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="topbar"><div class="shell"><a class="brand" href="/">rgbmvp</a><nav aria-label="Primary navigation"><a href="/status">Proofs</a><a href="/#lab">Lab</a><a href="/demo" aria-current="page">Board</a><a href="/audit">Audit</a><a href="https://github.com/EdwinKestler/rgbmvp" target="_blank" rel="noopener noreferrer">Docs ↗</a></nav><span class="network-badge">TESTNET ONLY</span></div></header>
+  <main id="main" class="shell">
+  <div class="eyebrow">Read-only observatory</div><h1>Lab activity, without custody.</h1>
+  <p class="lede">Inspect testnet wallets, swaps, transfer plans, and RGB proofs. Keys and operator actions stay on labd and the CLI.</p>
   <div class="banner">
     <strong>Lab board</strong> — balances + activity only. No browser seeds or sends.
     <strong>P0–P3 closed</strong> · <a href="/">Console</a> · <a href="/audit">BFA audit</a>
   </div>
-  <nav style="display:flex;gap:0.65rem;flex-wrap:wrap;margin:0.5rem 0;font-size:0.9rem">
-    <a href="/">Console</a>
-    <a href="/demo">Board</a>
-    <a href="/status">Status</a>
-    <a href="/audit">BFA audit</a>
-  </nav>
   <div class="bar">
     <button type="button" id="refresh">Refresh</button>
     <span class="muted" id="stamp"></span>
   </div>
-  <div id="phases" class="muted" style="margin-bottom:0.75rem"></div>
-  <div id="err"></div>
+  <div id="phases" class="muted" style="margin-bottom:0.75rem" role="status" aria-live="polite"></div>
+  <div id="err" role="alert"></div>
 
   <h2>Wallets</h2>
   <div class="grid" id="wallets"><div class="muted">Loading…</div></div>
@@ -74,8 +76,10 @@
   <h2>RGB proofs</h2>
   <div class="card" id="proofs"><div class="muted">Loading…</div></div>
 
-  <script>
+  </main><script>
     const $ = id => document.getElementById(id);
+    const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+    const safeUrl = value => { try { const u = new URL(String(value), location.origin); return ['http:','https:'].includes(u.protocol) ? u.href : '#'; } catch (_) { return '#'; } };
 
     function fmtSats(n) {
       if (n == null) return '—';
@@ -97,7 +101,7 @@
         if (pe) {
           pe.innerHTML = (ph.phases || []).map(x => {
             const ok = x.status === 'closed' || x.status === 'done';
-            return `<span style="margin-right:0.75rem;color:${ok ? '#3ddc97' : '#9fb0cc'}">${x.id} ${x.name}: <strong>${x.status}</strong></span>`;
+            return `<span style="margin-right:0.75rem;color:${ok ? '#b7ff3c' : '#a5aea3'}">${esc(x.id)} ${esc(x.name)}: <strong>${esc(x.status)}</strong></span>`;
           }).join('');
         }
 
@@ -110,11 +114,11 @@
           const bal = isBtc ? x.btc_sats : x.lbtc_sats;
           const label = isBtc ? 'BTC' : 'L-BTC';
           el.innerHTML = `
-            <div class="chain">${x.chain || '?'}</div>
-            <h3>${x.name}${x.role && x.role !== x.name ? ' · ' + x.role : ''}</h3>
-            <div class="bal">${fmtSats(bal)} <span class="muted">${label}</span></div>
-            <div class="addr">${x.address || '—'}</div>
-            ${x.explorer ? `<div style="margin-top:0.4rem"><a href="${x.explorer}" target="_blank" rel="noopener">explorer</a></div>` : ''}
+            <div class="chain">${esc(x.chain || '?')}</div>
+            <h3>${esc(x.name)}${x.role && x.role !== x.name ? ' · ' + esc(x.role) : ''}</h3>
+            <div class="bal">${esc(fmtSats(bal))} <span class="muted">${esc(label)}</span></div>
+            <div class="addr">${esc(x.address || '—')}</div>
+            ${x.explorer ? `<div style="margin-top:0.4rem"><a href="${safeUrl(x.explorer)}" target="_blank" rel="noopener noreferrer">explorer ↗</a></div>` : ''}
           `;
           wg.appendChild(el);
         });
@@ -130,10 +134,10 @@
             <tr><th>Id</th><th>Phase</th><th>Links</th></tr>
             ${swaps.map(s => `
               <tr>
-                <td><a href="/?swap=${encodeURIComponent(s.id)}">${s.id}</a></td>
-                <td class="phase ${s.phase}">${s.phase}</td>
+                <td><a href="/?swap=${encodeURIComponent(s.id)}#lab">${esc(s.id)}</a></td>
+                <td class="phase ${esc(s.phase)}">${esc(s.phase)}</td>
                 <td>
-                  <a href="${s.status_url}">API</a>
+                  <a href="${safeUrl(s.status_url)}">API</a>
                   ${s.btc_fund_txid ? ' · funded' : ''}
                   ${s.btc_claim_txid ? ' · claimed' : ''}
                 </td>
@@ -143,12 +147,12 @@
 
         const tr = a.rgb_transfer_plans || [];
         $('transfers').innerHTML = tr.length
-          ? `<ul>${tr.map(t => `<li><code>${t}</code></li>`).join('')}</ul>`
+          ? `<ul>${tr.map(t => `<li><code>${esc(t)}</code></li>`).join('')}</ul>`
           : '<div class="muted">No transfer plans.</div>';
 
         const pr = a.rgb_proofs || [];
         $('proofs').innerHTML = pr.length
-          ? `<ul>${pr.map(t => `<li><code>${t}</code> · <a href="/v1/proofs/${encodeURIComponent(t)}">JSON</a></li>`).join('')}</ul>`
+          ? `<ul>${pr.map(t => `<li><code>${esc(t)}</code> · <a href="/v1/proofs/${encodeURIComponent(t)}">JSON</a></li>`).join('')}</ul>`
           : '<div class="muted">No proofs.</div>';
 
         $('stamp').textContent = 'Updated ' + new Date().toLocaleTimeString();
@@ -160,6 +164,15 @@
     $('refresh').onclick = load;
     load();
     setInterval(load, 15000);
+    (async () => {
+      try {
+        const j = await fetch('/v1/security').then(r => r.json());
+        if (j.public_read_only) {
+          const badge = document.querySelector('.network-badge');
+          if (badge) badge.textContent = 'PUBLIC · READ-ONLY';
+        }
+      } catch (_) { /* optional */ }
+    })();
   </script>
 </body>
 </html>

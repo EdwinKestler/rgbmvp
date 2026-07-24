@@ -15,9 +15,12 @@ secrets or hot wallets on the Internet.
 | Public proofs (no secrets) | [`artifacts/public/`](../artifacts/public/) |
 | S3 live summary (preimage redacted) | [`artifacts/public/s3-rgbmvp-live.json`](../artifacts/public/s3-rgbmvp-live.json) |
 | Phase chips + explorer links | [`artifacts/public/manifest.json`](../artifacts/public/manifest.json) · [`web/status.html`](../web/status.html) |
+| Proof-first UI + rollback boundary | [`UI_REFRESH.md`](./UI_REFRESH.md) · [`UI_ROLLBACK_PLAN.md`](./UI_ROLLBACK_PLAN.md) |
 | CI: cargo test + build | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) |
-| CI: gitleaks | same |
-| CI: public image + Trivy | [`.github/workflows/docker-public.yml`](../.github/workflows/docker-public.yml) |
+| CI: gitleaks (+ path-scoped BFA fixture allowlist) | [`.gitleaks.toml`](../.gitleaks.toml) · `ci.yml` |
+| CI: public image + Trivy (GHCR lowercase owner) | [`.github/workflows/docker-public.yml`](../.github/workflows/docker-public.yml) |
+| Axum security headers (CSP, nosniff, frame deny, cache) | `crates/lab-cli/src/labd_axum.rs` |
+| Public UI presentation (`public_read_only`) | `web/index.html` · `web/audit.html` |
 | Deploy Cloud Run (OIDC) | [`.github/workflows/deploy-cloudrun.yml`](../.github/workflows/deploy-cloudrun.yml) — needs secrets |
 | Deploy Vercel | [`.github/workflows/deploy-vercel.yml`](../.github/workflows/deploy-vercel.yml) — needs secrets |
 | README badges | root [README.md](../README.md) |
@@ -44,6 +47,10 @@ Until vars/secrets are set, deploy jobs **no-op** (`if: vars/secrets empty`).
 ---
 
 ## Phase 5 — Hardening before announce
+
+The browser refresh is locally validated, but it does not alter the remaining
+operator gates: resource assignment, first deployment, GET-only soak, and
+administrator approval are still required before announcement.
 
 | Item | Status |
 |------|--------|

@@ -2,8 +2,9 @@
 
 Public, phased MVP to **exercise RGB-on-Liquid** (and related patterns from
 [kaleidoswap/rgb-on-liquid-spike](https://github.com/kaleidoswap/rgb-on-liquid-spike))
-on **Liquid Testnet**, with a **CLI + small web verifier** surface that is
-ready to grow into a full browser UI.
+on **Liquid Testnet**, with a **CLI + proof-first browser lab** over the shared
+`/v1` API. The current UI refresh and its rollback boundary are documented in
+[UI_REFRESH.md](./UI_REFRESH.md).
 
 ## Product intent
 
@@ -101,13 +102,14 @@ Do not block the MVP on running CLN.
 
 ---
 
-## Delivery shape: CLI + small web (browser-ready)
+## Delivery shape: CLI + proof-first browser lab
 
 ### Principles
 
 1. **All consensus and RGB logic lives behind a stable machine API** (JSON in/out).
 2. **CLI** is a thin client of that API (and can call libraries in-process for local mode).
-3. **Web verifier** is a thin client of the same API (no duplicate validation rules).
+3. **Web proof explorer and operator console** are thin clients of the same API
+   (no duplicate validation rules); public evidence appears before mutations.
 4. Future **browser wallet UI** reuses the same API + (optional) LWK WASM for L-BTC/PSET only;
    RGB consignments still go through the lab API until a full RGB browser stack exists.
 
@@ -119,7 +121,7 @@ Do not block the MVP on running CLN.
                     └──────────┬──────────┘
                                │ same JSON contract
                     ┌──────────▼──────────┐
-   Public browsers  │  Web verifier (P0)  │  + later full UI
+   Public browsers  │  Proofs + lab UI    │  read-only public / local operator
                     │  static + fetch API │
                     └──────────┬──────────┘
                                │ HTTP JSON

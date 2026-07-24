@@ -1,0 +1,23 @@
+# gitleaks config for rgbmvp (extends defaults via gitleaks-action).
+# See: https://github.com/gitleaks/gitleaks
+
+title = "rgbmvp"
+
+[extend]
+# Use gitleaks default rules; only add narrow allowlists below.
+useDefault = true
+
+# BFA C3 demo fixtures store `internal_key` = DEMO_INTERNAL_XONLY
+# (64-hex x-only *public* key used for tapret demos — not a private key,
+# WIF, mnemonic, or API token). Path-scoped to the three public samples only.
+[[allowlists]]
+description = "BFA regtest fixtures: internal_key is public DEMO_INTERNAL_XONLY"
+paths = [
+  '''^artifacts/public/bfa/honest\.json$''',
+  '''^artifacts/public/bfa/overmint\.json$''',
+  '''^artifacts/public/bfa/lie\.json$''',
+]
+regexTarget = "match"
+regexes = [
+  '''d6889cb081036e0faefa3a35157ad71086b123b2b144b649798b494c300a961d''',
+]

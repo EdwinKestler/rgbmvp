@@ -93,6 +93,11 @@ curl -s -X POST http://127.0.0.1:8080/v1/rgb/verify \
 
 See **[PUBLIC_LAUNCH.md](./PUBLIC_LAUNCH.md)** for Phase 4 artifacts+CI and Phase 5 soak/announce.
 
+The proof-first browser refresh is locally validated under the unchanged U4
+security posture. See [UI_REFRESH.md](./UI_REFRESH.md) and its active
+[rollback plan](./UI_ROLLBACK_PLAN.md). This does not mean a public deployment
+or soak has occurred.
+
 ## Next
 
 - Enable deploy secrets (Vercel / Cloud Run OIDC)  

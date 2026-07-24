@@ -3,78 +3,177 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>rgbmvp — lab console</title>
+  <title>rgbmvp — RGB on Liquid testnet lab</title>
   <style>
-    :root { font-family: system-ui, sans-serif; color: #e8eef7; background: #0b1220; }
-    body { max-width: 760px; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
-    h1 { font-size: 1.35rem; margin-bottom: 0.25rem; }
-    h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
-    .card { background: #141e33; border: 1px solid #243352; border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0; }
-    label { display: block; font-size: 0.85rem; color: #9fb0cc; margin-top: 0.6rem; }
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #f2f4ee; background: #080b0a; --ink:#f2f4ee; --muted:#a5aea3; --line:#303a32; --surface:#111713; --surface-2:#171e19; --accent:#b7ff3c; --teal:#22e1c9; --amber:#ffc857; --bad:#ff7b7b; }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; line-height: 1.5; background: radial-gradient(circle at 88% 4%, rgba(183,255,60,.08), transparent 25rem), #080b0a; }
+    .shell { width: min(1180px, calc(100% - 2rem)); margin: 0 auto; }
+    .skip { position:fixed; left:1rem; top:-5rem; z-index:20; padding:.7rem 1rem; background:var(--accent); color:#080b0a; border-radius:.4rem; font-weight:800; }
+    .skip:focus { top:1rem; }
+    .topbar { border-bottom:1px solid var(--line); background:rgba(8,11,10,.92); }
+    .topbar .shell { min-height:72px; display:flex; align-items:center; gap:2rem; }
+    .brand { color:var(--ink); text-decoration:none; font-size:1.2rem; font-weight:900; letter-spacing:.02em; }
+    .site-nav { margin-left:auto; display:flex; align-items:center; gap:.25rem; }
+    .site-nav a { color:var(--muted); text-decoration:none; padding:.65rem .8rem; border-radius:.5rem; }
+    .site-nav a:hover, .site-nav a[aria-current="page"] { color:var(--ink); background:var(--surface-2); }
+    .network-badge { margin-left:.5rem; border:1px solid #8b6b21; color:var(--amber); border-radius:.35rem; padding:.35rem .6rem; font:700 .72rem ui-monospace, monospace; letter-spacing:.08em; }
+    main { padding: 3.5rem 0 4rem; }
+    h1 { max-width:760px; font-size:clamp(2.5rem,7vw,5.3rem); letter-spacing:-.055em; line-height:.98; margin:.6rem 0 1.25rem; }
+    h2 { font-size:clamp(1.35rem,3vw,2rem); letter-spacing:-.025em; margin:0 0 .55rem; }
+    h3 { margin:.1rem 0 .4rem; }
+    .eyebrow { color:var(--accent); font:800 .78rem ui-monospace, monospace; letter-spacing:.14em; text-transform:uppercase; }
+    .hero { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(320px,.8fr); gap:3rem; align-items:center; margin-bottom:2rem; }
+    .lede { color:var(--muted); font-size:1.1rem; max-width:650px; }
+    .hero-actions { display:flex; flex-wrap:wrap; gap:.75rem; margin-top:1.5rem; }
+    .cta { display:inline-flex; align-items:center; justify-content:center; min-height:46px; padding:.65rem 1rem; border-radius:.45rem; font-weight:800; text-decoration:none; }
+    .cta.primary { background:var(--accent); color:#080b0a; }
+    .cta.secondary { color:var(--ink); border:1px solid var(--line); }
+    .proof-visual { min-height:300px; padding:1.4rem; border:1px solid var(--line); border-radius:1rem; background:linear-gradient(145deg,rgba(34,225,201,.05),transparent 55%),var(--surface); position:relative; overflow:hidden; }
+    .rail { display:flex; align-items:center; gap:.75rem; margin:1.2rem 0; font:700 .75rem ui-monospace,monospace; letter-spacing:.08em; }
+    .rail::after { content:""; height:1px; flex:1; background:linear-gradient(90deg,var(--line),var(--accent)); }
+    .swap-node { margin:2rem auto; max-width:250px; text-align:center; padding:1rem; border:1px dashed #677566; border-radius:.65rem; }
+    .checks { display:flex; justify-content:center; gap:1rem; margin-top:.55rem; color:var(--accent); font-size:.75rem; }
+    .metrics { display:grid; grid-template-columns:repeat(3,1fr); border:1px solid var(--line); border-radius:.8rem; overflow:hidden; margin:2rem 0 4rem; }
+    .metric { padding:1.2rem 1.4rem; background:rgba(17,23,19,.75); }
+    .metric + .metric { border-left:1px solid var(--line); }
+    .metric strong { color:var(--accent); font-size:1.7rem; margin-right:.4rem; }
+    .section-head { display:flex; align-items:end; justify-content:space-between; gap:1rem; margin:0 0 1rem; }
+    .section-head p { margin:0; }
+    .card { background:var(--surface); border:1px solid var(--line); border-radius:.8rem; padding:1.25rem; margin:1rem 0; }
+    .status-card { display:grid; grid-template-columns:1fr auto; gap:1rem; align-items:start; }
+    .status-card .timeline { grid-column:1/-1; display:grid; grid-template-columns:repeat(4,1fr); gap:.5rem; }
+    .timeline span { border-top:1px solid var(--line); padding-top:.6rem; color:var(--muted); font-size:.82rem; }
+    .verified { color:var(--accent); border:1px solid #48651e; background:#16220d; border-radius:999px; padding:.3rem .65rem; font:800 .72rem ui-monospace,monospace; }
+    .lab-heading { padding-top:4rem; }
+    label { display:block; font-size:.85rem; color:var(--muted); margin-top:.7rem; }
     input, button, select {
       width: 100%; box-sizing: border-box; margin-top: 0.25rem;
-      background: #0b1220; color: #e8eef7; border: 1px solid #334866; border-radius: 6px; padding: 0.55rem 0.7rem;
+      min-height:44px; background:#090d0a; color:var(--ink); border:1px solid #455148; border-radius:.45rem; padding:.6rem .75rem;
     }
-    button { cursor: pointer; background: #2a6df4; border: none; font-weight: 600; margin-top: 0.85rem; }
-    button:hover { filter: brightness(1.08); }
-    button.secondary { background: #243352; }
-    .ok { color: #3ddc97; } .bad { color: #ff6b6b; } .muted { color: #9fb0cc; font-size: 0.9rem; }
-    pre { white-space: pre-wrap; word-break: break-word; font-size: 0.78rem; background: #0b1220; padding: 0.75rem; border-radius: 6px; max-height: 280px; overflow: auto; }
-    a { color: #7eb6ff; }
-    nav { display: flex; gap: 0.5rem; margin: 1rem 0 0.25rem; flex-wrap: wrap; }
-    nav button { width: auto; margin: 0; padding: 0.4rem 0.85rem; font-size: 0.9rem; }
-    nav button.active { outline: 2px solid #7eb6ff; }
+    button { min-height:44px; cursor:pointer; background:var(--accent); color:#080b0a; border:none; font-weight:800; margin-top:.85rem; border-radius:.45rem; }
+    button:hover { filter:brightness(1.06); }
+    button:disabled { opacity:.55; cursor:wait; }
+    button.secondary { background:#263029; color:var(--ink); }
+    .ok { color:var(--accent); } .bad { color:var(--bad); } .muted { color:var(--muted); font-size:.9rem; }
+    pre { white-space:pre-wrap; word-break:break-word; font-size:.78rem; background:#090d0a; padding:.75rem; border:1px solid #252e27; border-radius:.45rem; max-height:280px; overflow:auto; }
+    a { color:var(--teal); }
+    .tabs { display:flex; gap:.5rem; margin:1rem 0 .25rem; flex-wrap:wrap; }
+    .tabs button { width:auto; margin:0; padding:.5rem .9rem; font-size:.9rem; }
+    .tabs button.active { outline:2px solid var(--accent); outline-offset:2px; }
     .panel { display: none; }
     .panel.active { display: block; }
     .steps { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.75rem 0; }
     .step {
       font-size: 0.75rem; padding: 0.35rem 0.55rem; border-radius: 999px;
-      border: 1px solid #334866; color: #9fb0cc;
+      border:1px solid #455148; color:var(--muted);
     }
-    .step.done { background: #163528; border-color: #2a6b4a; color: #3ddc97; }
+    .step.done { background:#16220d; border-color:#48651e; color:var(--accent); }
     .phase { font-size: 1.1rem; font-weight: 700; margin: 0.4rem 0; }
     .links a { display: inline-block; margin-right: 0.75rem; margin-top: 0.35rem; font-size: 0.88rem; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
-    @media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
+    :focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
+    @media (max-width:760px) { .hero { grid-template-columns:1fr; } .proof-visual { min-height:260px; } .metrics { grid-template-columns:1fr; } .metric + .metric { border-left:0; border-top:1px solid var(--line); } .status-card .timeline { grid-template-columns:1fr 1fr; } .topbar .shell { flex-wrap:wrap; padding:.8rem 0; gap:.4rem; } .site-nav { order:3; width:100%; overflow:auto; } .network-badge { margin-left:auto; } }
+    @media (max-width:560px) { .row { grid-template-columns:1fr; } main { padding-top:2rem; } h1 { font-size:2.65rem; } .status-card { grid-template-columns:1fr; } .status-card .timeline { grid-column:1; } }
+    @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } *,*::before,*::after { animation-duration:.01ms!important; transition-duration:.01ms!important; } }
     .celebrate {
       display: none; margin: 0.75rem 0; padding: 0.75rem 1rem; border-radius: 10px;
-      background: #0f2a1c; border: 1px solid #2a6b4a; color: #3ddc97; font-weight: 600;
+      background:#16220d; border:1px solid #48651e; color:var(--accent); font-weight:700;
     }
     .celebrate.show { display: block; }
     .chip {
       display: inline-block; font-size: 0.72rem; padding: 0.2rem 0.5rem; border-radius: 999px;
-      border: 1px solid #2a6b4a; background: #163528; color: #3ddc97; margin-left: 0.35rem;
+      border:1px solid #48651e; background:#16220d; color:var(--accent); margin-left:.35rem;
     }
+    .public-banner {
+      display: none; margin: 1rem 0; padding: 0.85rem 1rem; border-radius: 0.65rem;
+      border: 1px solid #8b6b21; background: #1a1508; color: var(--amber);
+    }
+    .public-banner.show { display: block; }
+    body.public-readonly #lab,
+    body.public-readonly .tabs,
+    body.public-readonly .panel { display: none !important; }
+    body.public-readonly #public-evidence-only { display: block; }
+    #public-evidence-only { display: none; }
   </style>
 </head>
 <body>
-  <h1>rgbmvp lab console</h1>
-  <p class="muted">Testnet only. <strong>No seeds in the browser</strong> — keys stay on labd / CLI (P3 operator-lab model).</p>
-  <nav class="site" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin:0.75rem 0;font-size:0.9rem">
-    <a href="/" style="color:#7eb6ff">Console</a>
-    <a href="/demo" style="color:#7eb6ff">Board</a>
-    <a href="/audit" style="color:#7eb6ff">BFA audit</a>
-  </nav>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="topbar">
+    <div class="shell">
+      <a class="brand" href="/">rgbmvp</a>
+      <nav class="site-nav" aria-label="Primary navigation">
+        <a href="/status">Proofs</a><a href="#lab" aria-current="page">Lab</a><a href="/demo">Board</a><a href="/audit">Audit</a><a href="https://github.com/EdwinKestler/rgbmvp" target="_blank" rel="noopener noreferrer">Docs ↗</a>
+      </nav>
+      <span class="network-badge">TESTNET ONLY</span>
+    </div>
+  </header>
+  <main id="main" class="shell">
+    <section class="hero" aria-labelledby="hero-title">
+      <div>
+        <div class="eyebrow">RGB × Liquid Testnet</div>
+        <h1 id="hero-title">Verify what moved. Understand why it matters.</h1>
+        <p class="lede">A public research lab for RGB state transitions on Liquid Testnet and atomic twins across Bitcoin testnet—built around inspectable evidence, not custody or marketing promises.</p>
+        <div class="hero-actions"><a class="cta primary" href="/status">Explore live proofs →</a><a class="cta secondary" href="#lab">Open lab console</a></div>
+      </div>
+      <div class="proof-visual" aria-label="Atomic twin swap across Bitcoin testnet and Liquid testnet">
+        <div class="rail">BITCOIN TESTNET</div>
+        <div class="swap-node"><strong>ATOMIC TWIN SWAP</strong><div class="checks"><span>✓ fund</span><span>✓ claim</span><span>✓ verify</span></div></div>
+        <div class="rail">LIQUID TESTNET</div>
+        <p class="muted" style="margin:1.25rem 0 0">Separate RGB contract IDs. Shared atomic outcome. No bridge custody.</p>
+      </div>
+    </section>
 
-  <div class="card">
+    <section class="metrics" aria-label="Lab properties"><div class="metric"><strong>2</strong> test networks</div><div class="metric"><strong>0</strong> browser keys</div><div class="metric"><strong>/v1</strong> shared API</div></section>
+
+    <section aria-labelledby="evidence-title">
+      <div class="section-head"><div><div class="eyebrow">Public evidence</div><h2 id="evidence-title">A claim you can inspect</h2></div><a href="/status">View all scenarios →</a></div>
+      <article class="card status-card"><div><h3>S3 RGB-wrapped claim</h3><p class="muted">The claim closes the HTLC-bound RGB seal, creates a successor seal, re-anchors the state, and verifies both testnet legs.</p></div><span class="verified">VERIFIED</span><div class="timeline"><span>01 · Fund</span><span>02 · Claim</span><span>03 · Re-anchor</span><span>04 · Verify</span></div><p class="muted" style="grid-column:1/-1;margin:0">Swap preimage remains redacted from every public GET response and the browser UI.</p></article>
+    </section>
+
+    <section id="lab" class="lab-heading" aria-labelledby="lab-title"><div class="eyebrow">Operator workspace</div><h2 id="lab-title">Run the testnet lab</h2><p class="lede">These actions use server-side lab wallets. Public deployments remain read-only; run locally for operator workflows.</p></section>
+
+  <div class="card" role="status" aria-live="polite">
     <div id="health" class="muted">Checking /v1/health…</div>
     <div id="phases" class="muted" style="margin-top:0.5rem"></div>
+    <div id="security-line" class="muted" style="margin-top:0.5rem"></div>
   </div>
 
-  <nav>
-    <button type="button" class="secondary active" data-tab="issue">Issue</button>
-    <button type="button" class="secondary" data-tab="transfer">Transfer</button>
-    <button type="button" class="secondary" data-tab="verify">Verify</button>
-    <button type="button" class="secondary" data-tab="swap">Swap</button>
-  </nav>
+  <div id="public-banner" class="public-banner" role="status">
+    <strong>Public read-only surface.</strong>
+    This host serves evidence and GET <code>/v1</code> only. Issue, Transfer, Swap, and mutations return 403.
+    Full operator lab (wallets, fund/claim) runs on localhost — see
+    <a href="https://github.com/EdwinKestler/rgbmvp/blob/main/docs/PUBLIC_LAUNCH.md">PUBLIC_LAUNCH.md</a>
+    and <a href="https://github.com/EdwinKestler/rgbmvp/blob/main/docs/S3_RGB_WRAP.md">S3 runbook</a>.
+    Browse <a href="/status">/status</a> and <a href="/audit">/audit</a> samples.
+  </div>
 
-  <div id="panel-issue" class="panel active">
+  <div id="public-evidence-only" class="card">
+    <h2>Evidence-only console</h2>
+    <p class="muted">Operator tabs are hidden on public deployments. Use these read-only surfaces:</p>
+    <ul class="muted">
+      <li><a href="/status">/status</a> — scenario proofs &amp; manifest</li>
+      <li><a href="/demo">/demo</a> — board (read-only)</li>
+      <li><a href="/audit">/audit</a> — BFA samples (load/copy; server audit is local-only)</li>
+      <li><a href="/v1">/v1</a> · <a href="/v1/security">/v1/security</a> · <a href="/v1/health">/v1/health</a></li>
+    </ul>
+  </div>
+
+  <div class="tabs" role="tablist" aria-label="Lab workflow">
+    <button type="button" role="tab" aria-selected="true" aria-controls="panel-issue" class="secondary active" data-tab="issue">Issue</button>
+    <button type="button" role="tab" aria-selected="false" aria-controls="panel-transfer" class="secondary" data-tab="transfer">Transfer</button>
+    <button type="button" role="tab" aria-selected="false" aria-controls="panel-verify" class="secondary" data-tab="verify">Verify</button>
+    <button type="button" role="tab" aria-selected="false" aria-controls="panel-swap" class="secondary" data-tab="swap">Swap</button>
+  </div>
+
+  <div id="panel-issue" class="panel active" role="tabpanel">
     <div class="card">
       <h2>Issue RGB20 (NIA)</h2>
       <p class="muted">Uses <strong>labd fixture wallet</strong> (default alice). Largest L-BTC UTXO becomes the seal. No keys in the browser.</p>
       <div class="row">
         <div>
-          <label>Wallet</label>
+          <label for="iss-wallet">Wallet</label>
           <select id="iss-wallet">
             <option value="alice" selected>alice</option>
             <option value="bob">bob</option>
@@ -83,7 +182,7 @@
           </select>
         </div>
         <div>
-          <label>Chain</label>
+          <label for="iss-chain">Chain</label>
           <select id="iss-chain">
             <option value="liquid-testnet" selected>liquid-testnet</option>
             <option value="bitcoin-testnet">bitcoin-testnet</option>
@@ -92,17 +191,17 @@
       </div>
       <div class="row">
         <div>
-          <label>Ticker</label>
+          <label for="iss-ticker">Ticker</label>
           <input id="iss-ticker" value="tRGB" />
         </div>
         <div>
-          <label>Supply</label>
+          <label for="iss-supply">Supply</label>
           <input id="iss-supply" type="number" value="1000000" />
         </div>
       </div>
-      <label>Name</label>
+      <label for="iss-name">Name</label>
       <input id="iss-name" value="Test RGB" />
-      <label>Seal outpoint (optional — default largest UTXO)</label>
+      <label for="iss-seal">Seal outpoint (optional — default largest UTXO)</label>
       <input id="iss-seal" placeholder="txid:vout" />
       <button type="button" id="iss-go">Issue</button>
       <button type="button" class="secondary" id="iss-list">List contracts</button>
@@ -111,17 +210,17 @@
     </div>
   </div>
 
-  <div id="panel-transfer" class="panel">
+  <div id="panel-transfer" class="panel" role="tabpanel">
     <div class="card">
       <h2>Transfer plan (+ optional broadcast)</h2>
       <p class="muted">Builds MPC + tapret plan from a stored issue. Broadcast closes the seal UTXO via lab wallet (Liquid testnet).</p>
-      <label>Contract id</label>
+      <label for="tr-contract">Contract id</label>
       <input id="tr-contract" placeholder="rgb:… (from issue)" />
       <button type="button" class="secondary" id="tr-load-contracts" style="margin-top:0.4rem">Load from lab contracts…</button>
       <select id="tr-contract-sel" style="display:none;margin-top:0.4rem"></select>
       <div class="row">
         <div>
-          <label>Wallet (seal holder)</label>
+          <label for="tr-wallet">Wallet (seal holder)</label>
           <select id="tr-wallet">
             <option value="alice" selected>alice</option>
             <option value="bob">bob</option>
@@ -130,7 +229,7 @@
           </select>
         </div>
         <div>
-          <label>Amount (RGB units)</label>
+          <label for="tr-amount">Amount (RGB units)</label>
           <input id="tr-amount" type="number" value="600000" />
         </div>
       </div>
@@ -144,13 +243,13 @@
     </div>
   </div>
 
-  <div id="panel-verify" class="panel">
+  <div id="panel-verify" class="panel" role="tabpanel">
     <div class="card">
       <h2>RGB transfer verifier</h2>
       <p class="muted">Paste plan id + anchor txid (from transfer broadcast or CLI).</p>
-      <label>Plan id</label>
+      <label for="plan">Plan id</label>
       <input id="plan" placeholder="tRGB-…" />
-      <label>Anchor txid</label>
+      <label for="txid">Anchor txid</label>
       <input id="txid" placeholder="hex txid" />
       <button type="button" id="go">Verify</button>
       <div id="summary" style="margin-top:1rem"></div>
@@ -158,37 +257,37 @@
     </div>
   </div>
 
-  <div id="panel-swap" class="panel">
+  <div id="panel-swap" class="panel" role="tabpanel">
     <div class="card">
       <h2>Atomic swap (guided)</h2>
       <p class="muted">Lab operator actions use server-side wallets. <strong>Preimage is never returned by the API or UI</strong> — claim_btc with <code>from_witness</code> extracts it on labd.</p>
-      <label>Mode</label>
+      <label for="swap-mode">Mode</label>
       <select id="swap-mode">
         <option value="value_htlc" selected>Value-only HTLC (U2 / P1)</option>
         <option value="rgb_wrap">RGB-wrapped S3 (fund-wrap + re-anchor + verify)</option>
       </select>
-      <label>Swap id</label>
+      <label for="swap-id">Swap id</label>
       <input id="swap-id" placeholder="demo-u2 or s3-demo" />
       <div class="row">
         <div>
-          <label>CSV delay (blocks)</label>
+          <label for="swap-csv">CSV delay (blocks)</label>
           <input id="swap-csv" type="number" value="6" />
         </div>
         <div>
-          <label>Alice BTC wallet <span class="muted">(name, not address)</span></label>
+          <label for="swap-alice">Alice BTC wallet <span class="muted">(name, not address)</span></label>
           <input id="swap-alice" value="btc-alice" placeholder="btc-alice" />
         </div>
       </div>
-      <label>Bob Liquid wallet <span class="muted">(name, e.g. bob — not tlq1…)</span></label>
+      <label for="swap-bob">Bob Liquid wallet <span class="muted">(name, e.g. bob — not tlq1…)</span></label>
       <input id="swap-bob" value="bob" placeholder="bob" />
       <div id="swap-rgb-fields">
         <div class="row">
           <div>
-            <label>BTC twin contract <span class="muted">(rgb:… bitcoin-testnet)</span></label>
+            <label for="swap-btc-contract">BTC twin contract <span class="muted">(rgb:… bitcoin-testnet)</span></label>
             <input id="swap-btc-contract" placeholder="rgb:… required for S3" />
           </div>
           <div>
-            <label>Liquid twin contract <span class="muted">(rgb:… liquid-testnet)</span></label>
+            <label for="swap-lq-contract">Liquid twin contract <span class="muted">(rgb:… liquid-testnet)</span></label>
             <input id="swap-lq-contract" placeholder="rgb:… required for S3" />
           </div>
         </div>
@@ -219,38 +318,82 @@
     U2/S3: <code>POST /v1/swap/init</code> · <code>POST /v1/swap/&#123;id&#125;/action</code><br/>
     Preimage redacted on all GET responses · S3 uses server-side <code>from_witness</code> for claim_btc.
   </div>
+  </main>
 
   <script>
     function $(id) { return document.getElementById(id); }
+    const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+    const safeUrl = value => { try { const u = new URL(String(value), location.origin); return ['http:','https:'].includes(u.protocol) ? u.href : '#'; } catch (_) { return '#'; } };
 
-    document.querySelectorAll('nav:not(.site) button').forEach(btn => {
+    const tabButtons = [...document.querySelectorAll('.tabs [role="tab"]')];
+    tabButtons.forEach((btn, index) => {
       btn.onclick = () => {
-        document.querySelectorAll('nav:not(.site) button').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        tabButtons.forEach(b => { b.classList.remove('active'); b.setAttribute('aria-selected', 'false'); b.tabIndex = -1; });
+        document.querySelectorAll('.panel').forEach(p => { p.classList.remove('active'); p.hidden = true; });
         btn.classList.add('active');
-        $('panel-' + btn.dataset.tab).classList.add('active');
+        btn.setAttribute('aria-selected', 'true');
+        btn.tabIndex = 0;
+        const panel = $('panel-' + btn.dataset.tab);
+        panel.classList.add('active');
+        panel.hidden = false;
       };
+      btn.tabIndex = index === 0 ? 0 : -1;
+      if (index > 0) $('panel-' + btn.dataset.tab).hidden = true;
+      btn.addEventListener('keydown', event => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        let next = event.key === 'Home' ? 0 : event.key === 'End' ? tabButtons.length - 1 : index + (event.key === 'ArrowRight' ? 1 : -1);
+        next = (next + tabButtons.length) % tabButtons.length;
+        tabButtons[next].click();
+        tabButtons[next].focus();
+      });
     });
+
+    /** Public Cloud Run: hide operator mutations when LABD_PUBLIC_READ_ONLY. */
+    let publicReadOnly = false;
+    async function applySecurityPresentation() {
+      try {
+        const r = await fetch('/v1/security');
+        const j = await r.json();
+        publicReadOnly = !!j.public_read_only;
+        if ($('security-line')) {
+          $('security-line').innerHTML = publicReadOnly
+            ? 'Security: <span class="ok">public_read_only</span> · mutations require Bearer (disabled on this host)'
+            : 'Security: operator/loopback · mutations allowed on this bind';
+        }
+        const ban = $('public-banner');
+        if (publicReadOnly) {
+          document.body.classList.add('public-readonly');
+          if (ban) ban.classList.add('show');
+          const badge = document.querySelector('.network-badge');
+          if (badge) badge.textContent = 'PUBLIC · READ-ONLY';
+        } else {
+          document.body.classList.remove('public-readonly');
+          if (ban) ban.classList.remove('show');
+        }
+      } catch (_) { /* optional */ }
+    }
 
     async function refreshHealth() {
       try {
         const r = await fetch('/v1/health');
         const j = await r.json();
         const b = j.body || j;
-        $('health').innerHTML = `Network <strong>${b.network || '?'}</strong> · status
-          <span class="${b.status==='ready'?'ok':'bad'}">${b.status}</span>
-          · rgb_ready=${b.rgb_ready} · phase=${b.phase}`;
+        $('health').innerHTML = `Network <strong>${esc(b.network || '?')}</strong> · status
+          <span class="${b.status==='ready'?'ok':'bad'}">${esc(b.status)}</span>
+          · rgb_ready=${esc(b.rgb_ready)} · phase=${esc(b.phase)}`;
       } catch (e) {
         $('health').textContent = 'Health check failed: ' + e;
       }
       try {
         const p = await fetch('/v1/phases').then(r => r.json());
         const chips = (p.phases || []).map(x => {
-          const c = x.status === 'closed' || x.status === 'done' ? 'ok' : 'muted';
-          return `<span class="${c}" style="margin-right:0.65rem">${x.id}: ${x.status}</span>`;
+          const c = x.status === 'closed' || x.status === 'done' || x.status === 'implemented' ? 'ok' : 'muted';
+          return `<span class="${c}" style="margin-right:0.65rem">${esc(x.id)}: ${esc(x.status)}</span>`;
         }).join('');
         $('phases').innerHTML = chips || '';
       } catch (_) { /* optional */ }
+      await applySecurityPresentation();
     }
 
     function legHtml(title, leg) {
@@ -279,7 +422,7 @@
       $('swap-guide').textContent = s.guide || '';
       if ($('swap-why')) {
         if (!done && s.not_done_reason) {
-          $('swap-why').innerHTML = '<span class="bad">Why not done:</span> ' + s.not_done_reason;
+          $('swap-why').innerHTML = '<span class="bad">Why not done:</span> ' + esc(s.not_done_reason);
         } else {
           $('swap-why').textContent = '';
         }
@@ -289,7 +432,7 @@
         if (done) {
           celeb.classList.add('show');
           celeb.innerHTML = '✓ ' + (wrap ? 'S3 RGB-wrap ' : '') + 'complete <span class="chip">phase done</span> · preimage never shown · '
-            + (s.id ? ('id <code>' + s.id + '</code>') : '');
+            + (s.id ? ('id <code>' + esc(s.id) + '</code>') : '');
         } else {
           celeb.classList.remove('show');
         }
@@ -390,7 +533,7 @@
         u.searchParams.set('tab', 'swap');
         history.replaceState(null, '', u);
       } catch (e) {
-        $('swap-summary').innerHTML = `<span class="bad">${e}</span>`;
+        $('swap-summary').innerHTML = `<span class="bad">${esc(e)}</span>`;
         $('swap-steps').innerHTML = '';
         $('swap-actions').innerHTML = '';
         $('swap-links').innerHTML = '';
@@ -429,7 +572,7 @@
         $('swap-out').textContent = JSON.stringify(j, null, 2);
       } catch (e) {
         $('swap-out').textContent = String(e);
-        $('swap-summary').innerHTML = '<span class="bad">' + e + '</span>';
+        $('swap-summary').innerHTML = '<span class="bad">' + esc(e) + '</span>';
         try { await loadSwap(); } catch (_) {}
       } finally {
         swapActionBusy = false;
@@ -492,7 +635,7 @@
           };
           $('swap-out').textContent = JSON.stringify(j, null, 2);
         } catch (e) {
-          $('swap-summary').innerHTML = '<span class="bad">' + e + '</span>';
+          $('swap-summary').innerHTML = '<span class="bad">' + esc(e) + '</span>';
         }
       };
     }
@@ -521,7 +664,7 @@
         else await loadSwap();
         $('swap-out').textContent = JSON.stringify(j, null, 2);
       } catch (e) {
-        $('swap-summary').innerHTML = '<span class="bad">' + e + '</span>';
+        $('swap-summary').innerHTML = '<span class="bad">' + esc(e) + '</span>';
       }
     };
     $('swap-init').onclick = async () => {
@@ -556,7 +699,7 @@
         $('swap-out').textContent = JSON.stringify(j, null, 2);
       } catch (e) {
         $('swap-out').textContent = String(e);
-        $('swap-summary').innerHTML = '<span class="bad">' + e + '</span>';
+        $('swap-summary').innerHTML = '<span class="bad">' + esc(e) + '</span>';
       }
     };
     $('swap-list').onclick = async () => {
@@ -597,7 +740,7 @@
         const res = j.result || j;
         const ok = res.status === 'valid';
         $('summary').innerHTML = ok
-          ? `<span class="ok">VALID</span> · <a href="${(res.explorer_url||'#')}" target="_blank">explorer</a>`
+          ? `<span class="ok">VALID</span> · <a href="${safeUrl(res.explorer_url||'#')}" target="_blank" rel="noopener noreferrer">explorer ↗</a>`
           : `<span class="bad">${res.status || j.error || 'error'}</span>`;
       } catch (e) {
         $('out').textContent = String(e);
@@ -626,23 +769,23 @@
         const j = await r.json();
         $('iss-out').textContent = JSON.stringify(j, null, 2);
         if (!r.ok || j.error) {
-          $('iss-summary').innerHTML = '<span class="bad">' + (j.error || r.statusText) + '</span>';
+          $('iss-summary').innerHTML = '<span class="bad">' + esc(j.error || r.statusText) + '</span>';
           return;
         }
         const id = j.issue && j.issue.contract_id;
-        $('iss-summary').innerHTML = '<span class="ok">issued</span> · <code>' + (id || '') + '</code>'
+        $('iss-summary').innerHTML = '<span class="ok">issued</span> · <code>' + esc(id || '') + '</code>'
           + (id ? ' · <a href="#" id="iss-to-tr">use in Transfer →</a>' : '');
         if (id) {
           $('tr-contract').value = id;
           const a = document.getElementById('iss-to-tr');
           if (a) a.onclick = (ev) => {
             ev.preventDefault();
-            document.querySelector('nav:not(.site) button[data-tab="transfer"]').click();
+            document.querySelector('.tabs button[data-tab="transfer"]').click();
           };
         }
       } catch (e) {
         $('iss-out').textContent = String(e);
-        $('iss-summary').innerHTML = '<span class="bad">' + e + '</span>';
+        $('iss-summary').innerHTML = '<span class="bad">' + esc(e) + '</span>';
       }
     };
 
@@ -678,7 +821,7 @@
           $('tr-summary').innerHTML = '<span class="muted">No contracts yet — run Issue first</span>';
         }
       } catch (e) {
-        $('tr-summary').innerHTML = '<span class="bad">' + e + '</span>';
+        $('tr-summary').innerHTML = '<span class="bad">' + esc(e) + '</span>';
       }
     };
 
@@ -704,7 +847,7 @@
         const j = await r.json();
         $('tr-out').textContent = JSON.stringify(j, null, 2);
         if (!r.ok || j.error) {
-          $('tr-summary').innerHTML = '<span class="bad">' + (j.error || r.statusText) + '</span>';
+          $('tr-summary').innerHTML = '<span class="bad">' + esc(j.error || r.statusText) + '</span>';
           return;
         }
         const pid = j.plan_id || '';
@@ -723,11 +866,11 @@
         const a = document.getElementById('tr-to-ver');
         if (a) a.onclick = (ev) => {
           ev.preventDefault();
-          document.querySelector('nav:not(.site) button[data-tab="verify"]').click();
+          document.querySelector('.tabs button[data-tab="verify"]').click();
         };
       } catch (e) {
         $('tr-out').textContent = String(e);
-        $('tr-summary').innerHTML = '<span class="bad">' + e + '</span>';
+        $('tr-summary').innerHTML = '<span class="bad">' + esc(e) + '</span>';
       }
     };
 
@@ -735,12 +878,12 @@
     const params = new URLSearchParams(location.search);
     if (params.get('swap')) {
       $('swap-id').value = params.get('swap');
-      document.querySelector('nav:not(.site) button[data-tab="swap"]').click();
+      document.querySelector('.tabs button[data-tab="swap"]').click();
       loadSwap();
     }
     if (params.get('tab')) {
       const t = params.get('tab');
-      const b = document.querySelector('nav:not(.site) button[data-tab="' + t + '"]');
+      const b = document.querySelector('.tabs button[data-tab="' + t + '"]');
       if (b) b.click();
     }
 

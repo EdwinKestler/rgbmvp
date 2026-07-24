@@ -141,15 +141,20 @@ Bitcoin leg for swaps: import WIF into **`btc-alice`** via `.env` + `rgbmvp btc 
 
 ### 4.6 Browser lab console (P3)
 
+The refreshed UI leads with the project purpose and inspectable evidence before
+the local operator workflows. See [UI_REFRESH.md](./UI_REFRESH.md) for the
+implemented design boundary, accessibility work, validation, and rollback link.
+
 ```bash
 ./target/debug/rgbmvp serve --bind 127.0.0.1:8080
 ```
 
 | URL | Purpose |
 |-----|---------|
-| http://127.0.0.1:8080/ | Issue · Transfer · Verify · guided Swap |
-| http://127.0.0.1:8080/demo | Read-only board (balances, activity, phases) |
-| http://127.0.0.1:8080/audit | BFA audit (upload history JSON) |
+| http://127.0.0.1:8080/ | Proof-first overview + local Issue · Transfer · Verify · guided Swap workspace |
+| http://127.0.0.1:8080/status | Read-only phase and protocol evidence explorer |
+| http://127.0.0.1:8080/demo | Read-only activity observatory (balances, swaps, plans, proofs) |
+| http://127.0.0.1:8080/audit | Guided C3 BFA audit (upload or paste history JSON) |
 | http://127.0.0.1:8080/v1 | Machine API catalog |
 
 **Security model:** keys stay on **labd** / CLI. The browser never receives seeds or swap preimages.

@@ -13,6 +13,7 @@ Historical phase closures (P1–P3) remain valid evidence of what was proven. Th
 | 3 | **C4** staking (regtest) | **Done** — [C4_CLOSED.md](./C4_CLOSED.md) |
 | 4 | **U4** public-hosting security foundation | **Implemented** — [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md); deploy still operator-run |
 | 5 | Independent review + public **read-only** demo | After U4 soak + deploy |
+| UI | Proof-first web refresh + rollback plan | **Done locally** — [UI_REFRESH.md](./UI_REFRESH.md); no protocol change |
 
 ```text
 Localhost / public testnet (operator)
@@ -196,4 +197,4 @@ Optional: live testnet happy path via operator / `workflow_dispatch` only.
 13. **S5** round-trip twin swaps (protocol).  
 14. **C5** docs polish (positioning).  
 15. Optional: drop `LABD_HTTP=legacy` after soak.  
-
+16. ~~Proof-first UI/UX refresh + documented rollback.~~ → [UI_REFRESH.md](./UI_REFRESH.md) · [UI_ROLLBACK_PLAN.md](./UI_ROLLBACK_PLAN.md)

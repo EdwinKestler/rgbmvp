@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use axum::body::Body;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, State};
-use axum::http::{header, HeaderMap, HeaderValue, Method, Request, StatusCode};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -133,12 +133,13 @@ fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// U4: CORS echo, mutation auth, OPTIONS short-circuit.
+/// U4: CORS echo, mutation auth, OPTIONS short-circuit + security headers.
 async fn u4_middleware(
     State(state): State<AppState>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    let path = req.uri().path().to_string();
     let origin = req
         .headers()
         .get(header::ORIGIN)
@@ -148,7 +149,11 @@ async fn u4_middleware(
     let method = req.method().clone();
 
     if method == Method::OPTIONS {
-        return cors_response(StatusCode::NO_CONTENT, acao.as_deref(), Body::empty());
+        return finalize_response(
+            cors_response(StatusCode::NO_CONTENT, acao.as_deref(), Body::empty()),
+            &path,
+            acao.as_deref(),
+        );
     }
 
     if is_mutation_method(method.as_str()) {
@@ -165,13 +170,20 @@ async fn u4_middleware(
             } => {
                 let sc = StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN);
                 let body = json!({"error": message, "status": "error", "code": code});
-                return cors_json(sc, acao.as_deref(), body);
+                return finalize_response(cors_json(sc, acao.as_deref(), body), &path, acao.as_deref());
             }
         }
     }
 
     let mut res = next.run(req).await;
     apply_cors(res.headers_mut(), acao.as_deref());
+    apply_security_headers(res.headers_mut(), &path);
+    res
+}
+
+fn finalize_response(mut res: Response, path: &str, acao: Option<&str>) -> Response {
+    apply_cors(res.headers_mut(), acao);
+    apply_security_headers(res.headers_mut(), path);
     res
 }
 
@@ -189,6 +201,42 @@ fn apply_cors(headers: &mut HeaderMap, acao: Option<&str>) {
             headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
             headers.insert(header::VARY, HeaderValue::from_static("Origin"));
         }
+    }
+}
+
+/// Transport hardening for Cloud Run / public HTML+JSON (not protocol logic).
+fn apply_security_headers(headers: &mut HeaderMap, path: &str) {
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    // Header name not in axum's typed constants for Permissions-Policy.
+    if let Ok(v) = HeaderValue::from_str("camera=(), microphone=(), geolocation=(), payment=()") {
+        headers.insert(HeaderName::from_static("permissions-policy"), v);
+    }
+    // Tight CSP: same-origin API, inline script/style for static lab pages.
+    if let Ok(v) = HeaderValue::from_str(
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; \
+         img-src 'self' data: https:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; \
+         base-uri 'self'; form-action 'self'",
+    ) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, v);
+    }
+    let cache = if path.starts_with("/artifacts/public/") || path == "/manifest.json" {
+        "public, max-age=300"
+    } else if path.starts_with("/v1/") {
+        "no-store"
+    } else {
+        // HTML pages
+        "no-cache"
+    };
+    if let Ok(v) = HeaderValue::from_str(cache) {
+        headers.insert(header::CACHE_CONTROL, v);
     }
 }
 
@@ -642,5 +690,43 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
         std::env::remove_var("LABD_PUBLIC_READ_ONLY");
+    }
+
+    #[tokio::test]
+    async fn security_headers_on_v1_get() {
+        let state = test_state();
+        let app = router(state);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/security")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let h = res.headers();
+        assert_eq!(
+            h.get(header::X_CONTENT_TYPE_OPTIONS).and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            h.get(header::X_FRAME_OPTIONS).and_then(|v| v.to_str().ok()),
+            Some("DENY")
+        );
+        assert_eq!(
+            h.get(header::REFERRER_POLICY).and_then(|v| v.to_str().ok()),
+            Some("no-referrer")
+        );
+        let csp = h
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(csp.contains("default-src 'self'"), "csp={csp}");
+        assert_eq!(
+            h.get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
     }
 }

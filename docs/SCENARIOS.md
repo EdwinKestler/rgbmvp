@@ -170,6 +170,11 @@ Not a new consensus phase—**UX only**.
 | **U4** | Public hosting security gate | **Implemented** — [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md); public read-only + Bearer mutations; deploy sketches in `deploy/` |
 | **U5** | labd Axum/Hyper platform | **Implemented** — [U5_AXUM.md](./U5_AXUM.md); default `rgbmvp serve`; `LABD_HTTP=legacy` fallback; does **not** reopen U4 or P3 |
 
+**UI refresh (2026-07-24):** implemented and validated across `U0`–`U2`,
+`U4`, `R4`–`R6`, `S3`, and `C3`; presentation only, with no `/v1` or protocol
+change. Evidence and rollback: [UI_REFRESH.md](./UI_REFRESH.md) ·
+[UI_ROLLBACK_PLAN.md](./UI_ROLLBACK_PLAN.md).
+
 P0 web verifier must not hard-code assumptions that block U0–U2 (shared API types, CORS, versioned errors).  
 **P3 closed** remains valid for localhost operator console; U4 is a **new** ops/security scenario, not a silent reopening of P3.  
 **U5** is HTTP platform parity only — same U4 security model on Axum.

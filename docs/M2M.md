@@ -19,7 +19,7 @@ This document is structured for **machine parsing**: goals, invariants, workflow
 | `mainnet` | forbidden unless explicit human flag + review |
 | `phase_status` | P0 done · P1 closed · P2 closed · P3 closed (see `docs/*_CLOSED.md`) |
 | `next_strategy` | Protocol completeness on localhost/testnet first; public demo only after U4 (`docs/ROADMAP_NEXT.md`) |
-| `next_protocol` | U4 implemented; optional public deploy (Vercel/Cloud Run); S3+C2+C4 closed |
+| `next_protocol` | U4/U5 + proof-first UI implemented; optional public deploy still admin-gated; S3+C2+C4 closed |
 | `public_hosting` | Blocked until U4 acceptance gate |
 | `binary` | `cargo build -p lab-cli` → `./target/debug/rgbmvp` |
 | `api_prefix` | `/v1` |
@@ -172,7 +172,12 @@ rgbmvp serve --bind 127.0.0.1:8080
 | POST | `/v1/swap/{id}/action` | `fund_btc\|fund_lq\|claim_lq\|claim_btc\|refund_*\|set_contracts` |
 | POST | `/v1/audit/bfa` | BFA history body |
 
-Static: `/`, `/demo`, `/audit`.
+Static: `/`, `/status`, `/demo`, `/audit`.
+
+UI state (2026-07-24): proof-first landing + `/status` evidence explorer +
+read-only `/demo` + guided `/audit`; implementation and rollback evidence:
+[`UI_REFRESH.md`](./UI_REFRESH.md) ·
+[`UI_ROLLBACK_PLAN.md`](./UI_ROLLBACK_PLAN.md).
 
 ### 4.3 Wallet names vs addresses
 
