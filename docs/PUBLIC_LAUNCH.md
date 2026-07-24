@@ -27,22 +27,28 @@ secrets or hot wallets on the Internet.
 
 ### Enable deploy workflows (operator)
 
-**Vercel**
+Full name table + `gh` commands: **[deploy/README.md](../deploy/README.md#github-actions--variables--secrets)**.
 
-1. Create project from monorepo (or empty + GH).  
-2. Repo secrets: `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`.  
-3. Push `main` touching `web/` or `artifacts/public/`, or **Actions → deploy-vercel → Run**.
+**Cloud Run (OIDC) — primary public origin**
 
-**Cloud Run (OIDC)**
+| Kind | Names |
+|------|--------|
+| Variables | `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_AR_REPO`, optional `LABD_CORS_ORIGINS` |
+| Secrets | `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT` |
+| Environment | `public-demo` |
 
-1. GCP project + Artifact Registry repo `rgbmvp`.  
-2. Workload Identity Federation for GitHub.  
-3. Repo vars: `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_AR_REPO`, optional `LABD_CORS_ORIGINS`.  
-4. Repo secrets: `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`.  
-5. Environment `public-demo` for the job.  
-6. **Actions → deploy-cloudrun → Run** (or push paths that trigger it).
+1. GCP project + enable APIs + Artifact Registry repo `rgbmvp`.  
+2. Workload Identity Federation for GitHub → fill the two secrets.  
+3. Set vars (example project: `silicon-pointer-490721-r0`, region `us-central1`, AR `rgbmvp`).  
+4. **Actions → deploy-cloudrun → Run** (or push paths that trigger it).
 
-Until vars/secrets are set, deploy jobs **no-op** (`if: vars/secrets empty`).
+**Vercel (optional / secondary)**
+
+| Kind | Names |
+|------|--------|
+| Secrets | `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` |
+
+Until `GCP_PROJECT_ID` is set, Cloud Run deploy **no-ops**. Until `VERCEL_TOKEN` is set, Vercel deploy soft-skips.
 
 ---
 
