@@ -2,9 +2,14 @@
 //!
 //! CLI and labd should share these modules so validation is not forked into UI JS.
 
+pub mod s3;
 mod services;
 mod swap_view;
 
+pub use s3::{
+    claim_btc, claim_btc_rgb, claim_btc_value, claim_lq, claim_lq_rgb, claim_lq_value,
+    extract_preimage, fund_wrap_btc, fund_wrap_lq, resolve_preimage_from_lq_claim, LQ_POLICY_ASSET,
+};
 pub use services::SwapService;
 pub use swap_view::{public_leg, public_swap_view};
 

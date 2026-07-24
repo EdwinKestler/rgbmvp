@@ -1838,6 +1838,10 @@ name = "lab-api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bitcoin",
+ "hex",
+ "lab-btc",
+ "lab-chain",
  "lab-core",
  "lab-rgb",
  "serde",

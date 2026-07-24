@@ -1,17 +1,20 @@
 //! Application services shared by CLI and labd (U5 preparation).
 //!
 //! Domain rules stay in `lab_rgb` / `lab_core`. This layer owns session I/O
-//! orchestration that both surfaces can call without parsing Clap args.
+//! and S3 fund-wrap / claim orchestration that both surfaces can call without
+//! parsing Clap args.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use lab_core::Config;
+use lab_rgb::storage::RgbStore;
 use lab_rgb::swap::{self, SwapSession, SwapStore};
+use serde_json::Value;
 
-/// Swap session application service (init / load / save).
-///
-/// Fund/claim chain actions still live in `lab-cli` until full extraction;
-/// callers that only need session lifecycle use this type.
+use crate::s3;
+
+/// Swap session application service (init / load / save + S3 ops).
 #[derive(Debug, Clone)]
 pub struct SwapService {
     store: PathBuf,
@@ -24,8 +27,16 @@ impl SwapService {
         }
     }
 
+    pub fn data_dir(&self) -> &Path {
+        &self.store
+    }
+
     pub fn store(&self) -> SwapStore {
         SwapStore::new(&self.store)
+    }
+
+    pub fn rgb_store(&self) -> RgbStore {
+        RgbStore::new(&self.store)
     }
 
     pub fn init(
@@ -64,6 +75,115 @@ impl SwapService {
     pub fn exists(&self, id: &str) -> bool {
         self.store().path_exists(id)
     }
+
+    /// Persist phase recompute after mutation.
+    pub fn recompute_and_save(&self, s: &mut SwapSession) -> Result<PathBuf> {
+        swap::recompute_phase(s);
+        self.save(s)
+    }
+
+    /// RGB fund-wrap onto BTC HTLC seal (session must already have value fund txid).
+    pub fn fund_wrap_btc(
+        &self,
+        cfg: &Config,
+        btc: &lab_btc::BtcConfig,
+        s: &mut SwapSession,
+        commitment_sats: u64,
+        entropy: u64,
+    ) -> Result<Value> {
+        s3::fund_wrap_btc(cfg, btc, &self.rgb_store(), s, commitment_sats, entropy)
+    }
+
+    /// RGB fund-wrap onto Liquid HTLC seal.
+    pub fn fund_wrap_lq(
+        &self,
+        cfg: &Config,
+        s: &mut SwapSession,
+        commitment_sats: u64,
+        entropy: u64,
+    ) -> Result<Value> {
+        s3::fund_wrap_lq(cfg, &self.rgb_store(), s, commitment_sats, entropy)
+    }
+
+    /// Claim Liquid HTLC (value or S3 RGB depending on session).
+    pub fn claim_lq(
+        &self,
+        cfg: &Config,
+        s: &mut SwapSession,
+        fee_sats: u64,
+        commitment_sats: u64,
+        entropy: u64,
+    ) -> Result<Value> {
+        s3::claim_lq(
+            cfg,
+            &self.rgb_store(),
+            s,
+            fee_sats,
+            commitment_sats,
+            entropy,
+        )
+    }
+
+    /// Claim BTC HTLC (value or S3 RGB). `from_witness` pulls preimage from LQ claim.
+    pub fn claim_btc(
+        &self,
+        cfg: &Config,
+        s: &mut SwapSession,
+        fee_sats: u64,
+        commitment_sats: u64,
+        entropy: u64,
+        from_witness: bool,
+    ) -> Result<Value> {
+        let preimage = if from_witness {
+            s3::resolve_preimage_from_lq_claim(cfg, s)?
+        } else {
+            hex::decode(&s.preimage_hex)?
+        };
+        s3::claim_btc(
+            &self.rgb_store(),
+            s,
+            &preimage,
+            fee_sats,
+            commitment_sats,
+            entropy,
+        )
+    }
+
+    /// Extract preimage from a claim tx (optionally note match on session).
+    pub fn extract_preimage(
+        &self,
+        cfg: &Config,
+        chain: &str,
+        txid: &str,
+        session_id: Option<&str>,
+    ) -> Result<Value> {
+        let pre = s3::extract_preimage(cfg, chain, txid)?;
+        let pre_hex = hex::encode(pre);
+        let hash = htlc_sha256(&pre);
+        let mut matched = None;
+        if let Some(sid) = session_id {
+            let mut s = self.load(sid)?;
+            let session_hash = hex::decode(&s.hash_hex)?;
+            let ok = session_hash.as_slice() == hash.as_slice();
+            matched = Some(ok);
+            if ok {
+                s.notes
+                    .push(format!("extract-preimage matched hash from {chain} tx {txid}"));
+                self.save(&s)?;
+            }
+        }
+        Ok(serde_json::json!({
+            "preimage_hex": pre_hex,
+            "hash_hex": hex::encode(hash),
+            "chain": chain,
+            "txid": txid,
+            "session_hash_match": matched,
+        }))
+    }
+}
+
+fn htlc_sha256(pre: &[u8]) -> [u8; 32] {
+    lab_rgb::htlc::sha256_preimage(pre)
 }
 
 #[cfg(test)]

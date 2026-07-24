@@ -7,6 +7,10 @@ description = "rgbmvp HTTP API types and helpers (labd /v1)"
 
 [dependencies]
 anyhow.workspace = true
+bitcoin.workspace = true
+hex.workspace = true
+lab-btc.workspace = true
+lab-chain.workspace = true
 lab-core.workspace = true
 lab-rgb.workspace = true
 serde.workspace = true

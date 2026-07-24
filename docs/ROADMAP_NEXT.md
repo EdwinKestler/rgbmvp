@@ -142,7 +142,7 @@ Do **not** add S3 mutation business logic to the handwritten HTTP server and the
 | Phase | Work | Scenario | Status |
 |-------|------|----------|--------|
 | 0a | Docker Trivy `load: true` | CI | **Done** (`.github/workflows/docker-public.yml`) |
-| 0b | Thin services + public swap view shared | prep for U5 | **Started** — `lab_api::SwapService`, `public_swap_view` |
+| 0b | Services + public swap view shared | prep for U5 | **Done** — `SwapService` + `lab_api::s3` fund-wrap/claim |
 | 1 | S3 offline negative matrix + witness extract tests | S3 harden | **Started** — `lab_rgb::swap` / `htlc` unit tests |
 | 2 | Axum/Hyper labd | **U5** — [U5_AXUM.md](./U5_AXUM.md) | Planned |
 | 3 | Authenticated S3 HTTP + browser (preserve U2/U4) | S3 surfaces | After U5 |

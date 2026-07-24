@@ -15,8 +15,7 @@ use std::sync::Arc;
 use lab_rgb::storage::RgbStore;
 use lab_rgb::swap::{self, SwapStore};
 use lab_rgb::{
-    issue_nia, plan_claim_transfer, plan_transfer, plan_transfer_to_seal, verify_against_witness,
-    IssueRequest, DEMO_INTERNAL_XONLY_HEX,
+    issue_nia, plan_transfer, verify_against_witness, IssueRequest, DEMO_INTERNAL_XONLY_HEX,
 };
 use lab_rgb::htlc;
 
@@ -895,6 +894,7 @@ fn run() -> Result<()> {
                     commitment_sats,
                     entropy,
                 } => {
+                    let svc = lab_api::SwapService::new(&cfg.data_dir);
                     let mut s = store.load(&id)?;
                     let do_wrap = rgb_wrap || s.rgb_wrap;
                     let btc = lab_btc::BtcConfig::from_env();
@@ -911,18 +911,10 @@ fn run() -> Result<()> {
                     s.btc_fund_sats = Some(amount_sats);
                     let mut rgb_meta = serde_json::Value::Null;
                     if do_wrap {
-                        let rgb_store = RgbStore::new(&cfg.data_dir);
-                        rgb_meta = s3_fund_wrap_btc(
-                            &cfg,
-                            &btc,
-                            &rgb_store,
-                            &mut s,
-                            commitment_sats,
-                            entropy,
-                        )?;
+                        rgb_meta =
+                            svc.fund_wrap_btc(&cfg, &btc, &mut s, commitment_sats, entropy)?;
                     }
-                    swap::recompute_phase(&mut s);
-                    store.save(&s)?;
+                    svc.recompute_and_save(&mut s)?;
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
@@ -1009,18 +1001,11 @@ fn run() -> Result<()> {
                     store.save(&s)?;
                     let mut rgb_meta = serde_json::Value::Null;
                     if do_wrap {
-                        let rgb_store = RgbStore::new(&cfg.data_dir);
-                        match s3_fund_wrap_lq(
-                            &cfg,
-                            &rgb_store,
-                            &mut s,
-                            commitment_sats,
-                            entropy,
-                        ) {
+                        let svc = lab_api::SwapService::new(&cfg.data_dir);
+                        match svc.fund_wrap_lq(&cfg, &mut s, commitment_sats, entropy) {
                             Ok(m) => {
                                 rgb_meta = m;
-                                swap::recompute_phase(&mut s);
-                                store.save(&s)?;
+                                svc.recompute_and_save(&mut s)?;
                             }
                             Err(e) => {
                                 store.save(&s)?;
@@ -1053,15 +1038,11 @@ fn run() -> Result<()> {
                     commitment_sats,
                     entropy,
                 } => {
+                    let svc = lab_api::SwapService::new(&cfg.data_dir);
                     let mut s = store.load(&id)?;
-                    let rgb_store = RgbStore::new(&cfg.data_dir);
-                    let mut out = if s.rgb_wrap && s.lq_contract_id.is_some() {
-                        s3_claim_lq_rgb(&cfg, &rgb_store, &mut s, fee_sats, commitment_sats, entropy)?
-                    } else {
-                        s3_claim_lq_value(&cfg, &mut s, fee_sats)?
-                    };
-                    swap::recompute_phase(&mut s);
-                    store.save(&s)?;
+                    let mut out =
+                        svc.claim_lq(&cfg, &mut s, fee_sats, commitment_sats, entropy)?;
+                    svc.recompute_and_save(&mut s)?;
                     out["phase"] = serde_json::json!(s.phase);
                     println!("{}", serde_json::to_string_pretty(&out)?);
                 }
@@ -1072,28 +1053,17 @@ fn run() -> Result<()> {
                     entropy,
                     from_witness,
                 } => {
+                    let svc = lab_api::SwapService::new(&cfg.data_dir);
                     let mut s = store.load(&id)?;
-                    let rgb_store = RgbStore::new(&cfg.data_dir);
-                    let preimage = if from_witness {
-                        resolve_preimage_from_lq_claim(&cfg, &s)?
-                    } else {
-                        hex::decode(&s.preimage_hex)?
-                    };
-                    let mut out = if s.rgb_wrap && s.btc_contract_id.is_some() {
-                        s3_claim_btc_rgb(
-                            &cfg,
-                            &rgb_store,
-                            &mut s,
-                            &preimage,
-                            fee_sats,
-                            commitment_sats,
-                            entropy,
-                        )?
-                    } else {
-                        s3_claim_btc_value(&cfg, &mut s, &preimage, fee_sats)?
-                    };
-                    swap::recompute_phase(&mut s);
-                    store.save(&s)?;
+                    let mut out = svc.claim_btc(
+                        &cfg,
+                        &mut s,
+                        fee_sats,
+                        commitment_sats,
+                        entropy,
+                        from_witness,
+                    )?;
+                    svc.recompute_and_save(&mut s)?;
                     out["phase"] = serde_json::json!(s.phase);
                     println!("{}", serde_json::to_string_pretty(&out)?);
                 }
@@ -1210,34 +1180,18 @@ fn run() -> Result<()> {
                     println!("{}", serde_json::to_string_pretty(&info)?);
                 }
                 SwapCmd::ExtractPreimage { chain, txid, id } => {
-                    let pre = extract_preimage_cli(&cfg, &chain, &txid)?;
-                    let pre_hex = hex::encode(pre);
-                    let hash = htlc::sha256_preimage(&pre);
-                    let mut matched = None;
-                    if let Some(sid) = id.as_ref() {
-                        let mut s = store.load(sid)?;
-                        let session_hash = hex::decode(&s.hash_hex)?;
-                        let ok = session_hash.as_slice() == hash.as_slice();
-                        matched = Some(ok);
-                        if ok {
-                            s.notes.push(format!(
-                                "extract-preimage matched hash from {chain} tx {txid}"
-                            ));
-                            store.save(&s)?;
-                        }
+                    let svc = lab_api::SwapService::new(&cfg.data_dir);
+                    let mut out = svc.extract_preimage(&cfg, &chain, &txid, id.as_deref())?;
+                    if let Some(obj) = out.as_object_mut() {
+                        obj.insert("status".into(), serde_json::json!("ok"));
+                        obj.insert(
+                            "note".into(),
+                            serde_json::json!(
+                                "Preimage is public once claim is mined; still never log in labd GET."
+                            ),
+                        );
                     }
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&serde_json::json!({
-                            "status": "ok",
-                            "chain": chain,
-                            "txid": txid,
-                            "preimage_hex": pre_hex,
-                            "hash_hex": hex::encode(hash),
-                            "session_hash_match": matched,
-                            "note": "Preimage is public once claim is mined; still never log in labd GET.",
-                        }))?
-                    );
+                    println!("{}", serde_json::to_string_pretty(&out)?);
                 }
             }
         }
@@ -2297,96 +2251,48 @@ fn handle_swap_action_post(
         }
         "claim_lq" => {
             let fee_sats = v.get("fee_sats").and_then(|x| x.as_u64()).unwrap_or(300);
-            let amount = s.lq_fund_sats.context("lq not funded (run fund_lq)")?;
-            let (txid, vout, value) = lab_chain::find_address_utxo(
-                cfg,
-                &s.htlc_lq.address_liquid_unconf,
-                amount.saturating_sub(1),
-            )?;
-            s.lq_fund_txid = Some(txid.clone());
-            s.lq_fund_vout = Some(vout);
-            s.lq_fund_sats = Some(value);
-            let preimage = hex::decode(&s.preimage_hex)?;
-            let (claimer_sk, _) = htlc::demo_keypair(&s.htlc_lq.claimer_label)?;
-            let ws = hex::decode(&s.htlc_lq.witness_script_hex)?;
-            use bitcoin::key::{CompressedPublicKey, Secp256k1};
-            use bitcoin::{Address, Network};
-            let secp = Secp256k1::new();
-            let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &claimer_sk);
-            let compressed = CompressedPublicKey(pk);
-            let dest = Address::p2wpkh(&compressed, Network::Testnet);
-            let dest_spk = dest.script_pubkey();
-            let policy = "144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49";
-            let out_sats = value.saturating_sub(fee_sats);
-            let raw = htlc::build_htlc_spend_liquid(
-                &txid,
-                vout,
-                value,
-                out_sats,
-                fee_sats,
-                dest_spk.as_bytes(),
-                policy,
-                &ws,
-                htlc::HtlcSpend::Claim {
-                    preimage: &preimage,
-                },
-                s.csv_delay,
-                &claimer_sk,
-            )?;
-            let claim_txid = lab_chain::broadcast_raw_hex(cfg, &raw)?;
-            s.lq_claim_txid = Some(claim_txid.clone());
-            swap::recompute_phase(&mut s);
-            store.save(&s)?;
-            serde_json::json!({
-                "status": "claimed_lq",
-                "txid": claim_txid,
-                "explorer": format!("{}/tx/{}", cfg.explorer_base, claim_txid),
-                "preimage_published": true,
-                "note": "Preimage is public on Liquid; Bob can claim BTC. Not returned in API JSON.",
-            })
+            let commitment_sats = v
+                .get("commitment_sats")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(330);
+            let entropy = v.get("entropy").and_then(|x| x.as_u64()).unwrap_or(1);
+            let svc = lab_api::SwapService::new(&cfg.data_dir);
+            let mut out = svc.claim_lq(cfg, &mut s, fee_sats, commitment_sats, entropy)?;
+            svc.recompute_and_save(&mut s)?;
+            // Never surface preimage on HTTP (service notes may mention it).
+            out["note"] = serde_json::json!(
+                "Preimage is public on Liquid; Bob can claim BTC. Not returned in API JSON."
+            );
+            out
         }
         "claim_btc" => {
             let fee_sats = v.get("fee_sats").and_then(|x| x.as_u64()).unwrap_or(500);
-            let btc = lab_btc::BtcConfig::from_env();
-            let amount = s.btc_fund_sats.context("btc_fund_sats")?;
-            let utxo = lab_btc::find_htlc_utxo(
-                &btc,
-                &s.htlc_btc.address_btc,
-                amount.saturating_sub(1),
+            let commitment_sats = v
+                .get("commitment_sats")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(330);
+            let entropy = v.get("entropy").and_then(|x| x.as_u64()).unwrap_or(1);
+            let from_witness = v
+                .get("from_witness")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+            let svc = lab_api::SwapService::new(&cfg.data_dir);
+            svc.claim_btc(
+                cfg,
+                &mut s,
+                fee_sats,
+                commitment_sats,
+                entropy,
+                from_witness,
             )?;
-            let preimage = hex::decode(&s.preimage_hex)?;
-            let (claimer_sk, _) = htlc::demo_keypair(&s.htlc_btc.claimer_label)?;
-            let ws = hex::decode(&s.htlc_btc.witness_script_hex)?;
-            use bitcoin::key::{CompressedPublicKey, Secp256k1};
-            use bitcoin::{Address, Network};
-            let secp = Secp256k1::new();
-            let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &claimer_sk);
-            let compressed = CompressedPublicKey(pk);
-            let dest = Address::p2wpkh(&compressed, Network::Testnet);
-            let dest_spk = dest.script_pubkey();
-            let out_sats = utxo.value_sats.saturating_sub(fee_sats);
-            let raw = htlc::build_htlc_spend_btc(
-                &utxo.txid,
-                utxo.vout,
-                utxo.value_sats,
-                out_sats,
-                dest_spk.as_bytes(),
-                &ws,
-                htlc::HtlcSpend::Claim {
-                    preimage: &preimage,
-                },
-                s.csv_delay,
-                &claimer_sk,
-            )?;
-            let txid = lab_btc::broadcast_raw(&btc, &raw)?;
-            s.btc_claim_txid = Some(txid.clone());
-            swap::recompute_phase(&mut s);
-            store.save(&s)?;
+            svc.recompute_and_save(&mut s)?;
+            // Drop any accidental preimage field; return public-shaped status.
             serde_json::json!({
                 "status": "claimed_btc",
-                "txid": txid,
-                "explorer": format!("{}/tx/{}", btc.explorer_base, txid),
-                "dest": dest.to_string(),
+                "phase": s.phase,
+                "txid": s.btc_claim_txid,
+                "rgb_wrap": s.rgb_wrap,
+                "swap": public_swap_view(&s, cfg),
             })
         }
         "refund_btc" => {
@@ -2876,525 +2782,4 @@ fn handle_bfa_audit_post(body: &str) -> Result<lab_rgb::bfa::BfaAuditResult> {
     lab_rgb::bfa::audit_history(&hist, &fetch)
 }
 
-// ── S3 RGB-wrapped fund / claim helpers (CLI-first) ─────────────────────────
-
-const LQ_POLICY_ASSET: &str = "144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49";
-
-fn claimer_p2wpkh_spk(label: &str) -> Result<(bitcoin::secp256k1::SecretKey, bitcoin::ScriptBuf, String)> {
-    use bitcoin::key::{CompressedPublicKey, Secp256k1};
-    use bitcoin::{Address, Network};
-    let (sk, _) = htlc::demo_keypair(label)?;
-    let secp = Secp256k1::new();
-    let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
-    let compressed = CompressedPublicKey(pk);
-    let dest = Address::p2wpkh(&compressed, Network::Testnet);
-    Ok((sk, dest.script_pubkey(), dest.to_string()))
-}
-
-/// After value fund: plan transfer of full supply onto HTLC seal + broadcast BTC commitment.
-fn s3_fund_wrap_btc(
-    cfg: &Config,
-    btc: &lab_btc::BtcConfig,
-    rgb_store: &RgbStore,
-    s: &mut lab_rgb::swap::SwapSession,
-    commitment_sats: u64,
-    entropy: u64,
-) -> Result<serde_json::Value> {
-    let cid = s
-        .btc_contract_id
-        .clone()
-        .context("rgb_wrap BTC requires --btc-contract on init")?;
-    let issue = rgb_store.load_issue(&cid)?;
-    let fund_txid = s.btc_fund_txid.clone().context("btc fund txid")?;
-    let fund_vout = s.btc_fund_vout.unwrap_or(0);
-    let htlc_seal = format!("{fund_txid}:{fund_vout}");
-
-    let plan = plan_transfer_to_seal(
-        &issue.contract_id,
-        issue.supply,
-        issue.supply,
-        &issue.seal,
-        &htlc_seal,
-        None,
-        DEMO_INTERNAL_XONLY_HEX,
-        entropy,
-        &issue.ticker,
-        "bitcoin-testnet",
-    )?;
-    let plan_id = format!(
-        "s3-fund-btc-{}-{}",
-        s.id,
-        &plan.bundle_id_hex[..12.min(plan.bundle_id_hex.len())]
-    );
-    rgb_store.save_transfer(&plan_id, &plan)?;
-
-    let utxos = lab_btc::utxos(cfg, btc, &s.alice_btc_wallet)?;
-    let seal_val = utxos
-        .iter()
-        .find(|u| u.outpoint == issue.seal)
-        .map(|u| u.value_sats)
-        .context("BTC issue seal UTXO not found in alice wallet (issue then fund-wrap before spending seal)")?;
-    let fee = 800u64;
-    let bc = lab_btc::broadcast_commitment_tx(
-        cfg,
-        btc,
-        &s.alice_btc_wallet,
-        &issue.seal,
-        seal_val,
-        &plan.tapret_address,
-        commitment_sats,
-        fee,
-    )?;
-
-    // Best-effort verify once tx is visible.
-    let mut fund_verify = None;
-    if let Ok(w) = lab_btc::fetch_witness_for_rgb(btc, &bc.txid) {
-        if let Ok(vr) = verify_against_witness(&plan, &w, &btc.explorer_base) {
-            fund_verify = Some(vr.status.clone());
-            let _ = rgb_store.save_proof(&format!("{plan_id}-fund"), &vr);
-        }
-    }
-
-    if let Some(leg) = s.btc_rgb.as_mut() {
-        leg.contract_id = issue.contract_id.clone();
-        leg.amount = issue.supply;
-        leg.issue_seal = Some(issue.seal.clone());
-        leg.htlc_seal = Some(htlc_seal.clone());
-        leg.fund_plan_id = Some(plan_id.clone());
-        leg.fund_anchor_txid = Some(bc.txid.clone());
-        leg.fund_verify = fund_verify.clone();
-        leg.fund_transition_opid_hex = Some(plan.transition_opid_hex.clone());
-    }
-    s.notes
-        .push(format!("S3 BTC fund-wrap plan={plan_id} seal={htlc_seal}"));
-
-    Ok(serde_json::json!({
-        "plan_id": plan_id,
-        "htlc_seal": htlc_seal,
-        "fund_anchor": bc,
-        "fund_verify": fund_verify,
-        "plan": plan,
-    }))
-}
-
-fn s3_fund_wrap_lq(
-    cfg: &Config,
-    rgb_store: &RgbStore,
-    s: &mut lab_rgb::swap::SwapSession,
-    commitment_sats: u64,
-    entropy: u64,
-) -> Result<serde_json::Value> {
-    let cid = s
-        .lq_contract_id
-        .clone()
-        .context("rgb_wrap LQ requires --lq-contract on init")?;
-    let issue = rgb_store.load_issue(&cid)?;
-    let fund_txid = s.lq_fund_txid.clone().context("lq fund txid")?;
-    let fund_vout = s.lq_fund_vout.unwrap_or(0);
-    let htlc_seal = format!("{fund_txid}:{fund_vout}");
-
-    let plan = plan_transfer_to_seal(
-        &issue.contract_id,
-        issue.supply,
-        issue.supply,
-        &issue.seal,
-        &htlc_seal,
-        None,
-        DEMO_INTERNAL_XONLY_HEX,
-        entropy,
-        &issue.ticker,
-        "liquid-testnet",
-    )?;
-    let plan_id = format!(
-        "s3-fund-lq-{}-{}",
-        s.id,
-        &plan.bundle_id_hex[..12.min(plan.bundle_id_hex.len())]
-    );
-    rgb_store.save_transfer(&plan_id, &plan)?;
-
-    let bc = lab_chain::broadcast_commitment_tx(
-        cfg,
-        &s.bob_lq_wallet,
-        &issue.seal,
-        &plan.tapret_address,
-        None,
-        commitment_sats,
-        0,
-    )?;
-
-    let mut fund_verify = None;
-    let api = lab_chain::esplora_api_base(cfg);
-    if let Ok(w) = lab_chain::fetch_witness_esplora(&api, &bc.txid) {
-        if let Ok(vr) = verify_against_witness(&plan, &w, &cfg.explorer_base) {
-            fund_verify = Some(vr.status.clone());
-            let _ = rgb_store.save_proof(&format!("{plan_id}-fund"), &vr);
-        }
-    }
-
-    if let Some(leg) = s.lq_rgb.as_mut() {
-        leg.contract_id = issue.contract_id.clone();
-        leg.amount = issue.supply;
-        leg.issue_seal = Some(issue.seal.clone());
-        leg.htlc_seal = Some(htlc_seal.clone());
-        leg.fund_plan_id = Some(plan_id.clone());
-        leg.fund_anchor_txid = Some(bc.txid.clone());
-        leg.fund_verify = fund_verify.clone();
-        leg.fund_transition_opid_hex = Some(plan.transition_opid_hex.clone());
-    }
-    s.notes
-        .push(format!("S3 LQ fund-wrap plan={plan_id} seal={htlc_seal}"));
-
-    Ok(serde_json::json!({
-        "plan_id": plan_id,
-        "htlc_seal": htlc_seal,
-        "fund_anchor": bc,
-        "fund_verify": fund_verify,
-        "plan": plan,
-    }))
-}
-
-fn s3_claim_lq_value(
-    cfg: &Config,
-    s: &mut lab_rgb::swap::SwapSession,
-    fee_sats: u64,
-) -> Result<serde_json::Value> {
-    let amount = s.lq_fund_sats.context("lq not funded (run fund-lq)")?;
-    let (txid, vout, value) = lab_chain::find_address_utxo(
-        cfg,
-        &s.htlc_lq.address_liquid_unconf,
-        amount.saturating_sub(1),
-    )?;
-    s.lq_fund_txid = Some(txid.clone());
-    s.lq_fund_vout = Some(vout);
-    s.lq_fund_sats = Some(value);
-
-    let preimage = hex::decode(&s.preimage_hex)?;
-    let (claimer_sk, dest_spk, dest_addr) = claimer_p2wpkh_spk(&s.htlc_lq.claimer_label)?;
-    let ws = hex::decode(&s.htlc_lq.witness_script_hex)?;
-    let out_sats = value.saturating_sub(fee_sats);
-    let raw = htlc::build_htlc_spend_liquid(
-        &txid,
-        vout,
-        value,
-        out_sats,
-        fee_sats,
-        dest_spk.as_bytes(),
-        LQ_POLICY_ASSET,
-        &ws,
-        htlc::HtlcSpend::Claim {
-            preimage: &preimage,
-        },
-        s.csv_delay,
-        &claimer_sk,
-    )?;
-    let claim_txid = lab_chain::broadcast_raw_hex(cfg, &raw)?;
-    s.lq_claim_txid = Some(claim_txid.clone());
-    Ok(serde_json::json!({
-        "status": "claimed_lq",
-        "phase": s.phase,
-        "rgb_wrap": false,
-        "txid": claim_txid,
-        "dest": dest_addr,
-        "explorer": format!("{}/tx/{}", cfg.explorer_base, claim_txid),
-        "preimage_published": true,
-        "note": "Preimage is public on Liquid; Bob can claim BTC.",
-    }))
-}
-
-fn s3_claim_lq_rgb(
-    cfg: &Config,
-    rgb_store: &RgbStore,
-    s: &mut lab_rgb::swap::SwapSession,
-    fee_sats: u64,
-    commitment_sats: u64,
-    entropy: u64,
-) -> Result<serde_json::Value> {
-    lab_rgb::swap::require_fund_wrap_for_claim(s.lq_rgb.as_ref(), "lq")?;
-    let leg = s.lq_rgb.as_ref().expect("checked").clone();
-    lab_rgb::swap::check_leg_contract_matches_session(
-        &leg,
-        s.lq_contract_id.as_deref(),
-        "lq",
-    )?;
-    let prev_opid = leg
-        .fund_transition_opid_hex
-        .clone()
-        .expect("checked by require_fund_wrap");
-    let amount_rgb = if leg.amount > 0 {
-        leg.amount
-    } else {
-        rgb_store.load_issue(&leg.contract_id)?.supply
-    };
-
-    let fund_amount = s.lq_fund_sats.context("lq not funded")?;
-    let (txid, vout, value) = lab_chain::find_address_utxo(
-        cfg,
-        &s.htlc_lq.address_liquid_unconf,
-        fund_amount.saturating_sub(1),
-    )?;
-    s.lq_fund_txid = Some(txid.clone());
-    s.lq_fund_vout = Some(vout);
-    s.lq_fund_sats = Some(value);
-    // Prefer live seal if explorer disagrees with session.
-    let htlc_seal = format!("{txid}:{vout}");
-
-    // Layout: vout0 = tapret commitment, vout1 = claimer value (successor seal).
-    let plan = plan_claim_transfer(
-        &leg.contract_id,
-        &prev_opid,
-        0,
-        amount_rgb,
-        amount_rgb,
-        &htlc_seal,
-        1, // recipient WitnessTx vout
-        None,
-        DEMO_INTERNAL_XONLY_HEX,
-        entropy,
-        "lRGB",
-        "liquid-testnet",
-    )?;
-    let plan_id = format!(
-        "s3-claim-lq-{}-{}",
-        s.id,
-        &plan.bundle_id_hex[..12.min(plan.bundle_id_hex.len())]
-    );
-    rgb_store.save_transfer(&plan_id, &plan)?;
-
-    let commit_spk = hex::decode(&plan.commitment_spk_hex)?;
-    let preimage = hex::decode(&s.preimage_hex)?;
-    let (claimer_sk, dest_spk, dest_addr) = claimer_p2wpkh_spk(&s.htlc_lq.claimer_label)?;
-    let ws = hex::decode(&s.htlc_lq.witness_script_hex)?;
-    if commitment_sats + fee_sats >= value {
-        anyhow::bail!("commitment+fee must be < HTLC value");
-    }
-    let claimer_sats = value - commitment_sats - fee_sats;
-    let raw = htlc::build_htlc_spend_liquid_outs(
-        &txid,
-        vout,
-        value,
-        &[
-            (commitment_sats, commit_spk.as_slice()),
-            (claimer_sats, dest_spk.as_bytes()),
-        ],
-        fee_sats,
-        LQ_POLICY_ASSET,
-        &ws,
-        htlc::HtlcSpend::Claim {
-            preimage: &preimage,
-        },
-        s.csv_delay,
-        &claimer_sk,
-    )?;
-    let claim_txid = lab_chain::broadcast_raw_hex(cfg, &raw)?;
-    s.lq_claim_txid = Some(claim_txid.clone());
-
-    let mut claim_verify = None;
-    let api = lab_chain::esplora_api_base(cfg);
-    // Retry briefly — Esplora may lag.
-    for _ in 0..5 {
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        if let Ok(w) = lab_chain::fetch_witness_esplora(&api, &claim_txid) {
-            if let Ok(vr) = verify_against_witness(&plan, &w, &cfg.explorer_base) {
-                claim_verify = Some(vr.status.clone());
-                let _ = rgb_store.save_proof(&format!("{plan_id}-claim"), &vr);
-                break;
-            }
-        }
-    }
-
-    if let Some(r) = s.lq_rgb.as_mut() {
-        r.htlc_seal = Some(htlc_seal.clone());
-        r.claim_plan_id = Some(plan_id.clone());
-        r.claim_anchor_txid = Some(claim_txid.clone());
-        r.claim_verify = claim_verify.clone();
-        r.successor_seal = Some(format!("{claim_txid}:1"));
-    }
-    s.notes.push(format!(
-        "S3 LQ claim plan={plan_id} verify={claim_verify:?}"
-    ));
-
-    Ok(serde_json::json!({
-        "status": "claimed_lq",
-        "phase": s.phase,
-        "rgb_wrap": true,
-        "txid": claim_txid,
-        "dest": dest_addr,
-        "explorer": format!("{}/tx/{}", cfg.explorer_base, claim_txid),
-        "preimage_published": true,
-        "claim_plan_id": plan_id,
-        "claim_verify": claim_verify,
-        "successor_seal": format!("{claim_txid}:1"),
-        "note": "Preimage public on Liquid; Bob can extract-preimage / claim-btc --from-witness.",
-    }))
-}
-
-fn s3_claim_btc_value(
-    cfg: &Config,
-    s: &mut lab_rgb::swap::SwapSession,
-    preimage: &[u8],
-    fee_sats: u64,
-) -> Result<serde_json::Value> {
-    let btc = lab_btc::BtcConfig::from_env();
-    let amount = s.btc_fund_sats.context("btc_fund_sats")?;
-    let utxo = lab_btc::find_htlc_utxo(&btc, &s.htlc_btc.address_btc, amount.saturating_sub(1))?;
-    let (claimer_sk, dest_spk, dest_addr) = claimer_p2wpkh_spk(&s.htlc_btc.claimer_label)?;
-    let ws = hex::decode(&s.htlc_btc.witness_script_hex)?;
-    let out_sats = utxo.value_sats.saturating_sub(fee_sats);
-    let raw = htlc::build_htlc_spend_btc(
-        &utxo.txid,
-        utxo.vout,
-        utxo.value_sats,
-        out_sats,
-        dest_spk.as_bytes(),
-        &ws,
-        htlc::HtlcSpend::Claim { preimage },
-        s.csv_delay,
-        &claimer_sk,
-    )?;
-    let txid = lab_btc::broadcast_raw(&btc, &raw)?;
-    s.btc_claim_txid = Some(txid.clone());
-    let _ = cfg;
-    Ok(serde_json::json!({
-        "status": "claimed_btc",
-        "phase": s.phase,
-        "rgb_wrap": false,
-        "txid": txid,
-        "dest": dest_addr,
-        "explorer": format!("{}/tx/{}", btc.explorer_base, txid),
-    }))
-}
-
-fn s3_claim_btc_rgb(
-    cfg: &Config,
-    rgb_store: &RgbStore,
-    s: &mut lab_rgb::swap::SwapSession,
-    preimage: &[u8],
-    fee_sats: u64,
-    commitment_sats: u64,
-    entropy: u64,
-) -> Result<serde_json::Value> {
-    let btc = lab_btc::BtcConfig::from_env();
-    lab_rgb::swap::require_fund_wrap_for_claim(s.btc_rgb.as_ref(), "btc")?;
-    let leg = s.btc_rgb.as_ref().expect("checked").clone();
-    lab_rgb::swap::check_leg_contract_matches_session(
-        &leg,
-        s.btc_contract_id.as_deref(),
-        "btc",
-    )?;
-    let prev_opid = leg
-        .fund_transition_opid_hex
-        .clone()
-        .expect("checked by require_fund_wrap");
-    let amount_rgb = if leg.amount > 0 {
-        leg.amount
-    } else {
-        rgb_store.load_issue(&leg.contract_id)?.supply
-    };
-    let amount = s.btc_fund_sats.context("btc_fund_sats")?;
-    let utxo = lab_btc::find_htlc_utxo(&btc, &s.htlc_btc.address_btc, amount.saturating_sub(1))?;
-    let htlc_seal = format!("{}:{}", utxo.txid, utxo.vout);
-
-    let plan = plan_claim_transfer(
-        &leg.contract_id,
-        &prev_opid,
-        0,
-        amount_rgb,
-        amount_rgb,
-        &htlc_seal,
-        1,
-        None,
-        DEMO_INTERNAL_XONLY_HEX,
-        entropy,
-        "bRGB",
-        "bitcoin-testnet",
-    )?;
-    let plan_id = format!(
-        "s3-claim-btc-{}-{}",
-        s.id,
-        &plan.bundle_id_hex[..12.min(plan.bundle_id_hex.len())]
-    );
-    rgb_store.save_transfer(&plan_id, &plan)?;
-
-    let commit_spk = hex::decode(&plan.commitment_spk_hex)?;
-    let (claimer_sk, dest_spk, dest_addr) = claimer_p2wpkh_spk(&s.htlc_btc.claimer_label)?;
-    let ws = hex::decode(&s.htlc_btc.witness_script_hex)?;
-    if commitment_sats + fee_sats >= utxo.value_sats {
-        anyhow::bail!("commitment+fee must be < HTLC value");
-    }
-    let claimer_sats = utxo.value_sats - commitment_sats - fee_sats;
-    let raw = htlc::build_htlc_spend_btc_outs(
-        &utxo.txid,
-        utxo.vout,
-        utxo.value_sats,
-        &[
-            (commitment_sats, commit_spk.as_slice()),
-            (claimer_sats, dest_spk.as_bytes()),
-        ],
-        &ws,
-        htlc::HtlcSpend::Claim { preimage },
-        s.csv_delay,
-        &claimer_sk,
-    )?;
-    let claim_txid = lab_btc::broadcast_raw(&btc, &raw)?;
-    s.btc_claim_txid = Some(claim_txid.clone());
-
-    let mut claim_verify = None;
-    for _ in 0..5 {
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        if let Ok(w) = lab_btc::fetch_witness_for_rgb(&btc, &claim_txid) {
-            if let Ok(vr) = verify_against_witness(&plan, &w, &btc.explorer_base) {
-                claim_verify = Some(vr.status.clone());
-                let _ = rgb_store.save_proof(&format!("{plan_id}-claim"), &vr);
-                break;
-            }
-        }
-    }
-
-    if let Some(r) = s.btc_rgb.as_mut() {
-        r.htlc_seal = Some(htlc_seal);
-        r.claim_plan_id = Some(plan_id.clone());
-        r.claim_anchor_txid = Some(claim_txid.clone());
-        r.claim_verify = claim_verify.clone();
-        r.successor_seal = Some(format!("{claim_txid}:1"));
-    }
-    s.notes.push(format!(
-        "S3 BTC claim plan={plan_id} verify={claim_verify:?}"
-    ));
-    let _ = cfg;
-
-    Ok(serde_json::json!({
-        "status": "claimed_btc",
-        "phase": s.phase,
-        "rgb_wrap": true,
-        "txid": claim_txid,
-        "dest": dest_addr,
-        "explorer": format!("{}/tx/{}", btc.explorer_base, claim_txid),
-        "claim_plan_id": plan_id,
-        "claim_verify": claim_verify,
-        "successor_seal": format!("{claim_txid}:1"),
-    }))
-}
-
-fn resolve_preimage_from_lq_claim(cfg: &Config, s: &lab_rgb::swap::SwapSession) -> Result<Vec<u8>> {
-    let txid = s
-        .lq_claim_txid
-        .as_ref()
-        .context("no lq_claim_txid; claim-lq first or omit --from-witness")?;
-    let pre = extract_preimage_cli(cfg, "liquid", txid)?;
-    lab_rgb::swap::check_preimage_matches_session(&pre, &s.hash_hex)?;
-    Ok(pre.to_vec())
-}
-
-fn extract_preimage_cli(cfg: &Config, chain: &str, txid: &str) -> Result<[u8; 32]> {
-    let c = chain.trim().to_ascii_lowercase();
-    if c.starts_with("bitcoin") || c == "btc" || c == "tb" {
-        let btc = lab_btc::BtcConfig::from_env();
-        let hex_tx = lab_btc::fetch_tx_hex(&btc, txid)?;
-        htlc::extract_preimage_from_btc_tx_hex(&hex_tx)
-    } else if c.starts_with("liquid") || c == "lq" || c == "elements" {
-        let hex_tx = lab_chain::fetch_tx_hex(cfg, txid)?;
-        htlc::extract_preimage_from_liquid_tx_hex(&hex_tx)
-    } else {
-        anyhow::bail!("chain must be bitcoin|btc or liquid|lq (got {chain})");
-    }
-}
+// S3 fund-wrap / claim / extract-preimage live in `lab_api::s3` + `SwapService`.

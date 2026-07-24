@@ -113,9 +113,10 @@ cargo test -p lab-rgb -p lab-api --lib
 
 | Surface | S3 status |
 |---------|-----------|
-| CLI `swap *` | **Primary** |
+| CLI `swap *` | **Primary** — fund-wrap/claim via `lab_api::SwapService` / `lab_api::s3` |
 | `GET /v1/swap/{id}` | Public RGB leg metadata via `lab_api::public_swap_view` (no preimage) |
-| Browser console mutations | Value path; RGB wrap after U5 ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)) |
+| `POST /v1/swap/{id}/action` claim_* | Same service methods as CLI (value or S3 when `rgb_wrap`) |
+| Browser console mutations | Value path; full RGB-wrap UX after U5 ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)) |
 | Public Internet | U4 read-only; mutations require Bearer |
 
 ## Related
