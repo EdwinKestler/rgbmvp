@@ -207,6 +207,17 @@ pub(crate) fn serve_labd_legacy(cfg: &Config, bind: &str) -> Result<()> {
                 "s3-rgbmvp-live.json"
             } else if is_safe_path_id(rel) {
                 rel
+            } else if !rel.contains("..")
+                && rel.split('/').count() == 2
+                && rel.split('/').all(|seg| {
+                    !seg.is_empty()
+                        && seg
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+                })
+            {
+                // e.g. bfa/honest.json
+                rel
             } else {
                 ""
             };
@@ -484,6 +495,16 @@ pub(crate) fn serve_labd_legacy(cfg: &Config, bind: &str) -> Result<()> {
                     "400 Bad Request",
                     "application/json",
                     serde_json::to_vec(&serde_json::json!({"error": e.to_string(), "status": "error"})).unwrap(),
+                ),
+            }
+        } else if method == "GET" && path == "/v1/audit/bfa/samples" {
+            let p = artifacts_dir.join("bfa/index.json");
+            match fs::read(&p) {
+                Ok(b) => ("200 OK", "application/json", b),
+                Err(_) => (
+                    "200 OK",
+                    "application/json",
+                    serde_json::to_vec_pretty(&lab_api::bfa_samples_json()).unwrap(),
                 ),
             }
         } else if method == "POST" && path == "/v1/audit/bfa" {

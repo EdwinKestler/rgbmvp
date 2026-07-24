@@ -85,7 +85,14 @@
       "name": "BFA audit",
       "status": "closed",
       "doc": "docs/C3_CLOSED.md",
-      "surface": "elements-regtest"
+      "surface": "elements-regtest",
+      "browser_demo": "/audit",
+      "samples": [
+        "artifacts/public/bfa/honest.json",
+        "artifacts/public/bfa/overmint.json",
+        "artifacts/public/bfa/lie.json"
+      ],
+      "samples_api": "GET /v1/audit/bfa/samples"
     },
     {
       "id": "C4",
@@ -163,6 +170,10 @@
   },
   "secrets_policy": "This directory must never contain seeds, WIFs, preimages, or mnemonics.",
   "files": [
-    "artifacts/public/s3-browser-20260724.json"
+    "artifacts/public/s3-browser-20260724.json",
+    "artifacts/public/bfa/index.json",
+    "artifacts/public/bfa/honest.json",
+    "artifacts/public/bfa/overmint.json",
+    "artifacts/public/bfa/lie.json"
   ]
 }

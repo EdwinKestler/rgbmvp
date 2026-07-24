@@ -1,0 +1,31 @@
+{
+  "product": "rgbmvp",
+  "doc": "docs/C3_CLOSED.md",
+  "note": "Static C3 BFA history fixtures for /audit demo. Embedded witness_tx_hex; no oracle. Regtest origin.",
+  "samples": [
+    {
+      "id": "honest",
+      "title": "Honest two-mint history",
+      "expect": "ok",
+      "path": "bfa/honest.json",
+      "url": "/artifacts/public/bfa/honest.json",
+      "summary": "Two chained mints with correct seal, anchor, and vault backing."
+    },
+    {
+      "id": "overmint",
+      "title": "Over-mint (backing fail)",
+      "expect": "fail",
+      "path": "bfa/overmint.json",
+      "url": "/artifacts/public/bfa/overmint.json",
+      "summary": "Mint exceeds locked vault backing — audit fails backing check."
+    },
+    {
+      "id": "lie",
+      "title": "Lie about mint size (anchor fail)",
+      "expect": "fail",
+      "path": "bfa/lie.json",
+      "url": "/artifacts/public/bfa/lie.json",
+      "summary": "History claims a different mint size than the anchored transition — audit fails anchor."
+    }
+  ]
+}

@@ -124,6 +124,7 @@ fn router(state: AppState) -> Router {
         .route("/v1/rgb/verify", post(v1_rgb_verify))
         .route("/v1/rgb/issue", post(v1_rgb_issue))
         .route("/v1/rgb/transfer", post(v1_rgb_transfer))
+        .route("/v1/audit/bfa/samples", get(v1_bfa_samples))
         .route("/v1/audit/bfa", post(v1_audit_bfa))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -274,21 +275,46 @@ async fn artifact_manifest(State(s): State<AppState>) -> Response {
 
 async fn artifact_public(State(s): State<AppState>, Path(rest): Path<String>) -> Response {
     let name = rest.trim_start_matches('/');
-    if name.is_empty() || name.contains("..") || !lab_core::is_safe_path_id(name) {
-        if name == "manifest.json" || name == "s3-rgbmvp-live.json" {
-            return serve_artifact(&s, name).await;
-        }
-        // allow known public names even if path rules are strict on dots
-        if name.ends_with(".json")
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        {
-            return serve_artifact(&s, name).await;
-        }
+    if !is_safe_public_artifact_path(name) {
         return err_code(StatusCode::BAD_REQUEST, "bad_path", "bad artifact path");
     }
     serve_artifact(&s, name).await
+}
+
+/// Relative path under `artifacts/public/`: no `..`, segments [A-Za-z0-9._-], optional one dir.
+fn is_safe_public_artifact_path(name: &str) -> bool {
+    if name.is_empty() || name.contains("..") || name.starts_with('/') || name.contains('\\') {
+        return false;
+    }
+    if lab_core::is_safe_path_id(name) {
+        return true;
+    }
+    // e.g. bfa/honest.json
+    let parts: Vec<&str> = name.split('/').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    parts.iter().all(|seg| {
+        !seg.is_empty()
+            && *seg != "."
+            && *seg != ".."
+            && seg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    })
+}
+
+async fn v1_bfa_samples(State(s): State<AppState>) -> Response {
+    // Prefer catalog file; fall back to inline list if missing.
+    let p = s.artifacts_dir.join("bfa/index.json");
+    match tokio::fs::read(&p).await {
+        Ok(b) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(b))
+            .unwrap(),
+        Err(_) => Json(lab_api::bfa_samples_json()).into_response(),
+    }
 }
 
 async fn serve_artifact(s: &AppState, name: &str) -> Response {

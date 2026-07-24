@@ -5,68 +5,153 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>rgbmvp — BFA audit</title>
   <style>
-    :root { font-family: system-ui, sans-serif; color: #e8eef7; background: #0b1220; }
-    body { max-width: 900px; margin: 1.5rem auto; padding: 0 1rem; line-height: 1.45; }
-    h1 { font-size: 1.35rem; margin-bottom: 0.2rem; }
-    h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
-    .muted { color: #9fb0cc; font-size: 0.9rem; }
-    .card { background: #141e33; border: 1px solid #243352; border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0; }
-    a { color: #7eb6ff; }
-    nav { display: flex; gap: 0.65rem; flex-wrap: wrap; margin: 0.75rem 0 1rem; font-size: 0.9rem; }
-    nav a { text-decoration: none; padding: 0.35rem 0.65rem; border-radius: 6px; border: 1px solid #334866; background: #141e33; }
-    nav a.active { outline: 2px solid #7eb6ff; }
+    :root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#f2f4ee;background:#080b0a;--ink:#f2f4ee;--muted:#a5aea3;--line:#303a32;--surface:#111713;--surface-2:#171e19;--accent:#b7ff3c;--teal:#22e1c9;--amber:#ffc857;--bad:#ff7b7b}*{box-sizing:border-box}body{margin:0;line-height:1.5;background:radial-gradient(circle at 85% 0,rgba(183,255,60,.07),transparent 24rem),#080b0a}.shell{width:min(1000px,calc(100% - 2rem));margin:auto}.skip{position:fixed;top:-5rem;left:1rem;z-index:10;background:var(--accent);color:#080b0a;padding:.7rem 1rem;font-weight:800}.skip:focus{top:1rem}.topbar{border-bottom:1px solid var(--line)}.topbar .shell{min-height:72px;display:flex;align-items:center;gap:1rem}.brand{color:var(--ink);text-decoration:none;font-size:1.2rem;font-weight:900}.site-nav{margin-left:auto;display:flex;gap:.2rem}.site-nav a{color:var(--muted);text-decoration:none;padding:.65rem .75rem;border-radius:.45rem}.site-nav a:hover,.site-nav a[aria-current="page"]{color:var(--ink);background:var(--surface-2)}.network-badge{border:1px solid #8b6b21;color:var(--amber);border-radius:.35rem;padding:.35rem .55rem;font:700 .7rem ui-monospace,monospace}main{padding:3rem 0 5rem}h1{font-size:clamp(2.2rem,6vw,4.5rem);letter-spacing:-.05em;line-height:1;margin:.5rem 0 1rem}h2{font-size:1.3rem;margin:0 0 .55rem}.eyebrow{color:var(--accent);font:800 .75rem ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase}.lede{max-width:720px;color:var(--muted);font-size:1.05rem}.muted{color:var(--muted);font-size:.9rem}.card{background:var(--surface);border:1px solid var(--line);border-radius:.8rem;padding:1.25rem;margin:1.25rem 0}a{color:var(--teal)}
     textarea, button, input[type=file] {
       width: 100%; box-sizing: border-box; margin-top: 0.35rem;
-      background: #0b1220; color: #e8eef7; border: 1px solid #334866; border-radius: 6px; padding: 0.55rem 0.7rem;
+      min-height:44px;background:#090d0a;color:var(--ink);border:1px solid #455148;border-radius:.45rem;padding:.6rem .75rem;
     }
-    button { cursor: pointer; background: #2a6df4; border: none; font-weight: 600; margin-top: 0.75rem; }
+    button{cursor:pointer;background:var(--accent);color:#080b0a;border:none;font-weight:800;margin-top:.75rem;min-height:46px}
     button:hover { filter: brightness(1.08); }
-    .ok { color: #3ddc97; } .bad { color: #ff6b6b; }
+    button.secondary{background:var(--surface-2);color:var(--ink);border:1px solid #455148}
+    button.row-btn{width:auto;margin:0;padding:.5rem .85rem;font-size:.85rem}
+    .btn-row{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.75rem}
+    .ok{color:var(--accent)}.bad{color:var(--bad)}
     table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 0.75rem; }
     th, td { text-align: left; padding: 0.4rem 0.35rem; border-bottom: 1px solid #243352; }
-    th { color: #9fb0cc; }
-    pre { white-space: pre-wrap; word-break: break-word; font-size: 0.75rem; background: #0b1220; padding: 0.75rem; border-radius: 6px; max-height: 240px; overflow: auto; }
+    th{color:var(--muted)}pre{white-space:pre-wrap;word-break:break-word;font-size:.75rem;background:#090d0a;padding:.75rem;border:1px solid #252e27;border-radius:.45rem;max-height:240px;overflow:auto}
     .banner {
-      background: #1a2438; border: 1px solid #334866; color: #9fb0cc;
+      background:#171e19;border:1px solid #455148;color:var(--muted);
       padding: 0.65rem 0.85rem; border-radius: 8px; margin: 0.5rem 0; font-size: 0.88rem;
     }
+    .sample-card{border:1px solid var(--line);border-radius:.6rem;padding:.75rem;background:var(--surface-2);margin-top:.5rem}
+    .sample-card strong{display:block;margin-bottom:.25rem}
+    .chip{display:inline-block;font-size:.7rem;padding:.15rem .45rem;border-radius:999px;border:1px solid #455148;margin-left:.35rem}
+    .chip.ok{border-color:#4a6b2a;color:var(--accent)}
+    .chip.fail{border-color:#6b2a2a;color:var(--bad)}
+    :focus-visible{outline:3px solid var(--accent);outline-offset:3px}@media(max-width:760px){.topbar .shell{flex-wrap:wrap;padding:.8rem 0}.site-nav{order:3;width:100%;overflow:auto}.network-badge{margin-left:auto}main{padding-top:2rem}table{display:block;overflow:auto}}@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
   </style>
 </head>
-<body>
-  <h1>BFA audit</h1>
-  <p class="muted">Upload or paste a BFA history JSON (see <code>docs/C3_CLOSED.md</code>). No oracle — seal, anchor, vault checks.</p>
-  <nav>
-    <a href="/">Console</a>
-    <a href="/demo">Board</a>
-    <a href="/audit" class="active">Audit</a>
-  </nav>
+<body><a class="skip" href="#main">Skip to content</a><header class="topbar"><div class="shell"><a class="brand" href="/">rgbmvp</a><nav class="site-nav" aria-label="Primary navigation"><a href="/status">Proofs</a><a href="/">Lab</a><a href="/demo">Board</a><a href="/audit" aria-current="page">Audit</a><a href="https://github.com/EdwinKestler/rgbmvp" target="_blank" rel="noopener noreferrer">Docs ↗</a></nav><span class="network-badge">C3 DEMO</span></div></header><main id="main" class="shell">
+  <div class="eyebrow">C3 · Backed fungible assets</div><h1>Audit the full history, not a promise.</h1>
+  <p class="lede">Load a canned sample (or paste your own BFA history JSON). The lab checks seals, anchors, and backing without an oracle.</p>
   <div class="banner">
-    Prefer histories with embedded <code>witness_tx_hex</code> (as produced by <code>demo_c3_bfa_audit.sh</code>).
-    Labd will try Elements regtest RPC only as a fallback.
+    Samples include embedded <code>witness_tx_hex</code> from the C3 regtest demo — no live chain required to run the three proof cases.
+    Produce your own with <code>./scripts/demo_c3_bfa_audit.sh</code> or <code>rgbmvp bfa demo</code> (Elements regtest).
   </div>
+
   <div class="card">
-    <h2>History</h2>
-    <label class="muted">File</label>
+    <h2>1. Load a sample</h2>
+    <p class="muted" id="samples-status">Loading sample catalog…</p>
+    <div id="samples"></div>
+  </div>
+
+  <div class="card">
+    <h2>2. History JSON</h2>
+    <label class="muted" for="file">Upload file</label>
     <input type="file" id="file" accept="application/json,.json" />
-    <label class="muted">Or paste JSON</label>
+    <label class="muted" for="body">Or paste / edit JSON</label>
     <textarea id="body" rows="12" placeholder='{"name":"LiquidRgbUSD","ticker":"LRUSD", ... "mints":[...]}'></textarea>
-    <button type="button" id="go">Run audit</button>
-    <div id="summary" style="margin-top:1rem"></div>
+    <div class="btn-row">
+      <button type="button" class="row-btn secondary" id="copy">Copy JSON</button>
+      <button type="button" class="row-btn secondary" id="download">Download .json</button>
+      <button type="button" class="row-btn" id="go">Run audit</button>
+    </div>
+    <div id="summary" style="margin-top:1rem" role="status" aria-live="polite"></div>
     <table id="tbl" style="display:none">
       <thead><tr><th>#</th><th>Seal</th><th>Anchor</th><th>Backing</th><th>Detail</th></tr></thead>
       <tbody></tbody>
     </table>
     <pre id="raw"></pre>
   </div>
-  <script>
+  </main><script>
     const $ = (id) => document.getElementById(id);
-    $('file').addEventListener('change', async (e) => {
-      const f = e.target.files && e.target.files[0];
-      if (!f) return;
-      $('body').value = await f.text();
-    });
-    $('go').onclick = async () => {
+    const esc = value => String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+
+    function setBody(text) {
+      $('body').value = text;
+    }
+
+    async function loadSample(url, expect) {
+      $('summary').textContent = 'Loading sample…';
+      try {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error('fetch ' + url + ' → ' + r.status);
+        const text = await r.text();
+        // pretty-print if valid JSON
+        try {
+          setBody(JSON.stringify(JSON.parse(text), null, 2));
+        } catch (_) {
+          setBody(text);
+        }
+        $('summary').innerHTML = '<span class="muted">Loaded <code>' + esc(url) + '</code>'
+          + (expect ? ' · expect <span class="chip ' + (expect === 'ok' ? 'ok' : 'fail') + '">' + esc(expect) + '</span>' : '')
+          + ' · click <strong>Run audit</strong></span>';
+        $('raw').textContent = '';
+        $('tbl').style.display = 'none';
+      } catch (e) {
+        $('summary').innerHTML = '<span class="bad">' + esc(e) + '</span>';
+      }
+    }
+
+    async function loadCatalog() {
+      const host = $('samples');
+      try {
+        const r = await fetch('/v1/audit/bfa/samples');
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.statusText);
+        const list = j.samples || [];
+        $('samples-status').textContent = list.length
+          ? 'Pick a case (static fixtures under artifacts/public/bfa/).'
+          : 'No samples listed.';
+        host.innerHTML = '';
+        list.forEach((s) => {
+          const div = document.createElement('div');
+          div.className = 'sample-card';
+          const expect = s.expect || '';
+          div.innerHTML = '<strong>' + esc(s.title || s.id) + '</strong>'
+            + (expect ? '<span class="chip ' + (expect === 'ok' ? 'ok' : 'fail') + '">expect ' + esc(expect) + '</span>' : '')
+            + '<p class="muted" style="margin:.35rem 0">' + esc(s.summary || '') + '</p>';
+          const row = document.createElement('div');
+          row.className = 'btn-row';
+          const loadBtn = document.createElement('button');
+          loadBtn.type = 'button';
+          loadBtn.className = 'row-btn';
+          loadBtn.textContent = 'Load into editor';
+          loadBtn.onclick = () => loadSample(s.url || ('/artifacts/public/' + s.path), expect);
+          const loadRun = document.createElement('button');
+          loadRun.type = 'button';
+          loadRun.className = 'row-btn secondary';
+          loadRun.textContent = 'Load + audit';
+          loadRun.onclick = async () => {
+            await loadSample(s.url || ('/artifacts/public/' + s.path), expect);
+            await runAudit();
+          };
+          row.appendChild(loadBtn);
+          row.appendChild(loadRun);
+          div.appendChild(row);
+          host.appendChild(div);
+        });
+      } catch (e) {
+        $('samples-status').innerHTML = '<span class="bad">Catalog failed: ' + esc(e) + '</span> — try paths under <code>/artifacts/public/bfa/</code>.';
+        // hard-coded fallbacks
+        ['honest', 'overmint', 'lie'].forEach((id) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'row-btn secondary';
+          b.style.marginRight = '.5rem';
+          b.textContent = 'Load ' + id;
+          b.onclick = () => loadSample('/artifacts/public/bfa/' + id + '.json', id === 'honest' ? 'ok' : 'fail');
+          host.appendChild(b);
+        });
+      }
+    }
+
+    async function runAudit() {
       const text = $('body').value.trim();
+      if (!text) {
+        $('summary').innerHTML = '<span class="bad">Paste or load a history JSON first.</span>';
+        return;
+      }
       $('summary').textContent = 'Running…';
       $('tbl').style.display = 'none';
       $('raw').textContent = '';
@@ -79,28 +164,57 @@
         const j = await res.json();
         $('raw').textContent = JSON.stringify(j, null, 2);
         if (j.error) {
-          $('summary').innerHTML = '<span class="bad">' + (j.error || 'error') + '</span>';
+          $('summary').innerHTML = '<span class="bad">' + esc(j.error || 'error') + '</span>';
           return;
         }
         const ok = j.ok;
         $('summary').innerHTML = ok
-          ? '<span class="ok">' + (j.summary || 'audit OK') + '</span> · contract <code>' + (j.contract_id || '') + '</code>'
-          : '<span class="bad">' + (j.summary || 'audit FAILED') + '</span> · contract <code>' + (j.contract_id || '') + '</code>';
+          ? '<span class="ok">' + esc(j.summary || 'audit OK') + '</span> · contract <code>' + esc(j.contract_id || '') + '</code>'
+          : '<span class="bad">' + esc(j.summary || 'audit FAILED') + '</span> · contract <code>' + esc(j.contract_id || '') + '</code>';
         const tb = $('tbl').querySelector('tbody');
         tb.innerHTML = '';
         (j.mints || []).forEach((m) => {
           const tr = document.createElement('tr');
           const flag = (b) => b ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>';
-          tr.innerHTML = '<td>' + m.mint_index + '</td><td>' + flag(m.seal_ok) + '</td><td>'
+          tr.innerHTML = '<td>' + esc(m.mint_index) + '</td><td>' + flag(m.seal_ok) + '</td><td>'
             + flag(m.anchor_ok) + '</td><td>' + flag(m.backing_ok) + '</td><td class="muted">'
-            + (m.detail || '') + '</td>';
+            + esc(m.detail || '') + '</td>';
           tb.appendChild(tr);
         });
         $('tbl').style.display = 'table';
       } catch (err) {
-        $('summary').innerHTML = '<span class="bad">' + err + '</span>';
+        $('summary').innerHTML = '<span class="bad">' + esc(err) + '</span>';
+      }
+    }
+
+    $('file').addEventListener('change', async (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      setBody(await f.text());
+    });
+    $('go').onclick = runAudit;
+    $('copy').onclick = async () => {
+      const t = $('body').value;
+      try {
+        await navigator.clipboard.writeText(t);
+        $('summary').innerHTML = '<span class="ok">Copied history JSON to clipboard.</span>';
+      } catch (_) {
+        $('body').select();
+        document.execCommand('copy');
+        $('summary').innerHTML = '<span class="muted">Selected text — press Ctrl/Cmd+C to copy.</span>';
       }
     };
+    $('download').onclick = () => {
+      const t = $('body').value || '{}';
+      const blob = new Blob([t], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'bfa_history.json';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    };
+
+    loadCatalog();
   </script>
 </body>
 </html>

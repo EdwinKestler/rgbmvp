@@ -59,6 +59,7 @@ pub fn root_json() -> Value {
             "demo_wallets": "GET /v1/demo/wallets",
             "demo_activity": "GET /v1/demo/activity",
             "audit_bfa": "POST /v1/audit/bfa",
+            "audit_bfa_samples": "GET /v1/audit/bfa/samples",
             "phases": "GET /v1/phases"
         },
         "pages": {
@@ -66,6 +67,7 @@ pub fn root_json() -> Value {
             "demo_board": "/demo",
             "audit": "/audit",
             "docs_u4": "docs/U4_PUBLIC_HOSTING.md",
+            "docs_c3": "docs/C3_CLOSED.md",
             "docs_p3": "docs/P3_PLAN.md"
         },
         "cli": [
@@ -114,7 +116,9 @@ pub fn security_json(public_read_only: bool, loopback_bind: bool, token_configur
             "GET /v1/swap/{id}",
             "GET /v1/rgb/contracts",
             "GET /v1/rgb/plans/{id}",
-            "GET /v1/demo/*"
+            "GET /v1/demo/*",
+            "GET /v1/audit/bfa/samples",
+            "GET /artifacts/public/bfa/*"
         ],
         "doc": "docs/U4_PUBLIC_HOSTING.md"
     })
@@ -131,6 +135,8 @@ pub fn phases_json() -> Value {
              "slices": ["C0", "C1", "C2", "C3", "C4"]},
             {"id": "P3", "name": "Browser lab console", "status": "closed", "doc": "docs/P3_CLOSED.md",
              "slices": ["U0", "U1", "U2", "audit"]},
+            {"id": "C3", "name": "BFA audit", "status": "closed", "doc": "docs/C3_CLOSED.md",
+             "samples": "GET /v1/audit/bfa/samples"},
             {"id": "S3", "name": "RGB-wrapped claim", "status": "done", "doc": "docs/S3_RGB_WRAP.md",
              "surfaces": ["CLI", "HTTP", "browser"],
              "negatives": "partial-ci",
@@ -139,6 +145,43 @@ pub fn phases_json() -> Value {
             {"id": "U5", "name": "labd Axum platform", "status": "implemented", "doc": "docs/U5_AXUM.md"},
             {"id": "S5", "name": "Round-trip swap", "status": "open", "doc": "docs/ROADMAP_NEXT.md"},
             {"id": "C5", "name": "LiquiDEX comparison", "status": "docs-skeleton", "doc": "docs/C5_LIQUIDEX_COMPARISON.md"}
+        ]
+    })
+}
+
+/// Catalog of static BFA history samples for the /audit demo (fallback if index.json missing).
+pub fn bfa_samples_json() -> Value {
+    json!({
+        "product": lab_core::PRODUCT,
+        "api": lab_core::API_VERSION,
+        "path": "/v1/audit/bfa/samples",
+        "doc": "docs/C3_CLOSED.md",
+        "note": "Static fixtures with embedded witness_tx_hex (regtest origin). GET-only public surface.",
+        "samples": [
+            {
+                "id": "honest",
+                "title": "Honest two-mint history",
+                "expect": "ok",
+                "path": "bfa/honest.json",
+                "url": "/artifacts/public/bfa/honest.json",
+                "summary": "Two chained mints with correct seal, anchor, and vault backing."
+            },
+            {
+                "id": "overmint",
+                "title": "Over-mint (backing fail)",
+                "expect": "fail",
+                "path": "bfa/overmint.json",
+                "url": "/artifacts/public/bfa/overmint.json",
+                "summary": "Mint exceeds locked vault backing — audit fails backing check."
+            },
+            {
+                "id": "lie",
+                "title": "Lie about mint size (anchor fail)",
+                "expect": "fail",
+                "path": "bfa/lie.json",
+                "url": "/artifacts/public/bfa/lie.json",
+                "summary": "History claims a different mint size than the anchored transition — audit fails anchor."
+            }
         ]
     })
 }

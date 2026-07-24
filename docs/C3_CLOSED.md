@@ -58,4 +58,18 @@ rgbmvp bfa audit --history path/to/history.json
 
 - Public Liquid Testnet BFA (regtest is source of truth)  
 - Full Simplicity mint-gate on the same seal (C1 is separate container demo)  
-- Browser audit UI polish (CLI + JSON sufficient for ladder close)  
+- Full browser “generate live history” (regtest runner) — deferred; **static samples** on `/audit` instead  
+
+## Browser demo (`/audit`)
+
+Static fixtures (no live chain):
+
+| Sample | Path | Expect |
+|--------|------|--------|
+| Honest | `artifacts/public/bfa/honest.json` | audit OK |
+| Over-mint | `artifacts/public/bfa/overmint.json` | backing fail |
+| Lie | `artifacts/public/bfa/lie.json` | anchor fail |
+
+- Catalog: `GET /v1/audit/bfa/samples`  
+- Page: `http://127.0.0.1:8080/audit` → **Load sample** → **Run audit** / **Copy JSON**  
+
