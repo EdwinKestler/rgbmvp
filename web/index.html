@@ -30,11 +30,72 @@
     .cta { display:inline-flex; align-items:center; justify-content:center; min-height:46px; padding:.65rem 1rem; border-radius:.45rem; font-weight:800; text-decoration:none; }
     .cta.primary { background:var(--accent); color:#080b0a; }
     .cta.secondary { color:var(--ink); border:1px solid var(--line); }
-    .proof-visual { min-height:300px; padding:1.4rem; border:1px solid var(--line); border-radius:1rem; background:linear-gradient(145deg,rgba(34,225,201,.05),transparent 55%),var(--surface); position:relative; overflow:hidden; }
-    .rail { display:flex; align-items:center; gap:.75rem; margin:1.2rem 0; font:700 .75rem ui-monospace,monospace; letter-spacing:.08em; }
-    .rail::after { content:""; height:1px; flex:1; background:linear-gradient(90deg,var(--line),var(--accent)); }
-    .swap-node { margin:2rem auto; max-width:250px; text-align:center; padding:1rem; border:1px dashed #677566; border-radius:.65rem; }
-    .checks { display:flex; justify-content:center; gap:1rem; margin-top:.55rem; color:var(--accent); font-size:.75rem; }
+    .proof-visual {
+      min-height:300px; padding:1.25rem 1.35rem 1.1rem; border:1px solid var(--line); border-radius:1rem;
+      background:
+        radial-gradient(circle at 92% 12%, rgba(183,255,60,.07), transparent 40%),
+        linear-gradient(145deg,rgba(34,225,201,.05),transparent 55%),
+        var(--surface);
+      position:relative; overflow:hidden;
+    }
+    .chain-lane { margin:0 0 1rem; }
+    .chain-lane-head {
+      display:flex; align-items:center; gap:.45rem; margin-bottom:.55rem;
+      font:700 .72rem ui-monospace,monospace; letter-spacing:.08em; color:var(--muted);
+    }
+    .chain-lane-head .dot {
+      width:.45rem; height:.45rem; border-radius:50%; background:var(--accent);
+      box-shadow:0 0 0 3px rgba(183,255,60,.15);
+    }
+    .chain-row { display:flex; align-items:center; gap:.55rem; flex-wrap:wrap; }
+    .chain-nodes { display:flex; align-items:center; gap:0; flex:1; min-width:0; }
+    .chain-node {
+      width:1.55rem; height:1.55rem; border-radius:.28rem; flex-shrink:0;
+      background:linear-gradient(160deg,#3d5c22,#1f3312); border:1px solid #5a8a2a;
+      box-shadow:inset 0 0 0 1px rgba(183,255,60,.12);
+    }
+    .chain-node.current {
+      background:transparent; border:2px solid var(--accent);
+      box-shadow:0 0 0 3px rgba(183,255,60,.12), 0 0 18px rgba(183,255,60,.18);
+    }
+    .chain-link {
+      width:1.05rem; height:2px; flex-shrink:0;
+      background:linear-gradient(90deg,#3a4a32,var(--accent));
+      opacity:.85;
+    }
+    .chain-anchor {
+      display:flex; flex-direction:column; align-items:flex-start; gap:.15rem;
+      font:600 .68rem ui-monospace,monospace; color:var(--muted); white-space:nowrap;
+    }
+    .chain-anchor .ok-line { color:var(--accent); display:inline-flex; align-items:center; gap:.3rem; }
+    .chain-anchor .ok-line::before {
+      content:""; width:.55rem; height:.55rem; border-radius:50%;
+      border:1.5px solid var(--accent); box-sizing:border-box;
+      background:radial-gradient(circle at 50% 50%, var(--accent) 35%, transparent 40%);
+    }
+    .swap-node {
+      margin:.35rem auto 1rem; max-width:280px; text-align:center; padding:.85rem 1rem .75rem;
+      border:1px dashed #5a6b58; border-radius:.65rem; background:rgba(8,11,10,.45);
+      position:relative;
+    }
+    .swap-node::before, .swap-node::after {
+      content:""; position:absolute; left:50%; width:1px; height:.7rem;
+      background:linear-gradient(180deg, transparent, var(--accent));
+      transform:translateX(-50%);
+    }
+    .swap-node::before { top:-.75rem; }
+    .swap-node::after { bottom:-.75rem; background:linear-gradient(180deg, var(--accent), transparent); }
+    .swap-node strong {
+      display:block; font:700 .72rem ui-monospace,monospace; letter-spacing:.1em;
+      color:var(--muted); margin-bottom:.45rem;
+    }
+    .checks { display:flex; justify-content:center; flex-wrap:wrap; gap:.55rem .85rem; color:var(--accent); font-size:.72rem; font-weight:700; }
+    .checks span { display:inline-flex; align-items:center; gap:.28rem; }
+    .checks span::before { content:"✓"; font-size:.7rem; opacity:.95; }
+    .proof-visual-foot {
+      margin:.25rem 0 0; text-align:center; font-size:.78rem; color:var(--muted);
+    }
+    .proof-visual-foot .ok { font-weight:700; }
     .metrics { display:grid; grid-template-columns:repeat(3,1fr); border:1px solid var(--line); border-radius:.8rem; overflow:hidden; margin:2rem 0 4rem; }
     .metric { padding:1.2rem 1.4rem; background:rgba(17,23,19,.75); }
     .metric + .metric { border-left:1px solid var(--line); }
@@ -74,7 +135,18 @@
     .links a { display: inline-block; margin-right: 0.75rem; margin-top: 0.35rem; font-size: 0.88rem; }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
     :focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
-    @media (max-width:760px) { .hero { grid-template-columns:1fr; } .proof-visual { min-height:260px; } .metrics { grid-template-columns:1fr; } .metric + .metric { border-left:0; border-top:1px solid var(--line); } .status-card .timeline { grid-template-columns:1fr 1fr; } .topbar .shell { flex-wrap:wrap; padding:.8rem 0; gap:.4rem; } .site-nav { order:3; width:100%; overflow:auto; } .network-badge { margin-left:auto; } }
+    @media (max-width:760px) {
+      .hero { grid-template-columns:1fr; }
+      .proof-visual { min-height:260px; }
+      .chain-node { width:1.35rem; height:1.35rem; }
+      .chain-link { width:.75rem; }
+      .metrics { grid-template-columns:1fr; }
+      .metric + .metric { border-left:0; border-top:1px solid var(--line); }
+      .status-card .timeline { grid-template-columns:1fr 1fr; }
+      .topbar .shell { flex-wrap:wrap; padding:.8rem 0; gap:.4rem; }
+      .site-nav { order:3; width:100%; overflow:auto; }
+      .network-badge { margin-left:auto; }
+    }
     @media (max-width:560px) { .row { grid-template-columns:1fr; } main { padding-top:2rem; } h1 { font-size:2.65rem; } .status-card { grid-template-columns:1fr; } .status-card .timeline { grid-column:1; } }
     @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } *,*::before,*::after { animation-duration:.01ms!important; transition-duration:.01ms!important; } }
     .celebrate {
@@ -118,10 +190,37 @@
         <div class="hero-actions"><a class="cta primary" href="/status">Explore live proofs →</a><a class="cta secondary" href="#lab">Open lab console</a></div>
       </div>
       <div class="proof-visual" aria-label="Atomic twin swap across Bitcoin testnet and Liquid testnet">
-        <div class="rail">BITCOIN TESTNET</div>
-        <div class="swap-node"><strong>ATOMIC TWIN SWAP</strong><div class="checks"><span>✓ fund</span><span>✓ claim</span><span>✓ verify</span></div></div>
-        <div class="rail">LIQUID TESTNET</div>
-        <p class="muted" style="margin:1.25rem 0 0">Separate RGB contract IDs. Shared atomic outcome. No bridge custody.</p>
+        <div class="chain-lane">
+          <div class="chain-lane-head"><span class="dot" aria-hidden="true"></span> BITCOIN TESTNET</div>
+          <div class="chain-row">
+            <div class="chain-nodes" aria-hidden="true">
+              <span class="chain-node"></span><span class="chain-link"></span>
+              <span class="chain-node"></span><span class="chain-link"></span>
+              <span class="chain-node"></span><span class="chain-link"></span>
+              <span class="chain-node"></span><span class="chain-link"></span>
+              <span class="chain-node current"></span>
+            </div>
+            <div class="chain-anchor"><span>Anchor UTXO</span><span class="ok-line">CONFIRMED</span></div>
+          </div>
+        </div>
+        <div class="swap-node">
+          <strong>ATOMIC SWAP STATE</strong>
+          <div class="checks"><span>Lock</span><span>Transfer</span><span>Reveal</span></div>
+        </div>
+        <div class="chain-lane">
+          <div class="chain-lane-head"><span class="dot" aria-hidden="true"></span> LIQUID TESTNET</div>
+          <div class="chain-row">
+            <div class="chain-nodes" aria-hidden="true">
+              <span class="chain-node"></span><span class="chain-link"></span>
+              <span class="chain-node"></span><span class="chain-link"></span>
+              <span class="chain-node"></span><span class="chain-link"></span>
+              <span class="chain-node"></span><span class="chain-link"></span>
+              <span class="chain-node current"></span>
+            </div>
+            <div class="chain-anchor"><span>Anchor Output</span><span class="ok-line">CONFIRMED</span></div>
+          </div>
+        </div>
+        <p class="proof-visual-foot"><span class="ok">✓</span> Cross-chain state transition verified end-to-end.</p>
       </div>
     </section>
 
