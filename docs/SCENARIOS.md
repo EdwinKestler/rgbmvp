@@ -111,7 +111,7 @@ BTC fixture: [`fixtures/testnet_btc.json`](../fixtures/testnet_btc.json).
 | S4 coordinator | CLI session under `.rgbmvp/swaps/` (+ P3/S3 guided UI) |
 | S2 refund | **CLI done** — `swap refund-btc` / `swap refund-lq` (CSV mature) |
 | S5 round-trip | **Open / deferred** — twin reverse sessions; see [ROADMAP_NEXT.md](./ROADMAP_NEXT.md) |
-| S3 negatives (CI) | **Partial** — offline phase/`claim_verify` + preimage extract tests in `lab_rgb`; full fixture matrix open |
+| S3 negatives (CI) | **Closed** — phase/preimage tests + mutated claim witnesses/plans + fake broadcaster/verifier cases in required CI |
 | S3 HTTP + browser | **Done** — Axum `/v1` + console mode (value vs rgb_wrap); preimage never in UI; live phase=done |
 | Service extraction + U5 | **Done** — `SwapService` / `lab_api::s3`; default labd Axum ([U5_AXUM.md](./U5_AXUM.md)) |
 | C5 LiquiDEX comparison | **Partial** — [C5_LIQUIDEX_COMPARISON.md](./C5_LIQUIDEX_COMPARISON.md) skeleton |
@@ -199,4 +199,4 @@ P0 web verifier must not hard-code assumptions that block U0–U2 (shared API ty
 - P1 at least one public **value** HTLC swap (user↔bot acceptable).
 - P2 C0 + C3 green on CI; optional public testnet if tooling allows.
 - P3 lab console closed on localhost operator model.
-- **Ladder (2026-07-24):** services + U5 + S3 browser/API **closed**; S3 negatives **partial**; next protocol **S5**; C5 docs polish optional ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)).
+- **Ladder (2026-07-27):** services + U5 + S3 browser/API + S3 negative matrix **closed**; next protocol **S5**; C5 docs polish optional ([ROADMAP_NEXT.md](./ROADMAP_NEXT.md)).

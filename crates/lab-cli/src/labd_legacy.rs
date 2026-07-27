@@ -561,4 +561,3 @@ fn write_http_response(
     let _ = stream.write_all(headers.as_bytes());
     let _ = stream.write_all(body);
 }
-

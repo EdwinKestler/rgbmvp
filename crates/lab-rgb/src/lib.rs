@@ -328,14 +328,7 @@ fn plan_transfer_core(
             0,
         )?
     } else {
-        rgb20::build_transfer(
-            contract_id,
-            prev_amount,
-            send,
-            bob_target,
-            change_target,
-            0,
-        )?
+        rgb20::build_transfer(contract_id, prev_amount, send, bob_target, change_target, 0)?
     };
 
     let p = parse32_hex(internal_key_hex, "internal_key")?;
@@ -390,10 +383,7 @@ pub fn verify_against_witness(
     let parts: Vec<_> = plan.alice_seal.split(':').collect();
     let seal = seal::LiquidSeal {
         txid: parts.first().copied().unwrap_or("").to_string(),
-        vout: parts
-            .get(1)
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0),
+        vout: parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(0),
     };
 
     match seal::verify_seal_closure(witness, &seal, &plan.commitment_spk_hex) {
@@ -518,5 +508,99 @@ mod s3_plan_tests {
         assert!(claim.bob_seal_placeholder.starts_with("witness:1:"));
         assert_ne!(claim.bundle_id_hex, fund.bundle_id_hex);
         assert_ne!(claim.commitment_spk_hex, fund.commitment_spk_hex);
+    }
+
+    fn claim_fixture() -> (TransferPlan, seal::WitnessTx) {
+        let seal = format!("{}:0", "aa".repeat(32));
+        let htlc = format!("{}:1", "bb".repeat(32));
+        let issue = issue_nia(&IssueRequest {
+            name: "S3NegativeMatrix".into(),
+            ticker: "s3n".into(),
+            supply: 5000,
+            seal: seal.clone(),
+            chain: "liquid-testnet".into(),
+        })
+        .unwrap();
+        let fund = plan_transfer_to_seal(
+            &issue.contract_id,
+            5000,
+            5000,
+            &seal,
+            &htlc,
+            None,
+            DEMO_INTERNAL_XONLY_HEX,
+            31,
+            "s3n",
+            "liquid-testnet",
+        )
+        .unwrap();
+        let claim = plan_claim_transfer(
+            &issue.contract_id,
+            &fund.transition_opid_hex,
+            0,
+            5000,
+            5000,
+            &htlc,
+            1,
+            None,
+            DEMO_INTERNAL_XONLY_HEX,
+            32,
+            "s3n",
+            "liquid-testnet",
+        )
+        .unwrap();
+        let witness = seal::WitnessTx {
+            txid: "cc".repeat(32),
+            vin_outpoints: vec![("bb".repeat(32), 1)],
+            vouts_spk_hex: vec![claim.commitment_spk_hex.clone(), "0014".into()],
+        };
+        (claim, witness)
+    }
+
+    #[test]
+    fn claim_fixture_verifies_before_mutation() {
+        let (plan, witness) = claim_fixture();
+        let result = verify_against_witness(&plan, &witness, "https://example.invalid").unwrap();
+        assert_eq!(result.status, "valid");
+        assert!(result.checks.iter().all(|check| check.ok));
+    }
+
+    #[test]
+    fn wrong_commitment_spk_is_invalid() {
+        let (plan, mut witness) = claim_fixture();
+        witness.vouts_spk_hex[0] = "5120".to_string() + &"00".repeat(32);
+        let result = verify_against_witness(&plan, &witness, "https://example.invalid").unwrap();
+        assert_eq!(result.status, "invalid");
+        assert!(result
+            .checks
+            .iter()
+            .any(|check| check.name == "seal_closure" && !check.ok));
+        assert!(result
+            .checks
+            .iter()
+            .any(|check| check.name == "anchor_verify" && !check.ok));
+    }
+
+    #[test]
+    fn wrong_seal_is_invalid() {
+        let (plan, mut witness) = claim_fixture();
+        witness.vin_outpoints[0] = ("dd".repeat(32), 1);
+        let result = verify_against_witness(&plan, &witness, "https://example.invalid").unwrap();
+        assert_eq!(result.status, "invalid");
+        assert!(result
+            .checks
+            .iter()
+            .any(|check| check.name == "seal_closure" && !check.ok));
+    }
+
+    #[test]
+    fn corrupted_serialized_plan_is_rejected() {
+        let (plan, witness) = claim_fixture();
+        let mut encoded = serde_json::to_value(&plan).unwrap();
+        encoded["message_hex"] = serde_json::json!("not-hex");
+        let corrupted: TransferPlan = serde_json::from_value(encoded).unwrap();
+        let err =
+            verify_against_witness(&corrupted, &witness, "https://example.invalid").unwrap_err();
+        assert!(err.to_string().contains("message hex"));
     }
 }

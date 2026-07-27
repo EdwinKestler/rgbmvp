@@ -144,7 +144,7 @@ Do **not** add S3 mutation business logic to the handwritten HTTP server and the
 |-------|------|----------|--------|
 | 0a | Docker Trivy `load: true` | CI | **Done** (`.github/workflows/docker-public.yml`) |
 | 0b | Services + public swap view shared | prep for U5 | **Done** — `SwapService` + `lab_api::s3` fund-wrap/claim |
-| 1 | S3 offline negative matrix + witness extract tests | S3 harden | **Partial** — offline unit tests in CI; full fixture/fake-adapter matrix still open |
+| 1 | S3 offline negative matrix + witness extract tests | S3 harden | **Done** — real verifier mutations + fake broadcaster/verifier cases in required CI |
 | 2 | Axum/Hyper labd | **U5** — [U5_AXUM.md](./U5_AXUM.md) | **Done** (default); `LABD_HTTP=legacy` fallback |
 | 3 | Authenticated S3 HTTP + browser (preserve U2/U4) | S3 surfaces | **Done** — live HTTP `s3-browser-20260724-0112` → phase=done; console mode |
 | 4 | Round-trip twin swaps | **S5** | **Open / deferred** |
@@ -164,15 +164,16 @@ labd/Axum   → HTTP routing + U4 middleware; same services (U5)
 
 ### S3 negatives (CI)
 
-**Partial today:** offline domain + extract tests in `lab_rgb` (no public faucet).  
-**Still open:** complete negative matrix (fixtures, FakeBroadcaster/FakeRgbVerifier cases), required CI gate for every documented negative.  
-Optional: live testnet happy path via operator / `workflow_dispatch` only.
+**Done:** offline domain/extract tests, real claim-plan/witness mutations, and
+FakeBroadcaster/FakeRgbVerifier application-service cases run in the required
+`lab-rgb` + `lab-api` CI job. Optional live testnet mutation remains operator-run
+or `workflow_dispatch` only; public faucet state is not a deterministic CI gate.
 
 ### Priority recommendation (status as of 2026-07-24)
 
 | Priority | Item | Status |
 |----------|------|--------|
-| 1 | S3 negative automation | **Partial** — offline yes; full matrix open |
+| 1 | S3 negative automation | **Closed** — offline verifier + application-service matrix required in CI |
 | 2 | Service extraction + Axum (U5) | **Closed** |
 | 3 | S3 browser/API workflow | **Closed** — live evidence in `artifacts/public/s3-browser-20260724.json` |
 | 4 | S5 round-trip | **Open** |
@@ -193,7 +194,7 @@ Optional: live testnet happy path via operator / `workflow_dispatch` only.
 9. ~~**Service extraction** (`lab_api::s3` / `SwapService`).~~  
 10. ~~**U5** Axum default labd.~~ → [U5_AXUM.md](./U5_AXUM.md)  
 11. ~~**S3 HTTP + browser** + live testnet path.~~ → [S3_RGB_WRAP.md](./S3_RGB_WRAP.md) · `artifacts/public/s3-browser-20260724.json`  
-12. **S3 negatives (finish):** fixture/fake-adapter matrix in required CI.  
+12. ~~**S3 negatives:** fixture/fake-adapter matrix in required CI.~~
 13. **S5** round-trip twin swaps (protocol).  
 14. **C5** docs polish (positioning).  
 15. Optional: drop `LABD_HTTP=legacy` after soak.  

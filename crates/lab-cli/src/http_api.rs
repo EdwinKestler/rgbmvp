@@ -1120,4 +1120,3 @@ pub(crate) fn handle_bfa_audit_post(body: &str) -> Result<lab_rgb::bfa::BfaAudit
     };
     lab_rgb::bfa::audit_history(&hist, &fetch)
 }
-
