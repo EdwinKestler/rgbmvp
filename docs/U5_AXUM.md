@@ -10,14 +10,15 @@
 rgbmvp serve --bind 127.0.0.1:8080
 # logs: labd (axum/U5) listening on …
 
-# optional: previous handwritten TCP server
+# rollback-only fallback retained through the first public soak
 LABD_HTTP=legacy rgbmvp serve
 ```
 
 ## Why U5
 
 Historically, `rgbmvp serve` used a handwritten TCP HTTP/1.1 loop (still available as
-`LABD_HTTP=legacy`). That became risky as S3/S5 added mutations.
+`LABD_HTTP=legacy`). Axum is the default; the legacy backend is rollback insurance,
+not an alternative for new feature development.
 
 **U5 (default):** transport/platform is **Axum over Hyper**, while keeping:
 
@@ -61,7 +62,18 @@ Blocking LWK / filesystem / `reqwest::blocking` must not occupy Tokio workers
 - [x] `/v1` shapes compatible with current console  
 - [x] U4 mutation gate + CORS on Axum middleware  
 - [x] GET `/v1/swap/*` uses `public_swap_view` (preimage redacted)  
-- [x] Dual path: `LABD_HTTP=legacy` keeps handwritten TCP server for one release  
+- [x] Dual path: `LABD_HTTP=legacy` retained through the first public soak
 - [x] Blocking LWK/verify work via `spawn_blocking`  
 - [ ] Full parity automated suite vs legacy (expand tests as needed)  
-- [ ] Remove legacy after soak
+- [ ] Remove legacy only after the first successful 24–48h soak, parity review,
+  rollback sign-off, and explicit post-soak approval
+
+## Legacy removal gate
+
+Do not remove the module, environment switch, or its documentation during the
+freeze or first soak. Removal is a later cleanup change and requires all of:
+
+1. the exact Axum revision completes the public GET-only soak;
+2. U4 security checks and shared `/v1` response/redaction checks remain green;
+3. operators confirm that rollback to `LABD_HTTP=legacy` was not needed;
+4. a separate change records the fallback-removal rollback plan and approval.

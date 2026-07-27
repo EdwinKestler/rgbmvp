@@ -66,6 +66,7 @@ administrator approval are still required before announcement.
 | Gitleaks on CI | ✅ `ci.yml` |
 | Image scan (Trivy HIGH/CRITICAL) | ✅ `docker-public.yml` |
 | Rate limit `POST /v1/rgb/verify` | ✅ `LABD_VERIFY_RATE_LIMIT` (default 30/min/IP) |
+| `LABD_HTTP=legacy` rollback backend | ✅ retained through first soak; removal gated afterward |
 | 24–48h soak (GET only) | ⏳ **operator** after first public URL |
 | Announce | ⏳ after soak |
 
@@ -79,7 +80,11 @@ administrator approval are still required before announcement.
    - `GET /status` and `/v1/health` OK  
 3. Leave live **24–48h**; watch Cloud Run metrics and budget alerts.  
 4. Only GET traffic; no wallet mounts; no `LABD_API_TOKEN`.  
-5. Then announce (README already states read-only demo).
+5. Keep `LABD_HTTP=legacy` available as rollback insurance throughout the soak;
+   do not add features to it or switch without recording the incident.
+6. After a successful soak, record parity/rollback sign-off. Legacy removal is a
+   separate approved cleanup; it is not a publication prerequisite.
+7. Then announce (README already states read-only demo).
 
 ### Announce blurb (copy)
 

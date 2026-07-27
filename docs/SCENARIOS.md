@@ -110,11 +110,11 @@ BTC fixture: [`fixtures/testnet_btc.json`](../fixtures/testnet_btc.json).
 | S3 RGB-wrapped claim | **Done** (CLI + HTTP/browser) — [S3_RGB_WRAP.md](./S3_RGB_WRAP.md); live CLI + HTTP evidence (`s3-browser-20260724-0112`, `artifacts/public/s3-*.json`) |
 | S4 coordinator | CLI session under `.rgbmvp/swaps/` (+ P3/S3 guided UI) |
 | S2 refund | **CLI done** — `swap refund-btc` / `swap refund-lq` (CSV mature) |
-| S5 round-trip | **Open / deferred** — twin reverse sessions; see [ROADMAP_NEXT.md](./ROADMAP_NEXT.md) |
+| S5 round-trip | **Deferred / non-blocking** — post-freeze extension milestone; P1/S3 closure does not depend on it; see [ROADMAP_NEXT.md](./ROADMAP_NEXT.md) |
 | S3 negatives (CI) | **Closed** — phase/preimage tests + mutated claim witnesses/plans + fake broadcaster/verifier cases in required CI |
 | S3 HTTP + browser | **Done** — Axum `/v1` + console mode (value vs rgb_wrap); preimage never in UI; live phase=done |
 | Service extraction + U5 | **Done** — `SwapService` / `lab_api::s3`; default labd Axum ([U5_AXUM.md](./U5_AXUM.md)) |
-| C5 LiquiDEX comparison | **Partial** — [C5_LIQUIDEX_COMPARISON.md](./C5_LIQUIDEX_COMPARISON.md) skeleton |
+| C5 LiquiDEX comparison | **CLOSED (docs)** — sourced PSET/LiquiDEX positioning in [C5_LIQUIDEX_COMPARISON.md](./C5_LIQUIDEX_COMPARISON.md); no protocol implementation claim |
 | P1 closure | **CLOSED** for **value** HTLC path — [`P1_CLOSED.md`](./P1_CLOSED.md); S3 was always deferred there |
 
 **HTLC live path (`p1-live`, 2026-07-21):**
@@ -149,7 +149,7 @@ BTC RGB anchor (earlier): [`2a573998…1806`](https://blockstream.info/testnet/t
 | C2 | Mint-gate burn variant | CLI, regtest | **CLOSED** — burn to empty SPK + recursion; not-burn reject ([C2_CLOSED.md](./C2_CLOSED.md)) |
 | C3 | BFA schema + audit | CLI, regtest | **CLOSED** — honest pass; over-mint fail; lie fails anchor |
 | C4 | Time-locked staking covenant | CLI, regtest | **CLOSED** — early reject; mature principal-home; wrong-dest/amount reject ([C4_CLOSED.md](./C4_CLOSED.md)) |
-| C5 | (Stretch) LiquiDEX / native asset swap | docs | Optional comparison — [C5_LIQUIDEX_COMPARISON.md](./C5_LIQUIDEX_COMPARISON.md) |
+| C5 | (Stretch) LiquiDEX / native asset swap | docs | **CLOSED (docs)** — sourced comparison; implementation remains out of scope ([C5_LIQUIDEX_COMPARISON.md](./C5_LIQUIDEX_COMPARISON.md)) |
 
 **Exit:** at least C0 + C3 demonstrated with public writeup; others in CI regtest.
 
@@ -168,7 +168,7 @@ Not a new consensus phase—**UX only**.
 | U2 | Swap wizard | **CLOSED** — guided **value** HTLC fund/claim; demo-u2 phase done |
 | U3 | Hardware / Marina path (optional) | Deferred |
 | **U4** | Public hosting security gate | **Implemented** — [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md); public read-only + Bearer mutations; deploy sketches in `deploy/` |
-| **U5** | labd Axum/Hyper platform | **Implemented** — [U5_AXUM.md](./U5_AXUM.md); default `rgbmvp serve`; `LABD_HTTP=legacy` fallback; does **not** reopen U4 or P3 |
+| **U5** | labd Axum/Hyper platform | **Implemented** — [U5_AXUM.md](./U5_AXUM.md); default `rgbmvp serve`; `LABD_HTTP=legacy` retained through first soak as rollback insurance; does **not** reopen U4 or P3 |
 
 **UI refresh (2026-07-24):** implemented and validated across `U0`–`U2`,
 `U4`, `R4`–`R6`, `S3`, and `C3`; presentation only, with no `/v1` or protocol
