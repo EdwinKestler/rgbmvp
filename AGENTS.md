@@ -23,19 +23,20 @@ Headless protocol kit: [docs/HEADLESS.md](docs/HEADLESS.md).
 
 ## Project Memory (optional Redis discovery cache)
 
-**Humans may ignore this.** Agents: use only `scripts/project_memory.py`.
+**Humans may ignore this.** Agents: use the portable root entrypoint; the script path is compatibility-only.
 
 ```bash
-python3 scripts/project_memory.py status   # 0=fresh, 2=stale/missing, 1=error
-python3 scripts/project_memory.py index    # if status ≠ 0
-python3 scripts/project_memory.py search "QUERY" --limit 5
+python3 project-memory.py status   # 0=fresh, 2=stale/missing, 1=error
+python3 project-memory.py index --incremental    # if status ≠ 0
+python3 project-memory.py validate
+python3 project-memory.py search "QUERY" --limit 5
 ```
 
 - Hits are **pointers only** — open the file before claiming or editing; cite the file, not Redis.  
 - After changing indexed files, re-`index` and confirm `status` exit `0`.  
 - If Redis is down: continue from files; set/disclose `cache_consulted: false`.  
 - **Never** `FLUSHDB` / `FLUSHALL`, other namespaces, secrets in the cache, or raw Redis keys.  
-- Default: `redis://localhost:6379/0` · override: `--url` or `RGBMVP_PROJECT_MEMORY_URL`.
+- Default: `redis://localhost:6379/0` · override: `--url`, `PROJECT_MEMORY_URL`, or legacy `RGBMVP_PROJECT_MEMORY_URL`.
 
 Full contract: [docs/PROJECT_MEMORY.md](docs/PROJECT_MEMORY.md) · protocol: [docs/M2M.md](docs/M2M.md) §3.
 

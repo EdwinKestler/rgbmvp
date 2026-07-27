@@ -202,7 +202,8 @@ programs/   SimplicityHL `.simf` (C0 rgb_anchor)
 web/        index.html (verify/swap) · demo.html (read-only board)
 fixtures/   testnet wallet roles (public BIP39 / BTC address only)
 docs/       architecture, scenarios, P1/C0 closure, P2 plan
-scripts/    bootstrap, project_memory, regtest_simplicity, demo_c0_simplicity
+project-memory.py + project_memory/    portable v2 agent source-discovery cache
+scripts/    bootstrap, project-memory compatibility, regtest_simplicity, demo_c0_simplicity
 docker/     Elements 23.3 Simplicity regtest conf
 ```
 

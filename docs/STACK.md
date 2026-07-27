@@ -10,7 +10,7 @@
 | Public API | `labd` HTTP JSON `/v1` | CLI and web share one contract (RGB-oriented; may sit beside `lwk_cli` server) |
 | CLI | `rgbmvp` binary | Lab scenarios; can shell out to or embed LWK |
 | Web verifier | Static + `/v1` | Small surface; P3 can load `lwk_wasm` for L-BTC only |
-| Project memory | `scripts/project_memory.py` + local Redis | Agent discovery only |
+| Project memory | `project-memory.py` portable v2 bundle + local Redis | Agent discovery only |
 | Lightning | **Not required for P0/P1 core** | CLN = Bitcoin LN; LWK uses **Boltz** for LBTC/LN bridges—orthogonal to RGB-on-Liquid |
 
 ---
@@ -188,7 +188,7 @@ pip install -e ".[dev]"
 # Explorer: https://blockstream.info/liquidtestnet/
 
 # Optional project memory
-python scripts/project_memory.py index
+python3 project-memory.py index --incremental
 ```
 
 ## References

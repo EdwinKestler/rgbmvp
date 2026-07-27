@@ -82,9 +82,9 @@ Map every feature to a scenario id (e.g. `R4`, `S3`, `C0`, `U2`).
 | Authoritative truth | **Never** Redis — always open the file |
 | Hit meaning | Pointer only: `path` + line range + score + snippet |
 | Storage | Local Redis, default `redis://localhost:6379/0` |
-| Tool | **Only** `scripts/project_memory.py` (stdlib Python; no redis-py, no external embeddings) |
-| Namespace | `rgbmvp:project-memory:v1:*` (from project directory name) |
-| Schema | `project-memory:v1` |
+| Tool | **Canonical:** `project-memory.py`; `scripts/project_memory.py` is compatibility-only |
+| Namespace | `rgbmvp:project-memory:v2:*` (configured project slug) |
+| Schema | `project-memory:v2` |
 | Embedding | Deterministic feature-hash unigram+bigram, 384-d, cosine + lexical |
 | Human requirement | **None** — Redis may be down; lab product does not depend on it |
 
@@ -93,17 +93,19 @@ Map every feature to a scenario id (e.g. `R4`, `S3`, `C0`, `U2`).
 All output is **JSON**. Prefer `python3` if `python` is missing.
 
 ```bash
-python3 scripts/project_memory.py status
+python3 project-memory.py status
 # exit 0 = fresh; exit 2 = missing/stale/invalid; exit 1 = error
 
-python3 scripts/project_memory.py index    # rebuild this namespace only
-python3 scripts/project_memory.py search "QUERY" --limit 5
-python3 scripts/project_memory.py clear    # this namespace only — never FLUSHDB
+python3 project-memory.py index --incremental    # atomic generation switch
+python3 project-memory.py validate
+python3 project-memory.py search "QUERY" --limit 5
+python3 project-memory.py clear    # this namespace only — never FLUSHDB
 ```
 
 | Env / flag | Purpose |
 |------------|---------|
-| `RGBMVP_PROJECT_MEMORY_URL` | Override Redis URL |
+| `PROJECT_MEMORY_URL` | Portable Redis URL override |
+| `RGBMVP_PROJECT_MEMORY_URL` | Legacy compatible Redis URL override |
 | `--url redis://host:port/db` | Same |
 
 Unsupported: auth, TLS, non-`redis` schemes, raw Redis key protocols, Redis Stack modules.
@@ -135,7 +137,7 @@ PROCEDURE validate:
 ### 3.5 What is indexed vs excluded
 
 **Indexed (source-oriented):** `README.md`, `AGENTS.md`, `docs/**/*.md`, `src/**`, `tests/**`, selected `scripts/**`, etc.  
-**Excluded:** `.env`, `.rgbmvp/`, secrets, `target/`, `.venv/`, large binaries, `scripts/project_memory.py` itself.
+**Excluded:** `.env`, `.rgbmvp/`, secrets, `target/`, `.venv/`, artifacts, vendor code, large binaries, and the memory implementation itself.
 
 Full contract: [PROJECT_MEMORY.md](./PROJECT_MEMORY.md).  
 **Raw Redis key layout is private and unstable** — do not document or hard-code keys outside the tool.
@@ -242,7 +244,7 @@ REQUIRED:
 ```text
 1. READ docs/M2M.md (this file) and AGENTS.md
 2. READ docs/PURPOSE_AND_USAGE.md OR README status table
-3. RUN project_memory status → index if needed
+3. RUN `python3 project-memory.py status` → index if needed
 4. SEARCH 2–3 queries for the task domain
 5. OPEN files; implement; validate; re-index
 6. IF user-facing docs change, keep PURPOSE_AND_USAGE / README consistent
@@ -259,4 +261,5 @@ REQUIRED:
 | `docs/PURPOSE_AND_USAGE.md` | Human purpose + usage |
 | `docs/ARCHITECTURE.md` | System design |
 | `docs/SCENARIOS.md` | Scenario ladder |
-| `scripts/project_memory.py` | Only supported memory interface |
+| `project-memory.py` | Canonical portable memory interface |
+| `scripts/project_memory.py` | Compatibility wrapper |

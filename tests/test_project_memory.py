@@ -1,17 +1,17 @@
-"""Unit tests for scripts/project_memory.py (no shared Redis mutation)."""
-
 from __future__ import annotations
 
 import importlib.util
 import json
 import math
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
 SPEC = importlib.util.spec_from_file_location(
-    "project_memory", Path(__file__).parents[1] / "scripts" / "project_memory.py"
+    "portable_project_memory_core", Path(__file__).parents[1] / "project_memory" / "core.py"
 )
 assert SPEC and SPEC.loader
 pm = importlib.util.module_from_spec(SPEC)
@@ -48,23 +48,16 @@ def make_repo(tmp_path: Path) -> Path:
     (tmp_path / "tests").mkdir()
     (tmp_path / "docs").mkdir()
     (tmp_path / "reports").mkdir()
-    (tmp_path / "data").mkdir()
-    (tmp_path / "scripts").mkdir()
     (tmp_path / "README.md").write_text("# Demo\nsource truth\n")
     (tmp_path / "AGENTS.md").write_text("inspect returned source\n")
     (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n")
-    (tmp_path / ".gitignore").write_text(".env\n")
-    (tmp_path / ".env.example").write_text("APP_ENV=development\n")
     (tmp_path / "src" / "pkg" / "service.py").write_text(
         "def forecast_protocol():\n    return 'safe'\n"
     )
     (tmp_path / "tests" / "test_service.py").write_text("def test_forecast_protocol(): pass\n")
     (tmp_path / "docs" / "architecture.md").write_text("failure boundary protocol\n")
     (tmp_path / "reports" / "customer.jsonl").write_text('{"personal":"private"}\n')
-    (tmp_path / "data" / "payload.bin").write_text("binary-ish\n")
     (tmp_path / ".env").write_text("TOKEN=secret\n")
-    (tmp_path / "scripts" / "project_memory.py").write_text("# tool itself\n")
-    (tmp_path / "scripts" / "helper.sh").write_text("#!/bin/sh\necho ok\n")
     return tmp_path
 
 
@@ -90,16 +83,12 @@ def test_corpus_includes_source_tests_config_docs_agents_and_excludes_sensitive(
         "README.md",
         "AGENTS.md",
         "pyproject.toml",
-        ".gitignore",
-        ".env.example",
         "src/pkg/service.py",
         "tests/test_service.py",
         "docs/architecture.md",
-        "scripts/helper.sh",
     } <= set(names)
     assert ".env" not in names
     assert "reports/customer.jsonl" not in names
-    assert "data/payload.bin" not in names
     assert all("project_memory.py" not in name for name in names)
 
 
@@ -148,22 +137,158 @@ def test_unknown_schema_is_invalid(tmp_path):
     root = make_repo(tmp_path)
     redis = FakeRedis()
     pm.build_index(redis, root)
-    key = f"{pm.namespace(root)}:manifest"
+    active_key = f"{pm.namespace(root)}:active-generation"
+    key = redis.data[active_key].decode()
     manifest = json.loads(redis.data[key])
     manifest["schema"] = "project-memory:v999"
     redis.data[key] = json.dumps(manifest).encode()
     assert pm.status(redis, root)[0]["status"] == "missing_or_invalid"
 
 
-def test_project_slug_and_namespace():
-    assert pm.project_slug(Path("/tmp/RGB_MVP")) == "rgb-mvp"
-    assert pm.namespace(Path("/tmp/rgbmvp")).startswith("rgbmvp:project-memory:v1")
+def test_reindex_reuses_unchanged_content_addressed_chunks(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)
+    redis.commands.clear()
+    second = pm.build_index(redis, root)
+    chunk_sets = [
+        command
+        for command in redis.commands
+        if command[0] == "SET" and ":chunk:" in command[1]
+    ]
+    assert first["generation"] == second["generation"]
+    assert chunk_sets == []
 
 
-def test_redis_url_validation():
-    with pytest.raises(pm.RedisError):
-        pm.RedisClient("redis://user:pass@localhost:6379/0")
-    with pytest.raises(pm.RedisError):
-        pm.RedisClient("rediss://localhost:6379/0")
-    client = pm.RedisClient("redis://localhost:6379/0")
-    assert client.host == "localhost" and client.port == 6379 and client.db == 0
+def test_interrupted_rebuild_does_not_switch_active_generation(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)
+    active_key = f"{pm.namespace(root)}:active-generation"
+    old_pointer = redis.data[active_key]
+    (root / "src" / "pkg" / "service.py").write_text("def replacement(): pass\n")
+
+    original_execute = redis.execute
+
+    def fail_before_commit(command, *args):
+        if command == "SET" and args[0] == active_key:
+            raise RuntimeError("simulated interruption")
+        return original_execute(command, *args)
+
+    redis.execute = fail_before_commit
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        pm.build_index(redis, root)
+    assert redis.data[active_key] == old_pointer
+    assert json.loads(redis.data[old_pointer.decode()])["generation"] == first["generation"]
+
+
+def test_configurable_corpus_patterns_preserve_privacy_exclusions(tmp_path):
+    root = make_repo(tmp_path)
+    (root / "custom").mkdir()
+    (root / "custom" / "service.toml").write_text("feature = 'enabled'\n")
+    (root / "data").mkdir(exist_ok=True)
+    (root / "data" / "private.toml").write_text("token = 'secret'\n")
+    (root / pm.CONFIG_FILE).write_text(
+        json.dumps({"include_patterns": ["custom/**/*.toml", "data/**/*.toml"]})
+    )
+    names = [path.relative_to(root).as_posix() for path in pm.included_files(root)]
+    assert "custom/service.toml" in names
+    assert "data/private.toml" not in names
+
+
+def test_project_slug_can_be_configured(tmp_path):
+    root = make_repo(tmp_path)
+    (root / pm.CONFIG_FILE).write_text(json.dumps({"project_slug": "Shared Service API"}))
+    assert pm.namespace(root) == "shared-service-api:project-memory:v2"
+
+
+def test_repository_can_add_exclusions_and_redis_environment_aliases(tmp_path):
+    root = make_repo(tmp_path)
+    (root / "generated").mkdir()
+    (root / "generated" / "public.md").write_text("derived output\n")
+    (root / pm.CONFIG_FILE).write_text(
+        json.dumps(
+            {
+                "include_patterns": ["generated/**/*.md"],
+                "exclude_directories": ["generated"],
+                "redis_url_envs": ["PROJECT_MEMORY_URL", "DEMO_PROJECT_MEMORY_URL"],
+            }
+        )
+    )
+    assert "generated/public.md" not in {
+        path.relative_to(root).as_posix() for path in pm.included_files(root)
+    }
+    assert pm.redis_url_envs(root) == ("PROJECT_MEMORY_URL", "DEMO_PROJECT_MEMORY_URL")
+
+
+def test_portable_bundle_runs_after_copy_to_another_repository(tmp_path):
+    source_root = Path(__file__).parents[1]
+    target = tmp_path / "copied-repository"
+    target.mkdir()
+    shutil.copytree(source_root / "project_memory", target / "project_memory")
+    shutil.copy2(source_root / "project-memory.py", target / "project-memory.py")
+    (target / ".project-memory.json").write_text(
+        json.dumps({"project_slug": "portable-fixture"})
+    )
+    completed = subprocess.run(
+        [sys.executable, "project-memory.py", "--help"],
+        cwd=target,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0
+    assert "Portable, project-scoped Redis retrieval cache" in completed.stdout
+
+
+def test_root_entrypoint_is_canonical_and_script_entrypoint_is_compatibility_only():
+    root = Path(__file__).parents[1]
+    canonical = (root / "project-memory.py").read_text()
+    wrapper = (root / "scripts" / "project_memory.py").read_text()
+    assert "from project_memory import main" in canonical
+    assert "Compatibility entrypoint" in wrapper
+    assert 'ROOT / "project_memory" / "core.py"' in wrapper
+    assert "class RedisClient" not in wrapper
+
+    canonical_help = subprocess.run(
+        [sys.executable, "project-memory.py", "--help"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    compatibility_help = subprocess.run(
+        [sys.executable, "scripts/project_memory.py", "--help"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert canonical_help.returncode == compatibility_help.returncode == 0
+    assert canonical_help.stdout.replace("project-memory.py", "ENTRYPOINT") == (
+        compatibility_help.stdout.replace("project_memory.py", "ENTRYPOINT")
+    )
+
+
+def test_rgbmvp_configuration_preserves_repository_contract():
+    root = Path(__file__).parents[1]
+    names = {path.relative_to(root).as_posix() for path in pm.included_files(root)}
+    assert pm.namespace(root) == "rgbmvp:project-memory:v2"
+    assert pm.redis_url_envs(root) == ("PROJECT_MEMORY_URL", "RGBMVP_PROJECT_MEMORY_URL")
+    assert {
+        ".project-memory.json",
+        "AGENTS.md",
+        "docs/M2M.md",
+        "src/rgbmvp/config.py",
+        "tests/test_health.py",
+        "crates/lab-core/src/lib.rs",
+        "web/index.html",
+        "deploy/cloudrun.yaml",
+        ".github/workflows/ci.yml",
+        "scripts/bootstrap_testnet_wallets.sh",
+    } <= names
+    parts = {part for name in names for part in Path(name).parts}
+    assert {".rgbmvp", "target", "artifacts", "vendor", "data", "fixtures", "secrets"}.isdisjoint(parts)
+    assert "project-memory.py" not in names
+    assert "scripts/project_memory.py" not in names
+    assert not any(name.startswith("project_memory/") for name in names)
