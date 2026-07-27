@@ -27,7 +27,7 @@ Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/
 | **Agents / AI** — goals, invariants, Redis project memory | **[docs/M2M.md](docs/M2M.md)** · [AGENTS.md](AGENTS.md) |
 | Architecture · scenarios · stack | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [SCENARIOS](docs/SCENARIOS.md) · [STACK](docs/STACK.md) |
 | Phase evidence | [P1_CLOSED](docs/P1_CLOSED.md) · [P2_CLOSED](docs/P2_CLOSED.md) · [P3_CLOSED](docs/P3_CLOSED.md) |
-| **Launch / deploy** | [PUBLIC_LAUNCH](docs/PUBLIC_LAUNCH.md) · [U4_PUBLIC_HOSTING](docs/U4_PUBLIC_HOSTING.md) · [UI refresh + rollback](docs/UI_REFRESH.md) · [deploy/](deploy/) |
+| **Launch / deploy** | [step-by-step publication tutorial](docs/PUBLISH_TUTORIAL.md) · [PUBLIC_LAUNCH](docs/PUBLIC_LAUNCH.md) · [U4_PUBLIC_HOSTING](docs/U4_PUBLIC_HOSTING.md) · [UI refresh + rollback](docs/UI_REFRESH.md) · [deploy/](deploy/) |
 | **Evidence** | [artifacts/public](artifacts/public/) · [S3_RGB_WRAP](docs/S3_RGB_WRAP.md) · [C4_CLOSED](docs/C4_CLOSED.md) |
 | Protocol without UI | [docs/HEADLESS.md](docs/HEADLESS.md) |
 

@@ -3,6 +3,8 @@
 **Status:** In-repo ready · **Date:** 2026-07-23  
 **Depends on:** [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md)
 
+Operator walkthrough: [PUBLISH_TUTORIAL.md](./PUBLISH_TUTORIAL.md).
+
 This closes the “content & CI / hardening before announce” ladder without putting
 secrets or hot wallets on the Internet.
 

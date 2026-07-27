@@ -29,6 +29,7 @@ Cargo.lock.bak
 
 # Environment and secrets — never commit real values
 .env
+.vercel/
 .env.local
 .env.*.local
 .env.secrets
