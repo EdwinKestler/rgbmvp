@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import contextlib
 import hashlib
@@ -23,7 +24,8 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 SCHEMA = "project-memory:v2"
-BUNDLE_VERSION = "2.1.2"
+BUNDLE_VERSION = "2.2.0"
+GRAPH_SCHEMA = "project-memory:code-graph:v3"
 EMBEDDING_ID = "feature-hash-sha256-unigram-bigram-v1"
 DIMENSIONS = 384
 DEFAULT_URL = "redis://localhost:6379/0"
@@ -189,6 +191,13 @@ SENSITIVE_TOKEN_PATTERNS = (
     ),
     re.compile(r"(^|[._/-])client[_-]?secrets?([._/-]|$)", re.IGNORECASE),
 )
+RUST_DEFINITION_RE = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+|unsafe\s+)?"
+    r"(fn|struct|enum|trait|mod|type|const|static)\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
+RUST_USE_RE = re.compile(r"^\s*(?:pub\s+)?use\s+([^;]+);")
+RUST_CALL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*\(")
+RUST_CALL_EXCLUSIONS = {"fn", "if", "while", "for", "loop", "match", "return", "Some", "Ok", "Err"}
 
 
 def project_config(root: Path = ROOT) -> dict[str, Any]:
@@ -398,6 +407,482 @@ def split_chunks(
         if start + size >= len(lines):
             break
     return chunks
+
+
+def _symbol_id(path: str, qualified_name: str, kind: str, start_line: int) -> str:
+    digest = hashlib.sha256(
+        f"{path}\0{qualified_name}\0{kind}\0{start_line}".encode()
+    ).hexdigest()[:20]
+    return f"symbol:{digest}"
+
+
+def _dotted_python_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Call):
+        return _dotted_python_name(node.func)
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _dotted_python_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return None
+
+
+class _PythonGraphVisitor(ast.NodeVisitor):
+    def __init__(self, path: str):
+        self.path = path
+        self.module_name = path.removesuffix(".py").replace("/", ".")
+        self.scope: list[str] = []
+        self.scope_kinds: list[str] = []
+        self.current_symbols: list[str] = []
+        self.symbols: list[dict[str, Any]] = []
+        self.edges: list[dict[str, Any]] = []
+        self.bindings: dict[str, str] = {}
+        self.module_bindings = self.bindings
+        self.module_id = self._add_symbol(
+            self.module_name, self.module_name, "module", 1, 1
+        )
+
+    def _qualified_name(self, name: str) -> str:
+        return ".".join((self.module_name, *self.scope, name))
+
+    def _canonical_target(self, target: str) -> tuple[str, bool]:
+        head, separator, tail = target.partition(".")
+        canonical = self.bindings.get(head)
+        if canonical is None:
+            return target, False
+        return canonical + (separator + tail if separator else ""), True
+
+    def _relative_import_module(self, module: str | None, level: int) -> str | None:
+        if level == 0:
+            return module or ""
+        path_parts = self.path.removesuffix(".py").split("/")
+        package_parts = path_parts[:-1]
+        ascend = level - 1
+        if ascend > len(package_parts):
+            return None
+        base = package_parts[: len(package_parts) - ascend]
+        if module:
+            base.extend(module.split("."))
+        return ".".join(base)
+
+    def _add_symbol(
+        self, name: str, qualified_name: str, kind: str, start_line: int, end_line: int
+    ) -> str:
+        symbol_id = _symbol_id(self.path, qualified_name, kind, start_line)
+        self.symbols.append(
+            {
+                "id": symbol_id,
+                "name": name,
+                "qualified_name": qualified_name,
+                "kind": kind,
+                "path": self.path,
+                "start_line": start_line,
+                "end_line": end_line,
+                "parser": "python-ast",
+                "confidence": "authoritative",
+            }
+        )
+        return symbol_id
+
+    def _source(self) -> str:
+        return self.current_symbols[-1] if self.current_symbols else self.module_id
+
+    def _edge(self, kind: str, target: str, line: int, *, source_id: str | None = None) -> None:
+        canonical_target, binding_applied = self._canonical_target(target)
+        self.edges.append(
+            {
+                "source_id": source_id or self._source(),
+                "target": canonical_target,
+                "kind": kind,
+                "path": self.path,
+                "line": line,
+                "parser": "python-ast",
+                "extraction_confidence": "authoritative",
+                "binding_applied": binding_applied,
+                "resolution": {
+                    "status": "unresolved",
+                    "confidence": "unknown",
+                    "target_id": None,
+                },
+            }
+        )
+
+    def _visit_definition(self, node: ast.AST, name: str, kind: str) -> None:
+        qualified_name = self._qualified_name(name)
+        symbol_id = self._add_symbol(
+            name,
+            qualified_name,
+            kind,
+            getattr(node, "lineno", 1),
+            getattr(node, "end_lineno", getattr(node, "lineno", 1)),
+        )
+        decorators = getattr(node, "decorator_list", [])
+        for decorator in decorators:
+            target = _dotted_python_name(decorator)
+            if target:
+                self._edge(
+                    "decorated_by",
+                    target,
+                    getattr(decorator, "lineno", getattr(node, "lineno", 1)),
+                    source_id=symbol_id,
+                )
+        self.scope.append(name)
+        self.scope_kinds.append(kind)
+        self.current_symbols.append(symbol_id)
+        previous_bindings = self.bindings
+        self.bindings = dict(
+            self.module_bindings if kind == "method" else previous_bindings
+        )
+        self.generic_visit(node)
+        self.bindings = previous_bindings
+        self.current_symbols.pop()
+        self.scope_kinds.pop()
+        self.scope.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        kind = "method" if self.scope_kinds and self.scope_kinds[-1] == "class" else "function"
+        self._visit_definition(node, node.name, kind)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        kind = "method" if self.scope_kinds and self.scope_kinds[-1] == "class" else "function"
+        self._visit_definition(node, node.name, kind)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        qualified_name = self._qualified_name(node.name)
+        symbol_id = self._add_symbol(
+            node.name,
+            qualified_name,
+            "class",
+            node.lineno,
+            getattr(node, "end_lineno", node.lineno),
+        )
+        for base in node.bases:
+            target = _dotted_python_name(base)
+            if target:
+                self._edge(
+                    "inherits",
+                    target,
+                    getattr(base, "lineno", node.lineno),
+                    source_id=symbol_id,
+                )
+        self.scope.append(node.name)
+        self.scope_kinds.append("class")
+        self.current_symbols.append(symbol_id)
+        previous_bindings = self.bindings
+        self.bindings = dict(previous_bindings)
+        self.generic_visit(node)
+        self.bindings = previous_bindings
+        self.current_symbols.pop()
+        self.scope_kinds.pop()
+        self.scope.pop()
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.asname:
+                self.bindings[alias.asname] = alias.name
+            else:
+                top_level = alias.name.split(".", 1)[0]
+                self.bindings[top_level] = top_level
+            self._edge("imports", alias.name, node.lineno)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        module = self._relative_import_module(node.module, node.level)
+        for alias in node.names:
+            canonical = f"{module}.{alias.name}" if module else alias.name
+            self.bindings[alias.asname or alias.name] = canonical
+            self._edge("imports", canonical, node.lineno)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        target = _dotted_python_name(node.func)
+        if target:
+            self._edge("calls", target, node.lineno)
+        self.generic_visit(node)
+
+
+def _python_file_graph(path: str, text: str) -> dict[str, Any]:
+    try:
+        tree = ast.parse(text, filename=path)
+    except SyntaxError as exc:
+        return {
+            "schema": GRAPH_SCHEMA,
+            "language": "python",
+            "parser": "python-ast",
+            "symbols": [],
+            "edges": [],
+            "diagnostics": [f"syntax error at line {exc.lineno or 0}"],
+        }
+    visitor = _PythonGraphVisitor(path)
+    visitor.visit(tree)
+    return {
+        "schema": GRAPH_SCHEMA,
+        "language": "python",
+        "parser": "python-ast",
+        "symbols": visitor.symbols,
+        "edges": visitor.edges,
+        "diagnostics": [],
+    }
+
+
+def _rust_file_graph(path: str, text: str) -> dict[str, Any]:
+    symbols: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    module_name = path.removesuffix(".rs").replace("/", "::")
+    module_id = _symbol_id(path, module_name, "module", 1)
+    symbols.append(
+        {
+            "id": module_id,
+            "name": module_name.rsplit("::", 1)[-1],
+            "qualified_name": module_name,
+            "kind": "module",
+            "path": path,
+            "start_line": 1,
+            "end_line": max(1, len(text.splitlines())),
+            "parser": "rust-syntax-v1",
+            "confidence": "heuristic",
+        }
+    )
+    current_source = module_id
+    for line_number, line in enumerate(text.splitlines(), 1):
+        definition = RUST_DEFINITION_RE.search(line)
+        if definition:
+            rust_kind, name = definition.groups()
+            kind = "function" if rust_kind == "fn" else rust_kind
+            qualified_name = f"{module_name}::{name}"
+            current_source = _symbol_id(path, qualified_name, kind, line_number)
+            symbols.append(
+                {
+                    "id": current_source,
+                    "name": name,
+                    "qualified_name": qualified_name,
+                    "kind": kind,
+                    "path": path,
+                    "start_line": line_number,
+                    "end_line": line_number,
+                    "parser": "rust-syntax-v1",
+                    "confidence": "heuristic",
+                }
+            )
+        imported = RUST_USE_RE.search(line)
+        if imported:
+            edges.append(
+                {
+                    "source_id": module_id,
+                    "target": imported.group(1).strip(),
+                    "kind": "imports",
+                    "path": path,
+                    "line": line_number,
+                    "parser": "rust-syntax-v1",
+                    "extraction_confidence": "heuristic",
+                    "binding_applied": False,
+                    "resolution": {
+                        "status": "unresolved",
+                        "confidence": "unknown",
+                        "target_id": None,
+                    },
+                }
+            )
+        for target in RUST_CALL_RE.findall(line):
+            if target not in RUST_CALL_EXCLUSIONS and not (
+                definition and target == definition.group(2)
+            ):
+                edges.append(
+                    {
+                        "source_id": current_source,
+                        "target": target,
+                        "kind": "calls",
+                        "path": path,
+                        "line": line_number,
+                        "parser": "rust-syntax-v1",
+                        "extraction_confidence": "heuristic",
+                        "binding_applied": False,
+                        "resolution": {
+                            "status": "unresolved",
+                            "confidence": "unknown",
+                            "target_id": None,
+                        },
+                    }
+                )
+    return {
+        "schema": GRAPH_SCHEMA,
+        "language": "rust",
+        "parser": "rust-syntax-v1",
+        "symbols": symbols,
+        "edges": edges,
+        "diagnostics": ["Rust records use deterministic syntax heuristics, not an AST parser."],
+    }
+
+
+def extract_file_graph(path: str, text: str) -> dict[str, Any]:
+    if path.endswith(".py"):
+        return _python_file_graph(path, text)
+    if path.endswith(".rs"):
+        return _rust_file_graph(path, text)
+    return {
+        "schema": GRAPH_SCHEMA,
+        "language": "text",
+        "parser": "none",
+        "symbols": [],
+        "edges": [],
+        "diagnostics": [],
+    }
+
+
+def _resolve_graph(
+    file_graphs: dict[str, dict[str, Any]],
+) -> tuple[int, int, dict[str, int]]:
+    symbols = [symbol for graph in file_graphs.values() for symbol in graph["symbols"]]
+    symbols_by_id = {symbol["id"]: symbol for symbol in symbols}
+    by_qualified: dict[str, list[str]] = {}
+    by_short: dict[str, list[str]] = {}
+    for symbol in symbols:
+        by_qualified.setdefault(symbol["qualified_name"], []).append(symbol["id"])
+        by_short.setdefault(symbol["name"], []).append(symbol["id"])
+    resolution_counts = {
+        status: 0
+        for status in (
+            "exact_qualified",
+            "lexical_scope",
+            "import_binding",
+            "heuristic_unique_short_name",
+            "ambiguous",
+            "unresolved",
+        )
+    }
+    edge_count = 0
+    for graph in file_graphs.values():
+        for edge in graph["edges"]:
+            target = edge["target"]
+            resolution = {
+                "status": "unresolved",
+                "confidence": "unknown",
+                "target_id": None,
+            }
+            exact_candidates = by_qualified.get(target, [])
+            if len(exact_candidates) == 1:
+                resolution = {
+                    "status": (
+                        "import_binding" if edge.get("binding_applied") else "exact_qualified"
+                    ),
+                    "confidence": "strong",
+                    "target_id": exact_candidates[0],
+                }
+            elif len(exact_candidates) > 1:
+                resolution["status"] = "ambiguous"
+                resolution["confidence"] = "ambiguous"
+            elif graph.get("language") == "python" and "." not in target:
+                source = symbols_by_id.get(edge["source_id"])
+                source_qualified = source["qualified_name"] if source else ""
+                parts = source_qualified.split(".")[:-1]
+                lexical_candidates = []
+                for end in range(len(parts), 0, -1):
+                    candidate = ".".join((*parts[:end], target))
+                    matches = by_qualified.get(candidate, [])
+                    if matches:
+                        lexical_candidates = matches
+                        break
+                if len(lexical_candidates) == 1:
+                    resolution = {
+                        "status": "lexical_scope",
+                        "confidence": "strong",
+                        "target_id": lexical_candidates[0],
+                    }
+                elif len(lexical_candidates) > 1:
+                    resolution["status"] = "ambiguous"
+                    resolution["confidence"] = "ambiguous"
+            allow_short_heuristic = graph.get("language") != "python" or "." not in target
+            if resolution["status"] == "unresolved" and allow_short_heuristic:
+                short_target = re.split(r"[.:]+", target)[-1]
+                short_candidates = by_short.get(short_target, [])
+                if len(short_candidates) == 1:
+                    resolution = {
+                        "status": "heuristic_unique_short_name",
+                        "confidence": "probable",
+                        "target_id": short_candidates[0],
+                    }
+                elif len(short_candidates) > 1:
+                    resolution["status"] = "ambiguous"
+                    resolution["confidence"] = "ambiguous"
+            edge["resolution"] = resolution
+            resolution_counts[resolution["status"]] += 1
+            edge_count += 1
+    return len(symbols), edge_count, resolution_counts
+
+
+def _valid_file_graphs(manifest: dict[str, Any]) -> bool:
+    graphs = manifest.get("file_graphs")
+    if not isinstance(graphs, dict) or set(graphs) != set(manifest.get("files", [])):
+        return False
+    symbols = []
+    edge_count = 0
+    resolution_counts = {
+        status: 0
+        for status in (
+            "exact_qualified",
+            "lexical_scope",
+            "import_binding",
+            "heuristic_unique_short_name",
+            "ambiguous",
+            "unresolved",
+        )
+    }
+    for path, graph in graphs.items():
+        if (
+            not isinstance(graph, dict)
+            or graph.get("schema") != GRAPH_SCHEMA
+            or not isinstance(graph.get("symbols"), list)
+            or not isinstance(graph.get("edges"), list)
+            or not isinstance(graph.get("diagnostics"), list)
+        ):
+            return False
+        for symbol in graph["symbols"]:
+            if (
+                not isinstance(symbol, dict)
+                or symbol.get("path") != path
+                or not isinstance(symbol.get("id"), str)
+                or not isinstance(symbol.get("name"), str)
+                or not isinstance(symbol.get("qualified_name"), str)
+                or not isinstance(symbol.get("start_line"), int)
+                or not isinstance(symbol.get("end_line"), int)
+            ):
+                return False
+            symbols.append(symbol)
+        for edge in graph["edges"]:
+            resolution = edge.get("resolution")
+            if (
+                not isinstance(edge, dict)
+                or edge.get("path") != path
+                or not isinstance(edge.get("source_id"), str)
+                or not isinstance(edge.get("target"), str)
+                or not isinstance(edge.get("kind"), str)
+                or not isinstance(edge.get("line"), int)
+                or not isinstance(edge.get("extraction_confidence"), str)
+                or not isinstance(resolution, dict)
+                or resolution.get("status") not in {
+                    "exact_qualified",
+                    "lexical_scope",
+                    "import_binding",
+                    "heuristic_unique_short_name",
+                    "ambiguous",
+                    "unresolved",
+                }
+                or resolution.get("confidence")
+                not in {"strong", "probable", "ambiguous", "unknown"}
+                or (
+                    resolution.get("target_id") is not None
+                    and not isinstance(resolution.get("target_id"), str)
+                )
+            ):
+                return False
+            status = resolution["status"]
+            resolution_counts[status] = resolution_counts.get(status, 0) + 1
+            edge_count += 1
+    symbol_ids = [symbol["id"] for symbol in symbols]
+    return (
+        len(set(symbol_ids)) == len(symbol_ids)
+        and manifest.get("symbol_count") == len(symbols)
+        and manifest.get("edge_count") == edge_count
+        and manifest.get("resolution_metrics") == resolution_counts
+    )
 
 
 class RedisError(RuntimeError):
@@ -698,6 +1183,20 @@ def _manifest_state(
             or [key for path in manifest["files"] for key in file_chunks[path]] != keys
         ):
             return current, None
+        bundle_version = manifest.get("bundle_version", "2.0.0")
+        if isinstance(bundle_version, str) and bundle_version.startswith("2.2"):
+            if not _valid_file_graphs(manifest):
+                return current, None
+            if deep:
+                expected_graphs = {
+                    path.relative_to(root).as_posix(): extract_file_graph(
+                        path.relative_to(root).as_posix(), path.read_text(encoding="utf-8")
+                    )
+                    for path in files
+                }
+                _resolve_graph(expected_graphs)
+                if expected_graphs != manifest["file_graphs"]:
+                    return current, None
         if deep and keys:
             values = _mget_batched(client, keys)
             if any(value is None for value in values):
@@ -771,6 +1270,7 @@ def _build_index_locked(
     registered_chunks, registered_manifests = _registered_keys(client, prefix)
     old_hashes = old_manifest.get("file_hashes", {}) if isinstance(old_manifest, dict) else {}
     old_file_chunks = old_manifest.get("file_chunks", {}) if isinstance(old_manifest, dict) else {}
+    old_file_graphs = old_manifest.get("file_graphs", {}) if isinstance(old_manifest, dict) else {}
     can_reuse_files = (
         isinstance(old_hashes, dict)
         and isinstance(old_file_chunks, dict)
@@ -812,33 +1312,52 @@ def _build_index_locked(
     _refresh_index_lock(client, root, build_id)
 
     file_chunks: dict[str, list[str]] = {}
+    file_graphs: dict[str, dict[str, Any]] = {}
     generated_payloads: dict[str, str] = {}
     generated_count = 0
+    graph_generated_files = 0
     for path in files:
         relative = path.relative_to(root).as_posix()
-        if relative in unchanged:
+        chunks_reusable = relative in unchanged
+        graph_reusable = (
+            chunks_reusable
+            and isinstance(old_file_graphs.get(relative), dict)
+            and old_file_graphs[relative].get("schema") == GRAPH_SCHEMA
+        )
+        if chunks_reusable:
             file_chunks[relative] = list(old_file_chunks[relative])
+        if graph_reusable:
+            file_graphs[relative] = old_file_graphs[relative]
+        if chunks_reusable and graph_reusable:
             continue
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError as exc:
             raise ValueError(f"indexed file is not UTF-8: {relative}") from exc
-        keys = []
-        for chunk in split_chunks(relative, text):
-            key = f"{prefix}:chunk:{chunk.chunk_id}:{build_id[:16]}"
-            payload = {
-                "id": chunk.chunk_id,
-                "path": chunk.path,
-                "start_line": chunk.start_line,
-                "end_line": chunk.end_line,
-                "text": chunk.text,
-                "tokens": sorted(set(tokenize(chunk.text))),
-                "vector": encode_vector(embedding(chunk.text)),
-            }
-            generated_payloads[key] = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-            keys.append(key)
-            generated_count += 1
-        file_chunks[relative] = keys
+        if not chunks_reusable:
+            keys = []
+            for chunk in split_chunks(relative, text):
+                key = f"{prefix}:chunk:{chunk.chunk_id}:{build_id[:16]}"
+                payload = {
+                    "id": chunk.chunk_id,
+                    "path": chunk.path,
+                    "start_line": chunk.start_line,
+                    "end_line": chunk.end_line,
+                    "text": chunk.text,
+                    "tokens": sorted(set(tokenize(chunk.text))),
+                    "vector": encode_vector(embedding(chunk.text)),
+                }
+                generated_payloads[key] = json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                )
+                keys.append(key)
+                generated_count += 1
+            file_chunks[relative] = keys
+        if not graph_reusable:
+            file_graphs[relative] = extract_file_graph(relative, text)
+            graph_generated_files += 1
+
+    symbol_count, edge_count, resolution_metrics = _resolve_graph(file_graphs)
 
     chunk_keys = [key for path in file_hashes for key in file_chunks[path]]
     writes: list[tuple[str | bytes, ...]] = []
@@ -864,6 +1383,13 @@ def _build_index_locked(
             "reused": reused_chunk_count,
             "deleted": len(deleted_chunk_keys),
         },
+        "graph": {
+            "symbols": symbol_count,
+            "edges": edge_count,
+            "resolution": resolution_metrics,
+            "generated_files": graph_generated_files,
+            "reused_files": len(file_graphs) - graph_generated_files,
+        },
     }
     manifest = {
         "schema": SCHEMA,
@@ -875,6 +1401,10 @@ def _build_index_locked(
         "files": [path.relative_to(root).as_posix() for path in files],
         "file_hashes": file_hashes,
         "file_chunks": file_chunks,
+        "file_graphs": file_graphs,
+        "symbol_count": symbol_count,
+        "edge_count": edge_count,
+        "resolution_metrics": resolution_metrics,
         "chunk_count": len(chunk_keys),
         "fingerprint": fingerprint,
         "chunk_keys": chunk_keys,
@@ -971,6 +1501,10 @@ def search(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> di
     values = _mget_batched(client, manifest["chunk_keys"])
     qvec = embedding(query)
     qtokens = set(tokenize(query))
+    query_normalized = query.strip().lower()
+    symbols_by_path: dict[str, list[dict[str, Any]]] = {}
+    for path, graph in manifest.get("file_graphs", {}).items():
+        symbols_by_path[path] = graph.get("symbols", [])
     results = []
     for raw in values:
         try:
@@ -979,7 +1513,19 @@ def search(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> di
             cosine = sum(a * b for a, b in zip(qvec, vector, strict=True))
             tokens = set(chunk["tokens"])
             lexical = len(qtokens & tokens) / len(qtokens) if qtokens else 0.0
-            score = 0.82 * cosine + 0.18 * lexical
+            matching_symbols = [
+                symbol
+                for symbol in symbols_by_path.get(chunk["path"], [])
+                if symbol["start_line"] <= chunk["end_line"]
+                and symbol["end_line"] >= chunk["start_line"]
+                and (
+                    symbol["name"].lower() == query_normalized
+                    or symbol["qualified_name"].lower() == query_normalized
+                    or symbol["name"].lower() in qtokens
+                )
+            ]
+            symbol_boost = 0.2 if matching_symbols else 0.0
+            score = 0.72 * cosine + 0.18 * lexical + symbol_boost
             results.append(
                 {
                     "path": chunk["path"],
@@ -988,12 +1534,158 @@ def search(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> di
                     "score": round(score, 6),
                     "pointer": f"{chunk['path']}:{chunk['start_line']}-{chunk['end_line']}",
                     "text": chunk["text"],
+                    "matches": [
+                        {
+                            "type": "symbol",
+                            "name": symbol["qualified_name"],
+                            "kind": symbol["kind"],
+                            "parser": symbol["parser"],
+                            "confidence": symbol["confidence"],
+                        }
+                        for symbol in matching_symbols
+                    ],
+                    "explanation": {
+                        "cosine": round(cosine, 6),
+                        "lexical": round(lexical, 6),
+                        "symbol_boost": symbol_boost,
+                    },
                 }
             )
         except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
             raise ValueError("index contains malformed chunk data; re-index required") from exc
     results.sort(key=lambda item: (-item["score"], item["path"], item["start_line"]))
     return {"query": query, "fresh": True, "results": results[:limit]}
+
+
+def symbols(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> dict[str, Any]:
+    state, fresh = status(client, root)
+    if not fresh:
+        raise ValueError(f"index is {state['status']}; run index before symbol lookup")
+    normalized = query.strip().lower()
+    results = []
+    for graph in state["manifest"].get("file_graphs", {}).values():
+        for symbol in graph.get("symbols", []):
+            name = symbol["name"].lower()
+            qualified = symbol["qualified_name"].lower()
+            rank = 0 if normalized in {name, qualified} else (1 if normalized in qualified else 2)
+            if normalized in name or normalized in qualified:
+                results.append(
+                    {
+                        **symbol,
+                        "pointer": f"{symbol['path']}:{symbol['start_line']}-{symbol['end_line']}",
+                        "explanation": "exact symbol" if rank == 0 else "symbol substring",
+                        "_rank": rank,
+                    }
+                )
+    results.sort(key=lambda item: (item["_rank"], item["qualified_name"], item["path"]))
+    for result in results:
+        result.pop("_rank")
+    return {"query": query, "fresh": True, "results": results[:limit]}
+
+
+def impact(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> dict[str, Any]:
+    state, fresh = status(client, root)
+    if not fresh:
+        raise ValueError(f"index is {state['status']}; run index before impact lookup")
+    manifest = state["manifest"]
+    all_symbols = [
+        symbol
+        for graph in manifest.get("file_graphs", {}).values()
+        for symbol in graph.get("symbols", [])
+    ]
+    normalized = query.strip().lower()
+    targets = {
+        symbol["id"]
+        for symbol in all_symbols
+        if normalized in {symbol["name"].lower(), symbol["qualified_name"].lower()}
+    }
+    symbols_by_id = {symbol["id"]: symbol for symbol in all_symbols}
+    results = []
+    for graph in manifest.get("file_graphs", {}).values():
+        for edge in graph.get("edges", []):
+            edge_target = edge.get("target", "").lower()
+            short_target = re.split(r"[.:]+", edge_target)[-1]
+            resolution = edge["resolution"]
+            resolved_match = resolution.get("target_id") in targets
+            name_match = normalized in {edge_target, short_target}
+            if not resolved_match and not name_match:
+                continue
+            source = symbols_by_id.get(edge["source_id"])
+            if source:
+                results.append(
+                    {
+                        "source": source,
+                        "edge": edge,
+                        "pointer": f"{edge['path']}:{edge['line']}",
+                        "explanation": (
+                            f"{edge['kind']} edge via {edge['parser']} "
+                            f"(extraction={edge['extraction_confidence']}; "
+                            f"resolution={resolution['status']}/{resolution['confidence']}; "
+                            f"{'target id match' if resolved_match else 'exact target name'})"
+                        ),
+                    }
+                )
+    results.sort(key=lambda item: (item["edge"]["kind"], item["pointer"]))
+    distinct_results = []
+    seen_sources = set()
+    for result in results:
+        source_id = result["source"]["id"]
+        if source_id in seen_sources:
+            continue
+        seen_sources.add(source_id)
+        distinct_results.append(result)
+    return {
+        "query": query,
+        "fresh": True,
+        "target_ids": sorted(targets),
+        "results": distinct_results[:limit],
+    }
+
+
+def evaluate(client: RedisClient, limit: int, root: Path = ROOT) -> dict[str, Any]:
+    cases = project_config(root).get("evaluation_queries", [])
+    if not isinstance(cases, list) or not cases:
+        raise ValueError(f"{CONFIG_FILE} evaluation_queries must be a non-empty list")
+    outcomes = []
+    for case in cases:
+        if (
+            not isinstance(case, dict)
+            or case.get("mode") not in {"search", "symbols", "impact"}
+            or not isinstance(case.get("query"), str)
+            or not isinstance(case.get("expected_paths"), list)
+            or not all(isinstance(path, str) for path in case["expected_paths"])
+        ):
+            raise ValueError(f"{CONFIG_FILE} contains an invalid evaluation query")
+        mode = case["mode"]
+        response = {
+            "search": search,
+            "symbols": symbols,
+            "impact": impact,
+        }[mode](client, case["query"], limit, root)
+        if mode in {"search", "symbols"}:
+            returned_paths = {item["path"] for item in response["results"]}
+        else:
+            returned_paths = {item["source"]["path"] for item in response["results"]}
+        missing = sorted(set(case["expected_paths"]) - returned_paths)
+        outcomes.append(
+            {
+                "mode": mode,
+                "query": case["query"],
+                "expected_paths": case["expected_paths"],
+                "returned_paths": sorted(returned_paths),
+                "missing_paths": missing,
+                "passed": not missing,
+            }
+        )
+    passed = sum(outcome["passed"] for outcome in outcomes)
+    return {
+        "status": "passed" if passed == len(outcomes) else "failed",
+        "cases": len(outcomes),
+        "passed": passed,
+        "recall_at_limit": passed / len(outcomes),
+        "limit": limit,
+        "outcomes": outcomes,
+    }
 
 
 def _clear_locked(client: RedisClient, root: Path) -> dict[str, Any]:
@@ -1067,6 +1759,14 @@ def parser() -> argparse.ArgumentParser:
     search_parser = commands.add_parser("search")
     search_parser.add_argument("query")
     search_parser.add_argument("--limit", type=int, default=5)
+    symbols_parser = commands.add_parser("symbols")
+    symbols_parser.add_argument("query")
+    symbols_parser.add_argument("--limit", type=int, default=20)
+    impact_parser = commands.add_parser("impact")
+    impact_parser.add_argument("query")
+    impact_parser.add_argument("--limit", type=int, default=20)
+    evaluate_parser = commands.add_parser("evaluate")
+    evaluate_parser.add_argument("--limit", type=int, default=10)
     commands.add_parser("clear")
     return result
 
@@ -1092,11 +1792,18 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 0
-        if args.command == "search":
+        if args.command in {"search", "symbols", "impact"}:
             if args.limit < 1 or args.limit > 100:
                 raise ValueError("--limit must be between 1 and 100")
-            print(json.dumps(search(client, args.query, args.limit), sort_keys=True))
+            lookup = {"search": search, "symbols": symbols, "impact": impact}[args.command]
+            print(json.dumps(lookup(client, args.query, args.limit), sort_keys=True))
             return 0
+        if args.command == "evaluate":
+            if args.limit < 1 or args.limit > 100:
+                raise ValueError("--limit must be between 1 and 100")
+            output = evaluate(client, args.limit)
+            print(json.dumps(output, sort_keys=True))
+            return 0 if output["status"] == "passed" else 2
         print(json.dumps(clear(client), sort_keys=True))
         return 0
     except (RedisError, TypeError, ValueError) as exc:

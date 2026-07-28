@@ -1,4 +1,4 @@
-# Portable Project Memory v2.1.2 bundle
+# Portable Project Memory v2.2 bundle
 
 Copy these paths to another repository while preserving their relative locations:
 
@@ -40,6 +40,9 @@ python3 project-memory.py index --incremental --repair-deep
 python3 project-memory.py validate
 python3 project-memory.py validate --deep
 python3 project-memory.py search "authentication boundary" --limit 5
+python3 project-memory.py symbols "qualified.name" --limit 20
+python3 project-memory.py impact "symbol_name" --limit 20
+python3 project-memory.py evaluate --limit 10
 ```
 
 v2.1 records a `file_chunks` map beside `file_hashes`. Incremental indexing hashes the admitted
@@ -51,10 +54,23 @@ registry is reduced to the active generation. A final repository fingerprint che
 activating a mixed source snapshot. Operational timing/reuse metrics are returned beside, not stored
 inside, the immutable generation manifest.
 
-`status` performs lightweight manifest and repository-freshness checks without loading chunk
-payloads. Use `validate --deep` to load every active chunk and recompute its identity, ownership,
+`status` checks manifest metadata and repository freshness without loading chunk payloads. In v2.2
+the manifest includes graph records, so metadata transfer is proportional to graph size. Use
+`validate --deep` to load every active chunk and recompute its identity, ownership,
 tokens, and vector from the stored text. If it reports semantic corruption, use
 `index --incremental --repair-deep` to regenerate only affected owner files.
+
+v2.2 adds per-file symbol and edge maps. Python syntax records come from the standard-library AST
+with authoritative extraction confidence, module-qualified names, decorator-call extraction, and
+scope-aware absolute and relative import bindings. Link resolution has separate status and
+confidence fields; Rust records come
+from a deterministic lightweight syntax extractor and are
+marked `heuristic` with an explicit diagnostic that it is not an AST parser. `symbols` returns exact
+definition pointers, `impact` returns distinct incoming edges with resolved-versus-name-match
+provenance, and normal search reports cosine, lexical, and symbol-boost contributions. Optional
+`evaluation_queries` in `.project-memory.json`
+provide a repeatable recall-at-limit benchmark. Graph results remain discovery pointers: open the
+current source before relying on them.
 
 Copy the Project Memory operating contract from the source repository's `AGENTS.md` into the
 target repository instructions. Repository files always remain authoritative; Redis results are

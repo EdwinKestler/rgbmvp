@@ -101,6 +101,9 @@ python3 project-memory.py index --incremental --repair-deep  # semantic cache re
 python3 project-memory.py validate
 python3 project-memory.py validate --deep    # full active chunk/vector verification
 python3 project-memory.py search "QUERY" --limit 5
+python3 project-memory.py symbols "SYMBOL" --limit 20
+python3 project-memory.py impact "SYMBOL" --limit 20
+python3 project-memory.py evaluate --limit 10
 python3 project-memory.py clear    # this namespace only — never FLUSHDB
 ```
 

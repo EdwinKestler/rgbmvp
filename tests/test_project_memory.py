@@ -323,7 +323,7 @@ def test_v20_manifest_without_file_chunk_map_migrates_on_next_index(tmp_path):
     migrated = migrated_result["manifest"]
 
     assert set(migrated["file_chunks"]) == set(first["files"])
-    assert migrated["bundle_version"] == "2.1.2"
+    assert migrated["bundle_version"] == "2.2.0"
     assert migrated_result["metrics"]["files"]["changed"] == len(first["files"])
     assert migrated_result["metrics"]["files"]["unchanged"] == 0
     assert pm.validate(redis, root, deep=True)[1] is True
@@ -644,6 +644,321 @@ def test_mget_batches_are_bounded(tmp_path):
     assert len(pm._mget_batched(redis, keys)) == len(keys)
     batches = [command for command in redis.commands if command[0] == "MGET"]
     assert [len(command) - 1 for command in batches] == [pm.MGET_BATCH_SIZE, 5]
+
+
+def test_python_ast_graph_extracts_symbols_and_typed_edges():
+    graph = pm.extract_file_graph(
+        "src/demo.py",
+        "import json\n"
+        "class Base: pass\n"
+        "class Worker(Base):\n"
+        "    @classmethod\n"
+        "    def run(cls):\n"
+        "        return helper()\n"
+        "def helper(): return 1\n",
+    )
+
+    assert graph["parser"] == "python-ast"
+    assert graph["diagnostics"] == []
+    symbols = {(item["qualified_name"], item["kind"]) for item in graph["symbols"]}
+    assert {
+        ("src.demo.Worker", "class"),
+        ("src.demo.Worker.run", "method"),
+        ("src.demo.helper", "function"),
+    } <= symbols
+    edges = {(item["kind"], item["target"]) for item in graph["edges"]}
+    assert {("imports", "json"), ("inherits", "Base"), ("calls", "helper")} <= edges
+    assert all(item["confidence"] == "authoritative" for item in graph["symbols"])
+
+
+def test_python_decorator_calls_and_import_alias_resolution():
+    graphs = {
+        "src/payments/service.py": pm.extract_file_graph(
+            "src/payments/service.py", "def charge():\n    return 1\n"
+        ),
+        "src/api.py": pm.extract_file_graph(
+            "src/api.py",
+            "from src.payments.service import charge as capture\n"
+            "@app.get('/health')\n"
+            "@dataclass(frozen=True)\n"
+            "def endpoint():\n"
+            "    return capture()\n",
+        ),
+    }
+
+    pm._resolve_graph(graphs)
+    api_graph = graphs["src/api.py"]
+    decorators = {
+        edge["target"] for edge in api_graph["edges"] if edge["kind"] == "decorated_by"
+    }
+    assert {"app.get", "dataclass"} <= decorators
+    capture_call = next(
+        edge
+        for edge in api_graph["edges"]
+        if edge["kind"] == "calls" and edge["target"] == "src.payments.service.charge"
+    )
+    assert capture_call["target"] == "src.payments.service.charge"
+    assert capture_call["resolution"]["status"] == "import_binding"
+    assert capture_call["resolution"]["confidence"] == "strong"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("import analytics\nanalytics.send()\n", "analytics.send"),
+        (
+            "import analytics.client\nanalytics.client.send()\n",
+            "analytics.client.send",
+        ),
+        (
+            "import analytics.client as client\nclient.send()\n",
+            "analytics.client.send",
+        ),
+        (
+            "from analytics import client\nclient.send()\n",
+            "analytics.client.send",
+        ),
+        (
+            "from analytics import client as api\napi.send()\n",
+            "analytics.client.send",
+        ),
+    ],
+)
+def test_python_import_forms_canonicalize_without_duplicate_segments(source, expected):
+    graph = pm.extract_file_graph("src/demo.py", source)
+    call = next(edge for edge in graph["edges"] if edge["kind"] == "calls")
+
+    assert call["target"] == expected
+    assert call["binding_applied"] is True
+
+
+def test_function_local_import_alias_does_not_leak_to_sibling_scope():
+    graph = pm.extract_file_graph(
+        "src/demo.py",
+        "def first():\n"
+        "    import analytics.client as client\n"
+        "    client.send()\n"
+        "def second():\n"
+        "    client.send()\n",
+    )
+    calls = [edge for edge in graph["edges"] if edge["kind"] == "calls"]
+
+    assert [(edge["target"], edge["binding_applied"]) for edge in calls] == [
+        ("analytics.client.send", True),
+        ("client.send", False),
+    ]
+    pm._resolve_graph({"src/demo.py": graph})
+    assert calls[1]["resolution"]["status"] == "unresolved"
+    assert calls[1]["resolution"]["confidence"] == "unknown"
+
+
+def test_sibling_scopes_can_bind_the_same_alias_independently():
+    graph = pm.extract_file_graph(
+        "src/demo.py",
+        "def first():\n"
+        "    import analytics.client as client\n"
+        "    client.send()\n"
+        "def second():\n"
+        "    import payments.client as client\n"
+        "    client.send()\n",
+    )
+    calls = [edge["target"] for edge in graph["edges"] if edge["kind"] == "calls"]
+
+    assert calls == ["analytics.client.send", "payments.client.send"]
+
+
+def test_relative_imports_resolve_from_the_current_package():
+    graph = pm.extract_file_graph(
+        "src/pkg/demo.py",
+        "from .service import charge\n"
+        "from ..common import load\n"
+        "charge()\n"
+        "load()\n",
+    )
+    calls = [edge for edge in graph["edges"] if edge["kind"] == "calls"]
+
+    assert [(edge["target"], edge["binding_applied"]) for edge in calls] == [
+        ("src.pkg.service.charge", True),
+        ("src.common.load", True),
+    ]
+
+
+def test_python_resolution_preserves_ambiguity_and_attribute_uncertainty():
+    graphs = {
+        "src/one.py": pm.extract_file_graph(
+            "src/one.py", "def helper(): pass\ndef validate(): pass\n"
+        ),
+        "src/two.py": pm.extract_file_graph("src/two.py", "def helper(): pass\n"),
+        "src/caller.py": pm.extract_file_graph(
+            "src/caller.py", "def run(obj):\n    helper()\n    obj.validate()\n"
+        ),
+    }
+
+    pm._resolve_graph(graphs)
+    calls = {
+        edge["target"]: edge["resolution"]
+        for edge in graphs["src/caller.py"]["edges"]
+        if edge["kind"] == "calls"
+    }
+    assert calls["helper"]["status"] == "ambiguous"
+    assert calls["helper"]["target_id"] is None
+    assert calls["obj.validate"]["status"] == "unresolved"
+    assert calls["obj.validate"]["target_id"] is None
+
+
+def test_rust_graph_is_explicitly_heuristic():
+    graph = pm.extract_file_graph(
+        "crates/demo/src/lib.rs",
+        "use crate::store::Store;\npub struct Service;\npub fn run() { helper(); }\n",
+    )
+
+    assert graph["parser"] == "rust-syntax-v1"
+    assert "not an AST parser" in graph["diagnostics"][0]
+    assert any(item["name"] == "Service" for item in graph["symbols"])
+    assert any(item["target"] == "helper" and item["kind"] == "calls" for item in graph["edges"])
+    assert all(item["confidence"] == "heuristic" for item in graph["symbols"])
+
+
+def test_rust_repeated_definition_names_have_unique_symbol_ids():
+    graph = pm.extract_file_graph(
+        "crates/demo/src/lib.rs",
+        "impl First {\n    fn run() {}\n}\nimpl Second {\n    fn run() {}\n}\n",
+    )
+
+    symbol_ids = [item["id"] for item in graph["symbols"]]
+    assert len(symbol_ids) == len(set(symbol_ids))
+
+
+def test_incremental_graph_extraction_only_processes_changed_file(tmp_path, monkeypatch):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)
+    observed = []
+    original_extract = pm.extract_file_graph
+
+    def observed_extract(path, text):
+        observed.append(path)
+        return original_extract(path, text)
+
+    monkeypatch.setattr(pm, "extract_file_graph", observed_extract)
+    (root / "src" / "pkg" / "service.py").write_text("def changed(): return 2\n")
+    second = pm.build_index(redis, root)
+
+    assert observed == ["src/pkg/service.py"]
+    assert second["metrics"]["graph"]["generated_files"] == 1
+    assert second["metrics"]["graph"]["reused_files"] == 5
+    assert first["manifest"]["file_graphs"]["README.md"] == second["manifest"]["file_graphs"]["README.md"]
+
+
+def test_v21_manifest_without_graph_map_migrates_without_reembedding(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)["manifest"]
+    active_key = f"{pm.namespace(root)}:active-generation"
+    manifest_key = redis.data[active_key].decode()
+    legacy = json.loads(redis.data[manifest_key])
+    for field in ("file_graphs", "symbol_count", "edge_count"):
+        legacy.pop(field)
+    legacy["bundle_version"] = "2.1.2"
+    redis.data[manifest_key] = json.dumps(legacy).encode()
+
+    migrated = pm.build_index(redis, root)
+
+    assert migrated["metrics"]["chunks"]["generated"] == 0
+    assert migrated["metrics"]["graph"]["generated_files"] == len(first["files"])
+    assert set(migrated["manifest"]["file_graphs"]) == set(first["files"])
+
+
+def test_stale_graph_schema_reextracts_graphs_without_reembedding(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)["manifest"]
+    manifest_key = redis.data[f"{pm.namespace(root)}:active-generation"].decode()
+    stale = json.loads(redis.data[manifest_key])
+    for graph in stale["file_graphs"].values():
+        graph.pop("schema")
+    redis.data[manifest_key] = json.dumps(stale).encode()
+
+    migrated = pm.build_index(redis, root)
+
+    assert migrated["metrics"]["chunks"]["generated"] == 0
+    assert migrated["metrics"]["graph"]["generated_files"] == len(first["files"])
+    assert all(
+        graph["schema"] == pm.GRAPH_SCHEMA
+        for graph in migrated["manifest"]["file_graphs"].values()
+    )
+
+
+def test_symbol_lookup_impact_and_search_explanations(tmp_path):
+    root = make_repo(tmp_path)
+    source = root / "src" / "pkg" / "service.py"
+    source.write_text(
+        "def target_symbol():\n    return 1\n\ndef caller_symbol():\n    return target_symbol()\n"
+        "\ndef target_symbol():\n    return 2\n"
+    )
+    redis = FakeRedis()
+    pm.build_index(redis, root)
+
+    symbol_results = pm.symbols(redis, "target_symbol", 10, root)["results"]
+    assert symbol_results[0]["qualified_name"] == "src.pkg.service.target_symbol"
+    assert symbol_results[0]["parser"] == "python-ast"
+    impact_results = pm.impact(redis, "target_symbol", 10, root)["results"]
+    assert any(
+        item["source"]["qualified_name"] == "src.pkg.service.caller_symbol"
+        for item in impact_results
+    )
+    assert len({item["source"]["id"] for item in impact_results}) == len(impact_results)
+    search_results = pm.search(redis, "target_symbol", 5, root)["results"]
+    assert search_results[0]["explanation"]["symbol_boost"] == 0.2
+    assert search_results[0]["matches"][0]["type"] == "symbol"
+
+
+def test_deep_validation_rejects_corrupted_graph(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    manifest = pm.build_index(redis, root)["manifest"]
+    active_key = f"{pm.namespace(root)}:active-generation"
+    manifest_key = redis.data[active_key].decode()
+    graph = manifest["file_graphs"]["src/pkg/service.py"]
+    graph["symbols"][0]["name"] = "corrupted"
+    redis.data[manifest_key] = json.dumps(manifest).encode()
+
+    assert pm.status(redis, root)[1] is True
+    assert pm.validate(redis, root, deep=True)[1] is False
+
+
+def test_retrieval_evaluation_reports_recall(tmp_path):
+    root = make_repo(tmp_path)
+    source = root / "src" / "pkg" / "service.py"
+    source.write_text(
+        "def target_symbol():\n    return 1\n\ndef caller_symbol():\n    return target_symbol()\n"
+    )
+    (root / pm.CONFIG_FILE).write_text(
+        json.dumps(
+            {
+                "evaluation_queries": [
+                    {
+                        "mode": "symbols",
+                        "query": "target_symbol",
+                        "expected_paths": ["src/pkg/service.py"],
+                    },
+                    {
+                        "mode": "impact",
+                        "query": "target_symbol",
+                        "expected_paths": ["src/pkg/service.py"],
+                    },
+                ]
+            }
+        )
+    )
+    redis = FakeRedis()
+    pm.build_index(redis, root)
+
+    result = pm.evaluate(redis, 10, root)
+
+    assert result["status"] == "passed"
+    assert result["recall_at_limit"] == 1.0
+    assert result["passed"] == result["cases"] == 2
 
 
 def test_configurable_corpus_patterns_preserve_privacy_exclusions(tmp_path):

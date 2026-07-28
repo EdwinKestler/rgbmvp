@@ -44,5 +44,132 @@
     "data",
     "fixtures",
     "secrets"
+  ],
+  "evaluation_queries": [
+    {
+      "mode": "symbols",
+      "query": "Settings",
+      "expected_paths": ["src/rgbmvp/config.py"]
+    },
+    {
+      "mode": "symbols",
+      "query": "src.rgbmvp.config.Settings.from_env",
+      "expected_paths": ["src/rgbmvp/config.py"]
+    },
+    {
+      "mode": "symbols",
+      "query": "src.rgbmvp.health.HealthReport",
+      "expected_paths": ["src/rgbmvp/health.py"]
+    },
+    {
+      "mode": "symbols",
+      "query": "src.rgbmvp.health.readiness",
+      "expected_paths": ["src/rgbmvp/health.py"]
+    },
+    {
+      "mode": "symbols",
+      "query": "src.rgbmvp.health.liveness",
+      "expected_paths": ["src/rgbmvp/health.py"]
+    },
+    {
+      "mode": "symbols",
+      "query": "parse_chain_net",
+      "expected_paths": ["crates/lab-rgb/src/lib.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "chain_label",
+      "expected_paths": ["crates/lab-rgb/src/lib.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "plan_claim_transfer",
+      "expected_paths": ["crates/lab-rgb/src/lib.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "verify_against_witness",
+      "expected_paths": ["crates/lab-rgb/src/lib.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "verify_seal_closure",
+      "expected_paths": ["crates/lab-rgb/src/seal.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "build_anchor",
+      "expected_paths": ["crates/lab-rgb/src/patched_anchor.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "issue_bfa",
+      "expected_paths": ["crates/lab-rgb/src/bfa.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "audit_mint",
+      "expected_paths": ["crates/lab-rgb/src/bfa.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "claim_lq_rgb",
+      "expected_paths": ["crates/lab-api/src/s3.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "resolve_preimage_from_lq_claim",
+      "expected_paths": ["crates/lab-api/src/s3.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "security_json",
+      "expected_paths": ["crates/lab-api/src/lib.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "v1_swap_get",
+      "expected_paths": ["crates/lab-cli/src/labd_axum.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "is_safe_public_artifact_path",
+      "expected_paths": ["crates/lab-cli/src/labd_axum.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "sanitize_wallet_name",
+      "expected_paths": ["crates/lab-core/src/lib.rs"]
+    },
+    {
+      "mode": "symbols",
+      "query": "constant_time_eq",
+      "expected_paths": ["crates/lab-core/src/security.rs"]
+    },
+    {
+      "mode": "impact",
+      "query": "public_swap_view",
+      "expected_paths": ["crates/lab-cli/src/labd_axum.rs"]
+    },
+    {
+      "mode": "impact",
+      "query": "validate_path_id",
+      "expected_paths": ["crates/lab-cli/src/labd_axum.rs"]
+    },
+    {
+      "mode": "search",
+      "query": "Project Memory v2.2 syntax code graph",
+      "expected_paths": ["docs/PROJECT_MEMORY.md"]
+    },
+    {
+      "mode": "search",
+      "query": "Liquid Testnet Mainnet scope project constraints",
+      "expected_paths": ["docs/M2M.md"]
+    },
+    {
+      "mode": "search",
+      "query": "RGB swap preimage redaction tests",
+      "expected_paths": ["crates/lab-api/src/swap_view.rs"]
+    }
   ]
 }

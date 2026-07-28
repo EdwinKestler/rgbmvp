@@ -16,6 +16,9 @@ python3 project-memory.py status
 python3 project-memory.py validate
 python3 project-memory.py validate --deep
 python3 project-memory.py search "health readiness boundary" --limit 5
+python3 project-memory.py symbols "qualified.name" --limit 20
+python3 project-memory.py impact "symbol_name" --limit 20
+python3 project-memory.py evaluate --limit 10
 python3 project-memory.py clear
 ```
 
@@ -27,6 +30,9 @@ All output is JSON.
 | `index` | Atomically activates a staged generation; `--repair-deep` regenerates owners of semantically invalid reused chunks | `0` success; `1` error |
 | `validate` | Validates the active manifest and current corpus; `--deep` also verifies every chunk/vector | `0` fresh; `2` invalid/stale; `1` error |
 | `search QUERY [--limit N]` | Ranked path, line range, score, and text pointers | `0` success; `1` error (rejects missing/stale by default) |
+| `symbols QUERY [--limit N]` | Symbol definition pointers with parser confidence | `0` success; `1` error |
+| `impact QUERY [--limit N]` | Distinct incoming typed edges with resolution provenance | `0` success; `1` error |
+| `evaluate [--limit N]` | Configured retrieval recall benchmark | `0` all pass; `2` misses; `1` error |
 | `clear` | Deletes only this namespace's recorded keys | `0` success; `1` error |
 
 `clear` never runs `FLUSHDB` or `FLUSHALL`. Connection and protocol failures are reported clearly with `cache_consulted: false`.
@@ -74,6 +80,49 @@ misses requiring re-indexing.
 Normal incremental indexing performs inexpensive structural checks on reused chunks. After a deep
 validation failure, `index --incremental --repair-deep` performs semantic checks and regenerates only
 the files owning invalid chunks. Duplicate chunk keys are invalid manifest metadata.
+
+## v2.2 syntax and code graph
+
+Each file owns a deterministic graph record containing module-qualified symbols, typed edges,
+parser provenance, extraction confidence, resolution provenance, and diagnostics. Unchanged files
+reuse their graph records; only new and changed files
+are re-extracted. Deep validation recomputes the graph from current source in addition to validating
+chunks.
+
+- Python uses the standard-library AST. Definitions, imports, calls, inheritance, decorators, and
+  decorator-call forms are marked `python-ast` with authoritative extraction confidence. Module
+  prefixes, explicit aliases, unaliased dotted imports, lexical binding scopes, and package-relative
+  imports are retained. Resolution confidence is reported separately.
+- Rust uses `rust-syntax-v1`, a deterministic lightweight syntax extractor for definitions, `use`
+  statements, and call-shaped expressions. Its records are always marked `heuristic`, and its
+  diagnostic explicitly says it is not an AST parser.
+- Other admitted text remains searchable by chunks and has an empty `parser: none` graph record.
+
+`search` includes score-component explanations and exact symbol overlap. `symbols` provides
+definition pointers. `impact` reports uniquely resolved incoming edges plus exact target-name
+matches; ambiguous names remain labeled as name matches instead of being presented as resolved.
+Results are deduplicated by source symbol. `.project-memory.json` may define `evaluation_queries` with
+`mode`, `query`, and `expected_paths` to measure recall at a chosen result limit.
+
+Resolution status is one of `exact_qualified`, `lexical_scope`, `import_binding`,
+`heuristic_unique_short_name`, `ambiguous`, or `unresolved`. Only the first three carry `strong`
+confidence. The manifest and indexing metrics report counts for every status; a unique short-name
+link remains `probable`, never authoritative. Attribute calls without an explicit binding remain
+unresolved rather than being guessed from a globally unique method name.
+
+v2.2 embeds per-file graph records in the active manifest. This keeps activation transactional but
+makes metadata reads proportional to graph size. Content-addressed Redis graph records are deferred
+until measurements justify that storage migration; current release evidence must report manifest
+size alongside symbol and edge counts.
+
+The rgbmvp RC measurement at 623 symbols and 6,168 edges was 2,102,555 manifest bytes, of which
+97.1% was the embedded graph. This is acceptable for the repository-local checkpoint but establishes
+external content-addressed graph records as the next storage milestone before broad replication.
+The configured repository benchmark contains 25 definition, impact, and semantic-search cases;
+recall is a regression signal, not proof of general resolution accuracy.
+
+The graph remains a disposable discovery aid. It does not replace compiler name resolution, type
+checking, or opening the returned current source file.
 
 **Raw Redis layout, hash fields, vector encoding, and stored text formatting are private implementation details, not a stable API.** Agents must not depend on them.
 
