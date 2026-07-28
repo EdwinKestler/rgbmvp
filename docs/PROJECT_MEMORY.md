@@ -77,6 +77,11 @@ Excluded content includes:
 - symlinks and files larger than 1 MB;
 - the portable memory implementation and compatibility wrapper themselves.
 
+Portable bundle v2.0.1 makes sensitive filename/path and private-key suffix
+filters mandatory and non-overridable. Known text-source types must also pass a
+UTF-8/binary probe, so broad test/schema globs cannot admit images, databases,
+archives, or invalid text payloads.
+
 Never cache credentials, tokens, passkeys, device keys, personal data, production payloads, or uncommitted content copied from external systems. Never write application/runtime state into the project-memory namespace.
 
 Inspect actual coverage after indexing:

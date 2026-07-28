@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 SCHEMA = "project-memory:v2"
+BUNDLE_VERSION = "2.0.1"
 EMBEDDING_ID = "feature-hash-sha256-unigram-bigram-v1"
 DIMENSIONS = 384
 DEFAULT_URL = "redis://localhost:6379/0"
@@ -89,6 +90,83 @@ EXCLUDED_PARTS = {
 }
 ENV_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
 ALLOWED_DOT_DIRS = {".github", ".claude", ".agents", ".codex"}
+SENSITIVE_NAME_PATTERNS = (
+    re.compile(r"(^|[._/-])credentials?([._/-]|$)", re.IGNORECASE),
+    re.compile(r"(^|[._/-])secrets?([._/-]|$)", re.IGNORECASE),
+    re.compile(r"(^|[._/-])private[_-]?keys?([._/-]|$)", re.IGNORECASE),
+    re.compile(r"(^|[._/-])api[_-]?keys?([._/-]|$)", re.IGNORECASE),
+    re.compile(r"(^|[._/-])access[_-]?tokens?([._/-]|$)", re.IGNORECASE),
+    re.compile(r"(^|[._/-])service[_-]?accounts?([._/-]|$)", re.IGNORECASE),
+)
+SENSITIVE_SUFFIXES = {
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".jks",
+    ".keystore",
+}
+SENSITIVE_EXACT_NAMES = {
+    "authorized_keys",
+    "credentials.json",
+    "id_ed25519",
+    "id_rsa",
+    "known_hosts",
+    "service-account.json",
+}
+TEXT_SUFFIXES = {
+    ".avsc",
+    ".bash",
+    ".c",
+    ".cfg",
+    ".conf",
+    ".cpp",
+    ".css",
+    ".graphql",
+    ".h",
+    ".hpp",
+    ".htm",
+    ".html",
+    ".ini",
+    ".java",
+    ".js",
+    ".json",
+    ".jsonl",
+    ".jsx",
+    ".kt",
+    ".kts",
+    ".less",
+    ".md",
+    ".mk",
+    ".proto",
+    ".py",
+    ".pyi",
+    ".rs",
+    ".rst",
+    ".scss",
+    ".sh",
+    ".sql",
+    ".svelte",
+    ".tf",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".vue",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".zsh",
+}
+TEXT_EXACT_NAMES = {
+    ".env.example",
+    ".gitignore",
+    "dockerfile",
+    "license",
+    "makefile",
+    "readme",
+}
+TEXT_PROBE_BYTES = 8192
 
 
 def project_config(root: Path = ROOT) -> dict[str, Any]:
@@ -140,6 +218,37 @@ def namespace(root: Path = ROOT) -> str:
     return f"{project_slug(root)}:{SCHEMA}"
 
 
+def is_sensitive_path(path: Path, relative: str) -> bool:
+    """Reject secret-bearing path names independently of repository configuration."""
+    name = path.name.lower()
+    normalized = relative.replace("\\", "/").lower()
+    return (
+        name in SENSITIVE_EXACT_NAMES
+        or path.suffix.lower() in SENSITIVE_SUFFIXES
+        or any(pattern.search(name) or pattern.search(normalized) for pattern in SENSITIVE_NAME_PATTERNS)
+    )
+
+
+def is_text_source_path(path: Path) -> bool:
+    """Admit known text source types and reject binary/non-UTF-8 payloads."""
+    name = path.name.lower()
+    type_allowed = (
+        path.suffix.lower() in TEXT_SUFFIXES
+        or name in TEXT_EXACT_NAMES
+        or name.startswith(("dockerfile.", "makefile."))
+    )
+    if not type_allowed:
+        return False
+    try:
+        sample = path.read_bytes()[:TEXT_PROBE_BYTES]
+        if b"\x00" in sample:
+            return False
+        sample.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return True
+
+
 def included_files(root: Path = ROOT) -> list[Path]:
     """Return deterministic, privacy-conscious source corpus paths."""
     exact = [
@@ -178,6 +287,8 @@ def included_files(root: Path = ROOT) -> list[Path]:
             or path.name.startswith(".env") and path.name != ".env.example"
             or path.is_symlink()
             or path.stat().st_size > 1_000_000
+            or is_sensitive_path(path, rel)
+            or not is_text_source_path(path)
         ):
             continue
         result.append(path)

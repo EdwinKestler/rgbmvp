@@ -92,6 +92,62 @@ def test_corpus_includes_source_tests_config_docs_agents_and_excludes_sensitive(
     assert all("project_memory.py" not in name for name in names)
 
 
+def test_mandatory_sensitive_path_filter_cannot_be_overridden(tmp_path):
+    root = make_repo(tmp_path)
+    sensitive = {
+        "credentials.json": "{}\n",
+        "service-account.json": "{}\n",
+        "api-keys.yaml": "example: synthetic\n",
+        "access_token.txt": "synthetic\n",
+        "id_rsa": "synthetic\n",
+        "client.pem": "synthetic\n",
+        "nested/private_key.json": "{}\n",
+        "config/secrets/app.toml": "value = 'synthetic'\n",
+    }
+    for relative, content in sensitive.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    (root / pm.CONFIG_FILE).write_text(json.dumps({"include_patterns": ["**/*"]}))
+
+    names = {path.relative_to(root).as_posix() for path in pm.included_files(root)}
+    assert not names.intersection(sensitive)
+    assert "README.md" in names
+    assert "src/pkg/service.py" in names
+
+
+def test_binary_and_unknown_test_fixtures_are_skipped(tmp_path):
+    root = make_repo(tmp_path)
+    (root / "tests" / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (root / "tests" / "state.sqlite").write_bytes(b"SQLite format 3\x00")
+    (root / "tests" / "archive.zip").write_bytes(b"PK\x03\x04")
+    (root / "tests" / "invalid.py").write_bytes(b"def ok(): pass\n\xff")
+    (root / "tests" / "valid.json").write_text('{"fixture": true}\n')
+
+    names = {path.relative_to(root).as_posix() for path in pm.included_files(root)}
+    assert "tests/valid.json" in names
+    assert "tests/image.png" not in names
+    assert "tests/state.sqlite" not in names
+    assert "tests/archive.zip" not in names
+    assert "tests/invalid.py" not in names
+
+    manifest = pm.build_index(FakeRedis(), root)
+    assert "tests/valid.json" in manifest["files"]
+
+
+def test_env_example_and_supported_extensionless_sources_remain_allowed(tmp_path):
+    root = make_repo(tmp_path)
+    (root / ".env.example").write_text("TOKEN=replace-me\n")
+    (root / "Dockerfile.public").write_text("FROM scratch\n")
+    (root / "Makefile").write_text("check:\n\ttrue\n")
+    (root / pm.CONFIG_FILE).write_text(
+        json.dumps({"include_patterns": [".env.example", "Dockerfile*", "Makefile"]})
+    )
+
+    names = {path.relative_to(root).as_posix() for path in pm.included_files(root)}
+    assert {".env.example", "Dockerfile.public", "Makefile"} <= names
+
+
 def test_digest_staleness_and_ranking(tmp_path):
     root = make_repo(tmp_path)
     redis = FakeRedis()

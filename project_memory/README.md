@@ -1,4 +1,4 @@
-# Portable Project Memory v2 bundle
+# Portable Project Memory v2.0.1 bundle
 
 Copy these paths to another repository while preserving their relative locations:
 
@@ -26,6 +26,12 @@ Add `include_patterns` only when the default multi-language corpus is unsuitable
 patterns replace the defaults. `exclude_directories` only adds repository-specific exclusions;
 mandatory secret, runtime-data, dependency, build, symlink, and size exclusions remain enforced.
 `redis_url_envs` lists the portable and any legacy repository-specific Redis URL variables.
+
+The privacy boundary is not configurable: sensitive credential/key/token path names and key
+container suffixes are always rejected, even when a custom include glob matches them. Only known
+text-source types that pass an initial UTF-8/binary probe are admitted; binary fixtures under broad
+directories such as `tests/` are skipped rather than aborting an index build. These filters reduce
+accidental admission, but repositories must still keep real secrets outside source-oriented paths.
 
 ```bash
 python3 project-memory.py status
