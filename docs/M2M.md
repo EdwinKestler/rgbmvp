@@ -97,7 +97,9 @@ python3 project-memory.py status
 # exit 0 = fresh; exit 2 = missing/stale/invalid; exit 1 = error
 
 python3 project-memory.py index --incremental    # atomic generation switch
+python3 project-memory.py index --incremental --repair-deep  # semantic cache repair
 python3 project-memory.py validate
+python3 project-memory.py validate --deep    # full active chunk/vector verification
 python3 project-memory.py search "QUERY" --limit 5
 python3 project-memory.py clear    # this namespace only — never FLUSHDB
 ```

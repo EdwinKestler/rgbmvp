@@ -11,8 +11,10 @@ Agents use the portable root `project-memory.py`; the raw Redis representation i
 
 ```bash
 python3 project-memory.py index --incremental
+python3 project-memory.py index --incremental --repair-deep
 python3 project-memory.py status
 python3 project-memory.py validate
+python3 project-memory.py validate --deep
 python3 project-memory.py search "health readiness boundary" --limit 5
 python3 project-memory.py clear
 ```
@@ -22,12 +24,13 @@ All output is JSON.
 | Command | Success behavior | Exit codes |
 |---------|------------------|------------|
 | `status` | Prints machine-parseable manifest and freshness data | `0` fresh; `2` missing/stale/invalid; `1` connection/protocol/command error |
-| `index` | Stages and atomically activates this project's generation | `0` success; `1` error |
-| `validate` | Validates the active generation and current corpus | `0` fresh; `2` invalid/stale; `1` error |
+| `index` | Atomically activates a staged generation; `--repair-deep` regenerates owners of semantically invalid reused chunks | `0` success; `1` error |
+| `validate` | Validates the active manifest and current corpus; `--deep` also verifies every chunk/vector | `0` fresh; `2` invalid/stale; `1` error |
 | `search QUERY [--limit N]` | Ranked path, line range, score, and text pointers | `0` success; `1` error (rejects missing/stale by default) |
 | `clear` | Deletes only this namespace's recorded keys | `0` success; `1` error |
 
 `clear` never runs `FLUSHDB` or `FLUSHALL`. Connection and protocol failures are reported clearly with `cache_consulted: false`.
+Indexing and namespace clearing share the same ownership lock and cannot run concurrently.
 
 ## Connection configuration
 
@@ -46,11 +49,31 @@ rgbmvp:project-memory:v2:*
 
 Schema id: `project-memory:v2`. Embedding id: `feature-hash-sha256-unigram-bigram-v1` (384 dimensions).
 
-Each generation manifest records schema, namespace, generation, embedding identifier, dimensions, the exact ordered file list, per-file hashes, chunk count, chunk keys, and a SHA-256 corpus fingerprint computed from every included relative path and its exact bytes. Any indexed-file byte change makes the active generation stale.
+Each generation manifest records bundle version, schema, namespace, generation, embedding identifier,
+dimensions, the exact ordered file list, per-file hashes and chunk maps, chunk count, chunk keys, and a
+SHA-256 corpus fingerprint computed from every included relative path and its exact bytes. Any
+indexed-file byte change makes the active generation stale.
 
 Source is divided into deterministic 80-line chunks with 16 lines of overlap. Retrieval uses deterministic, locally computed feature-hashed unigrams and bigrams (SHA-256, signed accumulation, L2 normalization) with cosine ranking and a small exact-token lexical component. It uses only Python's standard library: no model download, external embedding API, `redis-py`, NumPy, Redis Stack, RediSearch, RedisJSON, or `redis-cli`.
 
-Re-indexing reuses unchanged content-addressed chunks, pipelines missing chunk writes, stages a complete manifest, registers it for cleanup, then atomically switches `active-generation`. Readers see either the old complete generation or the new complete generation. Unknown schema, malformed metadata/vector data, decoding errors, or missing chunks are cache misses requiring re-indexing.
+Project Memory v2.1 records the chunk keys owned by each file. Re-indexing hashes the admitted corpus,
+then parses, chunks, and embeds only new, changed, or damaged-cache files. Unchanged files reuse their
+recorded chunk keys. v2.1.2 bounds batched `MGET` calls, gives every build a unique staging key, and
+uses a namespaced renewable Redis ownership lock with token-fenced activation. Every attempt carries
+the existing registry forward, so a successful retry collects leftovers from interrupted writes or
+garbage collection before reducing the registry to the active generation. A final repository
+fingerprint check prevents activation if source files changed during the build. Operational
+file/chunk/timing metrics are returned beside the immutable manifest.
+
+`status` is intentionally lightweight: it checks manifest structure and repository freshness without
+loading chunk payloads. `validate --deep` additionally loads every active chunk and recomputes its
+owner, content-derived identifier, tokens, and embedding vector while checking line bounds. Unknown
+schema, malformed or semantically inconsistent data, decoding errors, or missing chunks are cache
+misses requiring re-indexing.
+
+Normal incremental indexing performs inexpensive structural checks on reused chunks. After a deep
+validation failure, `index --incremental --repair-deep` performs semantic checks and regenerates only
+the files owning invalid chunks. Duplicate chunk keys are invalid manifest metadata.
 
 **Raw Redis layout, hash fields, vector encoding, and stored text formatting are private implementation details, not a stable API.** Agents must not depend on them.
 
@@ -81,6 +104,10 @@ Portable bundle v2.0.1 makes sensitive filename/path and private-key suffix
 filters mandatory and non-overridable. Known text-source types must also pass a
 UTF-8/binary probe, so broad test/schema globs cannot admit images, databases,
 archives, or invalid text payloads.
+
+v2.1.2 also rejects generic token, refresh/auth/OAuth token, and client-secret
+filenames when they use data/configuration suffixes, without excluding legitimate
+source modules such as `token.py`.
 
 Never cache credentials, tokens, passkeys, device keys, personal data, production payloads, or uncommitted content copied from external systems. Never write application/runtime state into the project-memory namespace.
 

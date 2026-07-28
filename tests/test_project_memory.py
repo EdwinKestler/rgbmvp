@@ -29,6 +29,8 @@ class FakeRedis:
         if command == "GET":
             return self.data.get(args[0])
         if command == "SET":
+            if len(args) >= 3 and args[2] == "NX" and args[0] in self.data:
+                return None
             value = args[1] if isinstance(args[1], bytes) else args[1].encode()
             self.data[args[0]] = value
             return "OK"
@@ -40,6 +42,26 @@ class FakeRedis:
                 count += key in self.data
                 self.data.pop(key, None)
             return count
+        if command == "EVAL":
+            script = args[0]
+            if "pexpire" in script:
+                key, owner = args[2], args[3]
+                expected = owner if isinstance(owner, bytes) else owner.encode()
+                return 1 if self.data.get(key) == expected else 0
+            if "KEYS[2]" in script:
+                lock_key, active_key, owner, manifest_key = args[2:]
+                expected = owner if isinstance(owner, bytes) else owner.encode()
+                if self.data.get(lock_key) != expected:
+                    return 0
+                value = manifest_key if isinstance(manifest_key, bytes) else manifest_key.encode()
+                self.data[active_key] = value
+                return 1
+            key, owner = args[-2:]
+            expected = owner if isinstance(owner, bytes) else owner.encode()
+            if self.data.get(key) == expected:
+                self.data.pop(key, None)
+                return 1
+            return 0
         raise AssertionError(command)
 
 
@@ -103,6 +125,11 @@ def test_mandatory_sensitive_path_filter_cannot_be_overridden(tmp_path):
         "client.pem": "synthetic\n",
         "nested/private_key.json": "{}\n",
         "config/secrets/app.toml": "value = 'synthetic'\n",
+        "token.json": "{}\n",
+        "refresh_token.txt": "synthetic\n",
+        "auth-token.yaml": "value: synthetic\n",
+        "oauth_token.toml": "value = 'synthetic'\n",
+        "client-secret.ini": "value=synthetic\n",
     }
     for relative, content in sensitive.items():
         path = root / relative
@@ -114,6 +141,15 @@ def test_mandatory_sensitive_path_filter_cannot_be_overridden(tmp_path):
     assert not names.intersection(sensitive)
     assert "README.md" in names
     assert "src/pkg/service.py" in names
+
+
+def test_token_named_source_module_is_not_overexcluded(tmp_path):
+    root = make_repo(tmp_path)
+    (root / "src" / "pkg" / "token.py").write_text("class Token: pass\n")
+
+    names = {path.relative_to(root).as_posix() for path in pm.included_files(root)}
+
+    assert "src/pkg/token.py" in names
 
 
 def test_binary_and_unknown_test_fixtures_are_skipped(tmp_path):
@@ -131,7 +167,7 @@ def test_binary_and_unknown_test_fixtures_are_skipped(tmp_path):
     assert "tests/archive.zip" not in names
     assert "tests/invalid.py" not in names
 
-    manifest = pm.build_index(FakeRedis(), root)
+    manifest = pm.build_index(FakeRedis(), root)["manifest"]
     assert "tests/valid.json" in manifest["files"]
 
 
@@ -151,7 +187,7 @@ def test_env_example_and_supported_extensionless_sources_remain_allowed(tmp_path
 def test_digest_staleness_and_ranking(tmp_path):
     root = make_repo(tmp_path)
     redis = FakeRedis()
-    manifest = pm.build_index(redis, root)
+    manifest = pm.build_index(redis, root)["manifest"]
     state, fresh = pm.status(redis, root)
     assert fresh and state["manifest"]["fingerprint"] == manifest["fingerprint"]
     hits = pm.search(redis, "forecast_protocol", 3, root)["results"]
@@ -163,19 +199,26 @@ def test_digest_staleness_and_ranking(tmp_path):
 def test_malformed_or_missing_chunk_is_cache_miss(tmp_path):
     root = make_repo(tmp_path)
     redis = FakeRedis()
-    manifest = pm.build_index(redis, root)
+    manifest = pm.build_index(redis, root)["manifest"]
     redis.data[manifest["chunk_keys"][0]] = b"not-json"
-    assert pm.status(redis, root)[0]["status"] == "missing_or_invalid"
+    assert pm.status(redis, root)[1] is True
+    assert pm.validate(redis, root, deep=True)[0]["status"] == "missing_or_invalid"
     pm.build_index(redis, root)
-    redis.data.pop(manifest["chunk_keys"][0], None)
-    assert pm.status(redis, root)[1] is False
+    assert pm.status(redis, root)[1] is True
+    assert pm.validate(redis, root, deep=True)[1] is True
+    repaired_manifest = pm.status(redis, root)[0]["manifest"]
+    redis.data.pop(repaired_manifest["chunk_keys"][0], None)
+    assert pm.status(redis, root)[1] is True
+    assert pm.validate(redis, root, deep=True)[1] is False
+    pm.build_index(redis, root)
+    assert pm.validate(redis, root, deep=True)[1] is True
 
 
 def test_clear_and_reindex_delete_only_namespaced_recorded_keys(tmp_path):
     root = make_repo(tmp_path)
     redis = FakeRedis()
     redis.data["other-project:sentinel"] = b"keep"
-    first = pm.build_index(redis, root)
+    first = pm.build_index(redis, root)["manifest"]
     old_keys = set(first["chunk_keys"])
     (root / "README.md").write_text("# Changed\n")
     pm.build_index(redis, root)
@@ -204,22 +247,110 @@ def test_unknown_schema_is_invalid(tmp_path):
 def test_reindex_reuses_unchanged_content_addressed_chunks(tmp_path):
     root = make_repo(tmp_path)
     redis = FakeRedis()
-    first = pm.build_index(redis, root)
+    first = pm.build_index(redis, root)["manifest"]
     redis.commands.clear()
-    second = pm.build_index(redis, root)
+    second_result = pm.build_index(redis, root)
+    second = second_result["manifest"]
     chunk_sets = [
         command
         for command in redis.commands
         if command[0] == "SET" and ":chunk:" in command[1]
     ]
-    assert first["generation"] == second["generation"]
+    assert first["fingerprint"] == second["fingerprint"]
+    assert first["generation"] != second["generation"]
     assert chunk_sets == []
+    assert second_result["metrics"]["files"] == {
+        "total": 6,
+        "new": 0,
+        "changed": 0,
+        "unchanged": 6,
+        "deleted": 0,
+    }
+    assert second_result["metrics"]["chunks"]["generated"] == 0
+    assert second_result["metrics"]["chunks"]["reused"] == second["chunk_count"]
+
+
+def test_incremental_rebuild_parses_and_embeds_only_changed_file(tmp_path, monkeypatch):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)["manifest"]
+    parsed = []
+    embedded = []
+    original_split = pm.split_chunks
+    original_embedding = pm.embedding
+
+    def observed_split(path, text, size=pm.CHUNK_LINES, overlap=pm.CHUNK_OVERLAP):
+        parsed.append(path)
+        return original_split(path, text, size, overlap)
+
+    def observed_embedding(text, dimensions=pm.DIMENSIONS):
+        embedded.append(text)
+        return original_embedding(text, dimensions)
+
+    monkeypatch.setattr(pm, "split_chunks", observed_split)
+    monkeypatch.setattr(pm, "embedding", observed_embedding)
+    changed_path = root / "src" / "pkg" / "service.py"
+    changed_path.write_text("def forecast_protocol():\n    return 'updated'\n")
+    redis.commands.clear()
+
+    second_result = pm.build_index(redis, root)
+    second = second_result["manifest"]
+
+    assert parsed == ["src/pkg/service.py"]
+    assert len(embedded) == len(second["file_chunks"]["src/pkg/service.py"])
+    assert second_result["metrics"]["files"]["changed"] == 1
+    assert second_result["metrics"]["files"]["unchanged"] == 5
+    assert second_result["metrics"]["chunks"]["generated"] == len(embedded)
+    assert all(command[0] != "GET" or ":chunk:" not in command[1] for command in redis.commands)
+    assert any(command[0] == "MGET" for command in redis.commands)
+    for path in first["files"]:
+        if path != "src/pkg/service.py":
+            assert second["file_chunks"][path] == first["file_chunks"][path]
+
+
+def test_v20_manifest_without_file_chunk_map_migrates_on_next_index(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)["manifest"]
+    active_key = f"{pm.namespace(root)}:active-generation"
+    manifest_key = redis.data[active_key].decode()
+    legacy = json.loads(redis.data[manifest_key])
+    legacy.pop("file_chunks")
+    legacy["bundle_version"] = "2.0.1"
+    redis.data[manifest_key] = json.dumps(legacy).encode()
+
+    migrated_result = pm.build_index(redis, root)
+    migrated = migrated_result["manifest"]
+
+    assert set(migrated["file_chunks"]) == set(first["files"])
+    assert migrated["bundle_version"] == "2.1.2"
+    assert migrated_result["metrics"]["files"]["changed"] == len(first["files"])
+    assert migrated_result["metrics"]["files"]["unchanged"] == 0
+    assert pm.validate(redis, root, deep=True)[1] is True
+
+
+def test_deleted_and_renamed_files_update_chunk_map_and_metrics(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)["manifest"]
+    deleted_keys = set(first["file_chunks"]["docs/architecture.md"])
+    (root / "docs" / "architecture.md").rename(root / "docs" / "design.md")
+
+    second_result = pm.build_index(redis, root)
+    second = second_result["manifest"]
+
+    assert "docs/architecture.md" not in second["file_chunks"]
+    assert "docs/design.md" in second["file_chunks"]
+    assert second_result["metrics"]["files"]["new"] == 1
+    assert second_result["metrics"]["files"]["deleted"] == 1
+    assert second_result["metrics"]["chunks"]["deleted"] == len(deleted_keys)
+    assert deleted_keys.isdisjoint(redis.data)
 
 
 def test_interrupted_rebuild_does_not_switch_active_generation(tmp_path):
     root = make_repo(tmp_path)
     redis = FakeRedis()
-    first = pm.build_index(redis, root)
+    first = pm.build_index(redis, root)["manifest"]
     active_key = f"{pm.namespace(root)}:active-generation"
     old_pointer = redis.data[active_key]
     (root / "src" / "pkg" / "service.py").write_text("def replacement(): pass\n")
@@ -227,7 +358,7 @@ def test_interrupted_rebuild_does_not_switch_active_generation(tmp_path):
     original_execute = redis.execute
 
     def fail_before_commit(command, *args):
-        if command == "SET" and args[0] == active_key:
+        if command == "EVAL" and "KEYS[2]" in args[0]:
             raise RuntimeError("simulated interruption")
         return original_execute(command, *args)
 
@@ -236,6 +367,283 @@ def test_interrupted_rebuild_does_not_switch_active_generation(tmp_path):
         pm.build_index(redis, root)
     assert redis.data[active_key] == old_pointer
     assert json.loads(redis.data[old_pointer.decode()])["generation"] == first["generation"]
+
+
+def test_same_fingerprint_manifest_migration_does_not_overwrite_active_manifest(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    pm.build_index(redis, root)
+    active_key = f"{pm.namespace(root)}:active-generation"
+    old_pointer = redis.data[active_key]
+    old_manifest_key = old_pointer.decode()
+    legacy = json.loads(redis.data[old_manifest_key])
+    legacy.pop("file_chunks")
+    legacy["bundle_version"] = "2.0.1"
+    redis.data[old_manifest_key] = json.dumps(legacy, sort_keys=True).encode()
+    old_manifest_bytes = redis.data[old_manifest_key]
+    original_execute = redis.execute
+
+    def fail_activation(command, *args):
+        if command == "EVAL" and "KEYS[2]" in args[0]:
+            raise RuntimeError("simulated migration interruption")
+        return original_execute(command, *args)
+
+    redis.execute = fail_activation
+    with pytest.raises(RuntimeError, match="migration interruption"):
+        pm.build_index(redis, root)
+
+    assert redis.data[active_key] == old_pointer
+    assert redis.data[old_manifest_key] == old_manifest_bytes
+
+
+def test_same_fingerprint_cache_repair_interruption_preserves_active_keys(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    manifest = pm.build_index(redis, root)["manifest"]
+    active_key = f"{pm.namespace(root)}:active-generation"
+    old_pointer = redis.data[active_key]
+    old_manifest_bytes = redis.data[old_pointer.decode()]
+    damaged_key = manifest["chunk_keys"][0]
+    redis.data[damaged_key] = b"not-json"
+    original_execute = redis.execute
+
+    def fail_activation(command, *args):
+        if command == "EVAL" and "KEYS[2]" in args[0]:
+            raise RuntimeError("simulated repair interruption")
+        return original_execute(command, *args)
+
+    redis.execute = fail_activation
+    with pytest.raises(RuntimeError, match="repair interruption"):
+        pm.build_index(redis, root)
+
+    assert redis.data[active_key] == old_pointer
+    assert redis.data[old_pointer.decode()] == old_manifest_bytes
+    assert redis.data[damaged_key] == b"not-json"
+
+
+def test_staged_registry_precedes_chunk_writes(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)["manifest"]
+    active_key = f"{pm.namespace(root)}:active-generation"
+    registry_key = f"{pm.namespace(root)}:chunk-registry"
+    old_pointer = redis.data[active_key]
+    (root / "README.md").write_text("# Changed before staged write\n")
+    original_execute = redis.execute
+
+    def fail_first_staged_chunk(command, *args):
+        if command == "SET" and ":chunk:" in args[0]:
+            raise RuntimeError("simulated staged write interruption")
+        return original_execute(command, *args)
+
+    redis.execute = fail_first_staged_chunk
+    with pytest.raises(RuntimeError, match="staged write interruption"):
+        pm.build_index(redis, root)
+
+    registry = json.loads(redis.data[registry_key])
+    assert redis.data[active_key] == old_pointer
+    assert set(first["chunk_keys"]) <= set(registry["chunk_keys"])
+    assert old_pointer.decode() in registry["manifest_keys"]
+    assert len(registry["manifest_keys"]) == 2
+
+    redis.execute = original_execute
+    recovered = pm.build_index(redis, root)["manifest"]
+    final_registry = json.loads(redis.data[registry_key])
+    assert final_registry == {
+        "chunk_keys": recovered["chunk_keys"],
+        "manifest_keys": [redis.data[active_key].decode()],
+    }
+    assert {
+        key for key in redis.data if ":chunk:" in key
+    } == set(recovered["chunk_keys"])
+
+
+def test_registry_remains_union_if_garbage_collection_is_interrupted(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)["manifest"]
+    active_key = f"{pm.namespace(root)}:active-generation"
+    registry_key = f"{pm.namespace(root)}:chunk-registry"
+    old_pointer = redis.data[active_key]
+    (root / "README.md").write_text("# Changed before garbage collection\n")
+    original_execute = redis.execute
+
+    def fail_garbage_collection(command, *args):
+        if command == "DEL" and any(key in first["chunk_keys"] for key in args):
+            raise RuntimeError("simulated garbage collection interruption")
+        return original_execute(command, *args)
+
+    redis.execute = fail_garbage_collection
+    with pytest.raises(RuntimeError, match="garbage collection interruption"):
+        pm.build_index(redis, root)
+
+    registry = json.loads(redis.data[registry_key])
+    assert redis.data[active_key] != old_pointer
+    interrupted_manifest = json.loads(redis.data[redis.data[active_key].decode()])
+    assert old_pointer.decode() in registry["manifest_keys"]
+    assert redis.data[active_key].decode() in registry["manifest_keys"]
+    assert set(first["chunk_keys"]) <= set(registry["chunk_keys"])
+
+    redis.execute = original_execute
+    recovered = pm.build_index(redis, root)["manifest"]
+    final_registry = json.loads(redis.data[registry_key])
+    assert final_registry == {
+        "chunk_keys": recovered["chunk_keys"],
+        "manifest_keys": [redis.data[active_key].decode()],
+    }
+    obsolete_first_keys = set(first["chunk_keys"]) - set(interrupted_manifest["chunk_keys"])
+    assert obsolete_first_keys.isdisjoint(redis.data)
+
+
+@pytest.mark.parametrize("corruption", ["text", "vector", "tokens", "path", "lines", "id"])
+def test_deep_validation_rejects_semantic_chunk_corruption(tmp_path, corruption):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    manifest = pm.build_index(redis, root)["manifest"]
+    key = manifest["chunk_keys"][0]
+    chunk = json.loads(redis.data[key])
+    if corruption == "text":
+        chunk["text"] += "\nchanged"
+    elif corruption == "vector":
+        chunk["vector"] = pm.encode_vector(pm.embedding("semantically wrong"))
+    elif corruption == "tokens":
+        chunk["tokens"] = ["wrong"]
+    elif corruption == "path":
+        chunk["path"] = "docs/architecture.md"
+    elif corruption == "lines":
+        chunk["start_line"] = 0
+    else:
+        chunk["id"] = "0" * 24
+    redis.data[key] = json.dumps(chunk).encode()
+
+    assert pm.status(redis, root)[1] is True
+    assert pm.validate(redis, root, deep=True)[1] is False
+
+
+def test_deep_repair_regenerates_only_owner_file(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    manifest = pm.build_index(redis, root)["manifest"]
+    key = manifest["file_chunks"]["README.md"][0]
+    chunk = json.loads(redis.data[key])
+    chunk["vector"] = pm.encode_vector(pm.embedding("semantically wrong"))
+    redis.data[key] = json.dumps(chunk).encode()
+
+    ordinary = pm.build_index(redis, root)
+    assert ordinary["metrics"]["files"]["changed"] == 0
+    assert pm.validate(redis, root, deep=True)[1] is False
+
+    repaired = pm.build_index(redis, root, repair_deep=True)
+    assert repaired["metrics"]["files"]["changed"] == 1
+    assert repaired["metrics"]["files"]["unchanged"] == 5
+    assert pm.validate(redis, root, deep=True)[1] is True
+
+
+def test_duplicate_chunk_keys_make_manifest_invalid(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    manifest = pm.build_index(redis, root)["manifest"]
+    active_key = f"{pm.namespace(root)}:active-generation"
+    manifest_key = redis.data[active_key].decode()
+    duplicate = manifest["chunk_keys"][0]
+    owner = next(path for path, keys in manifest["file_chunks"].items() if duplicate in keys)
+    manifest["chunk_keys"].append(duplicate)
+    manifest["file_chunks"][owner].append(duplicate)
+    manifest["chunk_count"] += 1
+    redis.data[manifest_key] = json.dumps(manifest).encode()
+
+    assert pm.status(redis, root)[0]["status"] == "missing_or_invalid"
+
+
+def test_index_lock_rejects_competing_indexer(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    lock_key = f"{pm.namespace(root)}:index-lock"
+    redis.data[lock_key] = b"other-owner"
+
+    with pytest.raises(ValueError, match="another Project Memory indexer is active"):
+        pm.build_index(redis, root)
+    with pytest.raises(ValueError, match="another Project Memory indexer is active"):
+        pm.clear(redis, root)
+
+    assert redis.data[lock_key] == b"other-owner"
+
+
+def test_lost_lock_lease_prevents_activation(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    pm.build_index(redis, root)
+    active_key = f"{pm.namespace(root)}:active-generation"
+    old_pointer = redis.data[active_key]
+    (root / "README.md").write_text("# Changed while lock expires\n")
+    original_execute = redis.execute
+    refreshes = 0
+
+    def lose_lock_on_final_refresh(command, *args):
+        nonlocal refreshes
+        if command == "EVAL" and "pexpire" in args[0]:
+            refreshes += 1
+            if refreshes == 3:
+                redis.data.pop(f"{pm.namespace(root)}:index-lock", None)
+        return original_execute(command, *args)
+
+    redis.execute = lose_lock_on_final_refresh
+    with pytest.raises(ValueError, match="lock ownership was lost"):
+        pm.build_index(redis, root)
+
+    assert redis.data[active_key] == old_pointer
+
+
+def test_lock_release_failure_does_not_mask_indexing_failure(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    original_execute = redis.execute
+
+    def fail_build_and_release(command, *args):
+        if command == "SET" and ":chunk:" in args[0]:
+            raise RuntimeError("primary indexing failure")
+        if command == "EVAL" and "redis.call('del'" in args[0]:
+            raise RuntimeError("secondary release failure")
+        return original_execute(command, *args)
+
+    redis.execute = fail_build_and_release
+    with pytest.raises(RuntimeError, match="primary indexing failure"):
+        pm.build_index(redis, root)
+
+
+def test_repository_change_before_activation_preserves_previous_generation(tmp_path, monkeypatch):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    pm.build_index(redis, root)
+    active_key = f"{pm.namespace(root)}:active-generation"
+    old_pointer = redis.data[active_key]
+    (root / "README.md").write_text("# Planned change\n")
+    original_fingerprint = pm.corpus_fingerprint
+    calls = 0
+
+    def mutate_before_final_fingerprint(files, snapshot_root=root):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            (root / "README.md").write_text("# Concurrent change\n")
+        return original_fingerprint(files, snapshot_root)
+
+    monkeypatch.setattr(pm, "corpus_fingerprint", mutate_before_final_fingerprint)
+    with pytest.raises(ValueError, match="repository changed during indexing"):
+        pm.build_index(redis, root)
+
+    assert redis.data[active_key] == old_pointer
+
+
+def test_mget_batches_are_bounded(tmp_path):
+    redis = FakeRedis()
+    keys = [f"key:{index}" for index in range(pm.MGET_BATCH_SIZE + 5)]
+    for key in keys:
+        redis.data[key] = key.encode()
+
+    assert len(pm._mget_batched(redis, keys)) == len(keys)
+    batches = [command for command in redis.commands if command[0] == "MGET"]
+    assert [len(command) - 1 for command in batches] == [pm.MGET_BATCH_SIZE, 5]
 
 
 def test_configurable_corpus_patterns_preserve_privacy_exclusions(tmp_path):

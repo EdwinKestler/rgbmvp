@@ -1,4 +1,4 @@
-# Portable Project Memory v2.0.1 bundle
+# Portable Project Memory v2.1.2 bundle
 
 Copy these paths to another repository while preserving their relative locations:
 
@@ -36,9 +36,25 @@ accidental admission, but repositories must still keep real secrets outside sour
 ```bash
 python3 project-memory.py status
 python3 project-memory.py index --incremental
+python3 project-memory.py index --incremental --repair-deep
 python3 project-memory.py validate
+python3 project-memory.py validate --deep
 python3 project-memory.py search "authentication boundary" --limit 5
 ```
+
+v2.1 records a `file_chunks` map beside `file_hashes`. Incremental indexing hashes the admitted
+corpus, reparses and embeds only new, changed, or cache-repair files, and reuses unchanged files'
+chunk keys. v2.1.2 bounds batched `MGET` calls, gives every build a unique staged generation, and
+uses a namespaced renewable Redis lock with token-fenced activation. Existing registry entries are
+carried into staging, including leftovers from interrupted attempts, and are collected before the
+registry is reduced to the active generation. A final repository fingerprint check prevents
+activating a mixed source snapshot. Operational timing/reuse metrics are returned beside, not stored
+inside, the immutable generation manifest.
+
+`status` performs lightweight manifest and repository-freshness checks without loading chunk
+payloads. Use `validate --deep` to load every active chunk and recompute its identity, ownership,
+tokens, and vector from the stored text. If it reports semantic corruption, use
+`index --incremental --repair-deep` to regenerate only affected owner files.
 
 Copy the Project Memory operating contract from the source repository's `AGENTS.md` into the
 target repository instructions. Repository files always remain authoritative; Redis results are

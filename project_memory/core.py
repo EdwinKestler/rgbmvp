@@ -10,9 +10,11 @@ import json
 import math
 import os
 import re
+import secrets
 import socket
 import struct
 import sys
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import pairwise
@@ -21,7 +23,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 SCHEMA = "project-memory:v2"
-BUNDLE_VERSION = "2.0.1"
+BUNDLE_VERSION = "2.1.2"
 EMBEDDING_ID = "feature-hash-sha256-unigram-bigram-v1"
 DIMENSIONS = 384
 DEFAULT_URL = "redis://localhost:6379/0"
@@ -167,6 +169,26 @@ TEXT_EXACT_NAMES = {
     "readme",
 }
 TEXT_PROBE_BYTES = 8192
+MGET_BATCH_SIZE = 1_000
+INDEX_LOCK_MS = 60_000
+SENSITIVE_DATA_SUFFIXES = {
+    ".json",
+    ".jsonl",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".txt",
+}
+SENSITIVE_TOKEN_PATTERNS = (
+    re.compile(
+        r"(^|[._/-])(?:access|refresh|auth|bearer|oauth)?[_-]?tokens?([._/-]|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(^|[._/-])client[_-]?secrets?([._/-]|$)", re.IGNORECASE),
+)
 
 
 def project_config(root: Path = ROOT) -> dict[str, Any]:
@@ -222,10 +244,14 @@ def is_sensitive_path(path: Path, relative: str) -> bool:
     """Reject secret-bearing path names independently of repository configuration."""
     name = path.name.lower()
     normalized = relative.replace("\\", "/").lower()
+    sensitive_data_name = path.suffix.lower() in SENSITIVE_DATA_SUFFIXES and any(
+        pattern.search(name) or pattern.search(normalized) for pattern in SENSITIVE_TOKEN_PATTERNS
+    )
     return (
         name in SENSITIVE_EXACT_NAMES
         or path.suffix.lower() in SENSITIVE_SUFFIXES
         or any(pattern.search(name) or pattern.search(normalized) for pattern in SENSITIVE_NAME_PATTERNS)
+        or sensitive_data_name
     )
 
 
@@ -460,6 +486,139 @@ def _json_load(raw: bytes | None) -> Any:
     return json.loads(raw.decode("utf-8"))
 
 
+def _valid_chunk_value(raw: bytes | None) -> bool:
+    try:
+        chunk = _json_load(raw)
+        if not isinstance(chunk, dict):
+            return False
+        vector = chunk.get("vector")
+        if not isinstance(vector, str):
+            return False
+        decode_vector(vector)
+        return (
+            isinstance(chunk.get("id"), str)
+            and isinstance(chunk.get("path"), str)
+            and isinstance(chunk.get("start_line"), int)
+            and isinstance(chunk.get("end_line"), int)
+            and isinstance(chunk.get("text"), str)
+            and isinstance(chunk.get("tokens"), list)
+            and all(isinstance(token, str) for token in chunk["tokens"])
+        )
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        return False
+
+
+def _validate_chunk(key: str, raw: bytes | None, *, owner_path: str) -> bool:
+    if not _valid_chunk_value(raw):
+        return False
+    try:
+        chunk = _json_load(raw)
+        start_line = chunk["start_line"]
+        end_line = chunk["end_line"]
+        text = chunk["text"]
+        expected_id = hashlib.sha256(
+            f"{owner_path}\0{start_line}\0{end_line}\0".encode() + text.encode()
+        ).hexdigest()[:24]
+        stored_vector = decode_vector(chunk["vector"])
+        expected_vector = embedding(text)
+        return (
+            chunk["path"] == owner_path
+            and start_line >= 1
+            and end_line >= start_line
+            and chunk["id"] == expected_id
+            and key.split(":chunk:", 1)[-1].split(":", 1)[0] == expected_id
+            and chunk["tokens"] == sorted(set(tokenize(text)))
+            and all(
+                math.isclose(a, b, rel_tol=1e-6, abs_tol=1e-7)
+                for a, b in zip(stored_vector, expected_vector, strict=True)
+            )
+        )
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        return False
+
+
+def _mget_batched(client: Any, keys: list[str]) -> list[Any]:
+    values = []
+    for start in range(0, len(keys), MGET_BATCH_SIZE):
+        batch = keys[start : start + MGET_BATCH_SIZE]
+        response = client.execute("MGET", *batch)
+        if not isinstance(response, list) or len(response) != len(batch):
+            raise ValueError("Redis returned an invalid MGET response")
+        values.extend(response)
+    return values
+
+
+@contextlib.contextmanager
+def _index_lock(client: Any, root: Path):
+    lock_key = f"{namespace(root)}:index-lock"
+    owner = secrets.token_hex(16)
+    acquired = client.execute("SET", lock_key, owner, "NX", "PX", str(INDEX_LOCK_MS))
+    if acquired != "OK":
+        raise ValueError("another Project Memory indexer is active")
+    try:
+        yield owner
+    finally:
+        active_exception = sys.exc_info()[0] is not None
+        try:
+            client.execute(
+                "EVAL",
+                "if redis.call('get',KEYS[1]) == ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end",
+                "1",
+                lock_key,
+                owner,
+            )
+        except Exception:
+            if not active_exception:
+                raise
+
+
+def _refresh_index_lock(client: Any, root: Path, owner: str) -> None:
+    refreshed = client.execute(
+        "EVAL",
+        "if redis.call('get',KEYS[1]) == ARGV[1] then return redis.call('pexpire',KEYS[1],ARGV[2]) else return 0 end",
+        "1",
+        f"{namespace(root)}:index-lock",
+        owner,
+        str(INDEX_LOCK_MS),
+    )
+    if refreshed != 1:
+        raise ValueError("Project Memory index lock ownership was lost")
+
+
+def _activate_generation(client: Any, root: Path, owner: str, manifest_key: str) -> None:
+    activated = client.execute(
+        "EVAL",
+        "if redis.call('get',KEYS[1]) == ARGV[1] then redis.call('set',KEYS[2],ARGV[2]); return 1 else return 0 end",
+        "2",
+        f"{namespace(root)}:index-lock",
+        f"{namespace(root)}:active-generation",
+        owner,
+        manifest_key,
+    )
+    if activated != 1:
+        raise ValueError("Project Memory index lock ownership was lost before activation")
+
+
+def _registered_keys(client: Any, prefix: str) -> tuple[set[str], set[str]]:
+    try:
+        value = _json_load(client.execute("GET", f"{prefix}:chunk-registry"))
+    except (ValueError, UnicodeError, json.JSONDecodeError):
+        return set(), set()
+    if not isinstance(value, dict):
+        return set(), set()
+    chunks = {
+        key
+        for key in value.get("chunk_keys", [])
+        if isinstance(key, str) and key.startswith(prefix + ":chunk:")
+    }
+    manifests = {
+        key
+        for key in value.get("manifest_keys", [])
+        if isinstance(key, str) and key.startswith(prefix + ":generation:")
+    }
+    return chunks, manifests
+
+
 def _execute_many(client: Any, commands: list[tuple[str | bytes, ...]]) -> list[Any]:
     pipeline = getattr(client, "execute_many", None)
     if pipeline is not None:
@@ -481,7 +640,7 @@ def _active_manifest(client: Any, root: Path) -> dict[str, Any] | None:
 
 
 def _manifest_state(
-    client: RedisClient, root: Path = ROOT
+    client: RedisClient, root: Path = ROOT, *, deep: bool = False
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     files = included_files(root)
     current = {
@@ -512,8 +671,10 @@ def _manifest_state(
             or manifest["dimensions"] != DIMENSIONS
         ):
             return current, None
+        generation = manifest["generation"]
         if (
-            manifest["generation"] != manifest["fingerprint"]
+            not isinstance(generation, str)
+            or not generation.startswith(manifest["fingerprint"])
             or not isinstance(manifest["file_hashes"], dict)
             or set(manifest["file_hashes"]) != set(manifest["files"])
         ):
@@ -522,26 +683,45 @@ def _manifest_state(
         if (
             not isinstance(keys, list)
             or len(keys) != manifest["chunk_count"]
+            or len(set(keys)) != len(keys)
             or any(
                 not isinstance(k, str) or not k.startswith(namespace(root) + ":chunk:")
                 for k in keys
             )
         ):
             return current, None
-        if keys:
-            values = client.execute("MGET", *keys)
-            if not isinstance(values, list) or any(value is None for value in values):
+        file_chunks = manifest.get("file_chunks")
+        if file_chunks is not None and (
+            not isinstance(file_chunks, dict)
+            or set(file_chunks) != set(manifest["files"])
+            or any(not isinstance(value, list) for value in file_chunks.values())
+            or [key for path in manifest["files"] for key in file_chunks[path]] != keys
+        ):
+            return current, None
+        if deep and keys:
+            values = _mget_batched(client, keys)
+            if any(value is None for value in values):
                 return current, None
-            for value in values:
-                chunk = _json_load(value)
-                decode_vector(chunk["vector"])
+            owner_by_key = (
+                {
+                    key: owner
+                    for owner, owned_keys in file_chunks.items()
+                    for key in owned_keys
+                }
+                if isinstance(file_chunks, dict)
+                else {}
+            )
+            for key, value in zip(keys, values, strict=True):
+                owner = owner_by_key.get(key)
+                if owner is None or not _validate_chunk(key, value, owner_path=owner):
+                    return current, None
         return current, manifest
     except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
         return current, None
 
 
 def status(client: RedisClient, root: Path = ROOT) -> tuple[dict[str, Any], bool]:
-    current, manifest = _manifest_state(client, root)
+    current, manifest = _manifest_state(client, root, deep=False)
     fresh = bool(
         manifest
         and manifest["fingerprint"] == current["fingerprint"]
@@ -557,53 +737,144 @@ def status(client: RedisClient, root: Path = ROOT) -> tuple[dict[str, Any], bool
     }, fresh
 
 
-def build_index(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
+def validate(client: RedisClient, root: Path = ROOT, *, deep: bool = False) -> tuple[dict[str, Any], bool]:
+    current, manifest = _manifest_state(client, root, deep=deep)
+    fresh = bool(
+        manifest
+        and manifest["fingerprint"] == current["fingerprint"]
+        and manifest["files"] == current["files"]
+    )
+    return {
+        "status": "fresh" if fresh else ("stale" if manifest else "missing_or_invalid"),
+        "fresh": fresh,
+        "namespace": namespace(root),
+        "schema": SCHEMA,
+        "current_fingerprint": current["fingerprint"],
+        "manifest": manifest,
+        "validation": "passed" if fresh else "failed",
+        "deep": deep,
+    }, fresh
+
+
+def _build_index_locked(
+    client: RedisClient, root: Path, *, build_id: str, repair_deep: bool
+) -> dict[str, Any]:
+    started = time.monotonic()
     files = included_files(root)
-    all_chunks: list[Chunk] = []
-    file_hashes: dict[str, str] = {}
-    for path in files:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError(f"indexed file is not UTF-8: {path.relative_to(root)}") from exc
-        relative = path.relative_to(root).as_posix()
-        file_hashes[relative] = file_fingerprint(path)
-        all_chunks.extend(split_chunks(relative, text))
     prefix = namespace(root)
     fingerprint = corpus_fingerprint(files, root)
-    generation = fingerprint
+    generation = f"{fingerprint}:{BUNDLE_VERSION}:{build_id[:16]}"
     manifest_key = f"{prefix}:generation:{generation}:manifest"
-    active_key = f"{prefix}:active-generation"
     old_manifest: dict[str, Any] | None = None
     with contextlib.suppress(ValueError, UnicodeError, json.JSONDecodeError):
         old_manifest = _active_manifest(client, root)
-    chunk_keys = []
+    registered_chunks, registered_manifests = _registered_keys(client, prefix)
+    old_hashes = old_manifest.get("file_hashes", {}) if isinstance(old_manifest, dict) else {}
+    old_file_chunks = old_manifest.get("file_chunks", {}) if isinstance(old_manifest, dict) else {}
+    can_reuse_files = (
+        isinstance(old_hashes, dict)
+        and isinstance(old_file_chunks, dict)
+        and set(old_hashes) == set(old_file_chunks)
+    )
+    file_hashes = {
+        path.relative_to(root).as_posix(): file_fingerprint(path) for path in files
+    }
+    current_names = set(file_hashes)
+    old_names = set(old_hashes) if isinstance(old_hashes, dict) else set()
+    unchanged = {
+        name
+        for name, digest in file_hashes.items()
+        if can_reuse_files and old_hashes.get(name) == digest
+    }
+    new = current_names - old_names
+    changed = current_names & old_names - unchanged
+    deleted = old_names - current_names
+
+    reusable_keys = [key for name in sorted(unchanged) for key in old_file_chunks[name]]
+    reusable_values = _mget_batched(client, reusable_keys)
+    reusable_owners = {
+        key: owner for owner in unchanged for key in old_file_chunks[owner]
+    }
+    invalid_reusable = {
+        key
+        for key, value in zip(reusable_keys, reusable_values, strict=True)
+        if not (
+            _validate_chunk(key, value, owner_path=reusable_owners[key])
+            if repair_deep
+            else _valid_chunk_value(value)
+        )
+    }
+    repair = {
+        name for name in unchanged if invalid_reusable.intersection(old_file_chunks[name])
+    }
+    unchanged -= repair
+    changed |= repair
+    _refresh_index_lock(client, root, build_id)
+
+    file_chunks: dict[str, list[str]] = {}
+    generated_payloads: dict[str, str] = {}
+    generated_count = 0
+    for path in files:
+        relative = path.relative_to(root).as_posix()
+        if relative in unchanged:
+            file_chunks[relative] = list(old_file_chunks[relative])
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"indexed file is not UTF-8: {relative}") from exc
+        keys = []
+        for chunk in split_chunks(relative, text):
+            key = f"{prefix}:chunk:{chunk.chunk_id}:{build_id[:16]}"
+            payload = {
+                "id": chunk.chunk_id,
+                "path": chunk.path,
+                "start_line": chunk.start_line,
+                "end_line": chunk.end_line,
+                "text": chunk.text,
+                "tokens": sorted(set(tokenize(chunk.text))),
+                "vector": encode_vector(embedding(chunk.text)),
+            }
+            generated_payloads[key] = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            keys.append(key)
+            generated_count += 1
+        file_chunks[relative] = keys
+
+    chunk_keys = [key for path in file_hashes for key in file_chunks[path]]
     writes: list[tuple[str | bytes, ...]] = []
-    for chunk in all_chunks:
-        key = f"{prefix}:chunk:{chunk.chunk_id}"
-        payload = {
-            "id": chunk.chunk_id,
-            "path": chunk.path,
-            "start_line": chunk.start_line,
-            "end_line": chunk.end_line,
-            "text": chunk.text,
-            "tokens": sorted(set(tokenize(chunk.text))),
-            "vector": encode_vector(embedding(chunk.text)),
-        }
-        # Content-addressed chunk keys make unchanged chunks reusable across generations.
-        if client.execute("GET", key) is None:
-            writes.append(
-                ("SET", key, json.dumps(payload, sort_keys=True, separators=(",", ":")))
-            )
-        chunk_keys.append(key)
+    generated_keys = list(generated_payloads)
+    existing = _mget_batched(client, generated_keys)
+    for key, value in zip(generated_keys, existing, strict=True):
+        if not _valid_chunk_value(value):
+            writes.append(("SET", key, generated_payloads[key]))
+    old_chunk_keys = set(old_manifest.get("chunk_keys", [])) if old_manifest else set()
+    deleted_chunk_keys = (old_chunk_keys | registered_chunks) - set(chunk_keys)
+    reused_chunk_count = len(chunk_keys) - generated_count
+    metrics = {
+        "files": {
+            "total": len(file_hashes),
+            "new": len(new),
+            "changed": len(changed),
+            "unchanged": len(unchanged),
+            "deleted": len(deleted),
+        },
+        "chunks": {
+            "total": len(chunk_keys),
+            "generated": generated_count,
+            "reused": reused_chunk_count,
+            "deleted": len(deleted_chunk_keys),
+        },
+    }
     manifest = {
         "schema": SCHEMA,
+        "bundle_version": BUNDLE_VERSION,
         "namespace": prefix,
         "embedding_id": EMBEDDING_ID,
         "dimensions": DIMENSIONS,
         "generation": generation,
         "files": [path.relative_to(root).as_posix() for path in files],
         "file_hashes": file_hashes,
+        "file_chunks": file_chunks,
         "chunk_count": len(chunk_keys),
         "fingerprint": fingerprint,
         "chunk_keys": chunk_keys,
@@ -611,11 +882,9 @@ def build_index(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
     writes.append(
         ("SET", manifest_key, json.dumps(manifest, sort_keys=True, separators=(",", ":")))
     )
-    _execute_many(client, writes)
-
-    # Register the staged generation before the commit point so an interrupted build is cleanable.
-    staged_chunk_keys = set(chunk_keys)
-    staged_manifest_keys = {manifest_key}
+    # Register every old and staged key before any staged write can create an orphan.
+    staged_chunk_keys = registered_chunks | set(chunk_keys)
+    staged_manifest_keys = registered_manifests | {manifest_key}
     if old_manifest:
         staged_chunk_keys.update(old_manifest.get("chunk_keys", []))
         old_generation = old_manifest.get("generation")
@@ -632,9 +901,38 @@ def build_index(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
             separators=(",", ":"),
         ),
     )
+    _refresh_index_lock(client, root, build_id)
+    _execute_many(client, writes)
+    staged_values = _mget_batched(client, chunk_keys)
+    if any(
+        not _valid_chunk_value(value) for value in staged_values
+    ):
+        raise ValueError("staged generation failed chunk validation")
+    write_finished = time.monotonic()
+
+    final_files = included_files(root)
+    final_names = [path.relative_to(root).as_posix() for path in final_files]
+    final_fingerprint = corpus_fingerprint(final_files, root)
+    if final_names != manifest["files"] or final_fingerprint != fingerprint:
+        raise ValueError("repository changed during indexing; staged generation was not activated")
+    _refresh_index_lock(client, root, build_id)
 
     # Commit point: readers continue using the old complete generation until this SET succeeds.
-    client.execute("SET", active_key, manifest_key)
+    activation_started = time.monotonic()
+    _activate_generation(client, root, build_id, manifest_key)
+    activation_finished = time.monotonic()
+
+    # Garbage collection happens only after the new generation is active.
+    garbage_collection_started = time.monotonic()
+    obsolete = sorted(deleted_chunk_keys)
+    obsolete_manifests = sorted(staged_manifest_keys - {manifest_key})
+    if obsolete:
+        client.execute("DEL", *obsolete)
+    if obsolete_manifests:
+        client.execute("DEL", *obsolete_manifests)
+    garbage_collection_finished = time.monotonic()
+
+    # Shrink the registry only after obsolete keys have actually been removed.
     client.execute(
         "SET",
         f"{prefix}:chunk-registry",
@@ -642,16 +940,27 @@ def build_index(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
             {"chunk_keys": chunk_keys, "manifest_keys": [manifest_key]}, separators=(",", ":")
         ),
     )
+    finished = time.monotonic()
+    metrics.update(
+        {
+            "indexing_ms": round((write_finished - started) * 1000),
+            "activation_ms": round((activation_finished - activation_started) * 1000),
+            "garbage_collection_ms": round(
+                (garbage_collection_finished - garbage_collection_started) * 1000
+            ),
+            "total_ms": round((finished - started) * 1000),
+        }
+    )
+    return {"manifest": manifest, "metrics": metrics}
 
-    # Garbage collection happens only after the new generation is active.
-    if old_manifest and old_manifest.get("generation") != generation:
-        obsolete = sorted(set(old_manifest.get("chunk_keys", [])) - set(chunk_keys))
-        old_generation = old_manifest.get("generation")
-        if obsolete:
-            client.execute("DEL", *obsolete)
-        if isinstance(old_generation, str):
-            client.execute("DEL", f"{prefix}:generation:{old_generation}:manifest")
-    return manifest
+
+def build_index(
+    client: RedisClient, root: Path = ROOT, *, repair_deep: bool = False
+) -> dict[str, Any]:
+    with _index_lock(client, root) as build_id:
+        return _build_index_locked(
+            client, root, build_id=build_id, repair_deep=repair_deep
+        )
 
 
 def search(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> dict[str, Any]:
@@ -659,7 +968,7 @@ def search(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> di
     if not fresh:
         raise ValueError(f"index is {state['status']}; run index before search")
     manifest = state["manifest"]
-    values = client.execute("MGET", *manifest["chunk_keys"])
+    values = _mget_batched(client, manifest["chunk_keys"])
     qvec = embedding(query)
     qtokens = set(tokenize(query))
     results = []
@@ -687,7 +996,7 @@ def search(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> di
     return {"query": query, "fresh": True, "results": results[:limit]}
 
 
-def clear(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
+def _clear_locked(client: RedisClient, root: Path) -> dict[str, Any]:
     prefix = namespace(root)
     registry_key = f"{prefix}:chunk-registry"
     active_key = f"{prefix}:active-generation"
@@ -721,6 +1030,11 @@ def clear(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
     return {"status": "cleared", "namespace": prefix, "deleted_keys": deleted}
 
 
+def clear(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
+    with _index_lock(client, root):
+        return _clear_locked(client, root)
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     configured_url = next(
@@ -739,7 +1053,17 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="reuse unchanged content-addressed chunks (the v2 default)",
     )
-    commands.add_parser("validate")
+    index_parser.add_argument(
+        "--repair-deep",
+        action="store_true",
+        help="semantically validate reused chunks and regenerate affected files",
+    )
+    validate_parser = commands.add_parser("validate")
+    validate_parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="verify every active chunk and encoded vector",
+    )
     search_parser = commands.add_parser("search")
     search_parser.add_argument("query")
     search_parser.add_argument("--limit", type=int, default=5)
@@ -752,14 +1076,20 @@ def main(argv: list[str] | None = None) -> int:
     try:
         client = RedisClient(args.url)
         if args.command in {"status", "validate"}:
-            output, fresh = status(client)
-            if args.command == "validate":
-                output = {**output, "validation": "passed" if fresh else "failed"}
+            output, fresh = (
+                validate(client, deep=args.deep) if args.command == "validate" else status(client)
+            )
             print(json.dumps(output, sort_keys=True))
             return 0 if fresh else 2
         if args.command == "index":
             print(
-                json.dumps({"status": "indexed", "manifest": build_index(client)}, sort_keys=True)
+                json.dumps(
+                    {
+                        "status": "indexed",
+                        **build_index(client, repair_deep=args.repair_deep),
+                    },
+                    sort_keys=True,
+                )
             )
             return 0
         if args.command == "search":
