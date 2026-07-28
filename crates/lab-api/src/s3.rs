@@ -10,13 +10,81 @@ use lab_rgb::htlc;
 use lab_rgb::storage::RgbStore;
 use lab_rgb::swap::SwapSession;
 use lab_rgb::{
-    plan_claim_transfer, plan_transfer_to_seal, verify_against_witness, DEMO_INTERNAL_XONLY_HEX,
+    plan_claim_transfer, plan_transfer_to_seal, verify_against_witness, TransferPlan, VerifyResult,
+    DEMO_INTERNAL_XONLY_HEX,
 };
 use serde_json::{json, Value};
 
 /// Liquid testnet policy asset (explicit L-BTC).
 pub const LQ_POLICY_ASSET: &str =
     "144c654344aa716d6f3abcc1ca90e5641e4e2a7f633bc09fe3baf64585819a49";
+
+trait ClaimBroadcaster {
+    fn broadcast(&self, raw_hex: &str) -> Result<String>;
+}
+
+trait ClaimVerifier {
+    fn verify(&self, plan: &TransferPlan, txid: &str) -> Result<Option<VerifyResult>>;
+}
+
+/// Keep broadcast-before-verify ordering explicit and independently testable.
+/// A successful broadcast with no witness yet is represented by `None`, never
+/// by a false `valid` result.
+fn execute_claim_io(
+    broadcaster: &impl ClaimBroadcaster,
+    verifier: &impl ClaimVerifier,
+    raw_hex: &str,
+    plan: &TransferPlan,
+) -> Result<(String, Option<VerifyResult>)> {
+    let txid = broadcaster.broadcast(raw_hex)?;
+    let verification = verifier.verify(plan, &txid)?;
+    Ok((txid, verification))
+}
+
+struct LiquidClaimIo<'a> {
+    cfg: &'a Config,
+}
+
+impl ClaimBroadcaster for LiquidClaimIo<'_> {
+    fn broadcast(&self, raw_hex: &str) -> Result<String> {
+        lab_chain::broadcast_raw_hex(self.cfg, raw_hex)
+    }
+}
+
+impl ClaimVerifier for LiquidClaimIo<'_> {
+    fn verify(&self, plan: &TransferPlan, txid: &str) -> Result<Option<VerifyResult>> {
+        let api = lab_chain::esplora_api_base(self.cfg);
+        for _ in 0..5 {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            if let Ok(witness) = lab_chain::fetch_witness_esplora(&api, txid) {
+                return verify_against_witness(plan, &witness, &self.cfg.explorer_base).map(Some);
+            }
+        }
+        Ok(None)
+    }
+}
+
+struct BtcClaimIo<'a> {
+    cfg: &'a lab_btc::BtcConfig,
+}
+
+impl ClaimBroadcaster for BtcClaimIo<'_> {
+    fn broadcast(&self, raw_hex: &str) -> Result<String> {
+        lab_btc::broadcast_raw(self.cfg, raw_hex)
+    }
+}
+
+impl ClaimVerifier for BtcClaimIo<'_> {
+    fn verify(&self, plan: &TransferPlan, txid: &str) -> Result<Option<VerifyResult>> {
+        for _ in 0..5 {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            if let Ok(witness) = lab_btc::fetch_witness_for_rgb(self.cfg, txid) {
+                return verify_against_witness(plan, &witness, &self.cfg.explorer_base).map(Some);
+            }
+        }
+        Ok(None)
+    }
+}
 
 /// Demo claimer P2WPKH (testnet) for HTLC claim outputs.
 pub fn claimer_p2wpkh_spk(
@@ -320,20 +388,12 @@ pub fn claim_lq_rgb(
         s.csv_delay,
         &claimer_sk,
     )?;
-    let claim_txid = lab_chain::broadcast_raw_hex(cfg, &raw)?;
+    let io = LiquidClaimIo { cfg };
+    let (claim_txid, verification) = execute_claim_io(&io, &io, &raw, &plan)?;
     s.lq_claim_txid = Some(claim_txid.clone());
-
-    let mut claim_verify = None;
-    let api = lab_chain::esplora_api_base(cfg);
-    for _ in 0..5 {
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        if let Ok(w) = lab_chain::fetch_witness_esplora(&api, &claim_txid) {
-            if let Ok(vr) = verify_against_witness(&plan, &w, &cfg.explorer_base) {
-                claim_verify = Some(vr.status.clone());
-                let _ = rgb_store.save_proof(&format!("{plan_id}-claim"), &vr);
-                break;
-            }
-        }
+    let claim_verify = verification.as_ref().map(|result| result.status.clone());
+    if let Some(result) = &verification {
+        let _ = rgb_store.save_proof(&format!("{plan_id}-claim"), result);
     }
 
     if let Some(r) = s.lq_rgb.as_mut() {
@@ -379,11 +439,7 @@ pub fn claim_lq(
 }
 
 /// Value-only BTC HTLC claim (P1 path).
-pub fn claim_btc_value(
-    s: &mut SwapSession,
-    preimage: &[u8],
-    fee_sats: u64,
-) -> Result<Value> {
+pub fn claim_btc_value(s: &mut SwapSession, preimage: &[u8], fee_sats: u64) -> Result<Value> {
     let btc = lab_btc::BtcConfig::from_env();
     let amount = s.btc_fund_sats.context("btc_fund_sats")?;
     let utxo = lab_btc::find_htlc_utxo(&btc, &s.htlc_btc.address_btc, amount.saturating_sub(1))?;
@@ -480,19 +536,12 @@ pub fn claim_btc_rgb(
         s.csv_delay,
         &claimer_sk,
     )?;
-    let claim_txid = lab_btc::broadcast_raw(&btc, &raw)?;
+    let io = BtcClaimIo { cfg: &btc };
+    let (claim_txid, verification) = execute_claim_io(&io, &io, &raw, &plan)?;
     s.btc_claim_txid = Some(claim_txid.clone());
-
-    let mut claim_verify = None;
-    for _ in 0..5 {
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        if let Ok(w) = lab_btc::fetch_witness_for_rgb(&btc, &claim_txid) {
-            if let Ok(vr) = verify_against_witness(&plan, &w, &btc.explorer_base) {
-                claim_verify = Some(vr.status.clone());
-                let _ = rgb_store.save_proof(&format!("{plan_id}-claim"), &vr);
-                break;
-            }
-        }
+    let claim_verify = verification.as_ref().map(|result| result.status.clone());
+    if let Some(result) = &verification {
+        let _ = rgb_store.save_proof(&format!("{plan_id}-claim"), result);
     }
 
     if let Some(r) = s.btc_rgb.as_mut() {
@@ -529,14 +578,7 @@ pub fn claim_btc(
     entropy: u64,
 ) -> Result<Value> {
     if s.rgb_wrap && s.btc_contract_id.is_some() {
-        claim_btc_rgb(
-            rgb_store,
-            s,
-            preimage,
-            fee_sats,
-            commitment_sats,
-            entropy,
-        )
+        claim_btc_rgb(rgb_store, s, preimage, fee_sats, commitment_sats, entropy)
     } else {
         claim_btc_value(s, preimage, fee_sats)
     }
@@ -565,5 +607,121 @@ pub fn extract_preimage(cfg: &Config, chain: &str, txid: &str) -> Result<[u8; 32
         htlc::extract_preimage_from_liquid_tx_hex(&hex_tx)
     } else {
         anyhow::bail!("chain must be bitcoin|btc or liquid|lq (got {chain})");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    struct FakeBroadcaster<'a> {
+        calls: &'a Cell<u32>,
+        result: Result<String, &'static str>,
+    }
+
+    impl ClaimBroadcaster for FakeBroadcaster<'_> {
+        fn broadcast(&self, _raw_hex: &str) -> Result<String> {
+            self.calls.set(self.calls.get() + 1);
+            self.result.clone().map_err(anyhow::Error::msg)
+        }
+    }
+
+    struct FakeRgbVerifier<'a> {
+        calls: &'a Cell<u32>,
+        status: Option<&'static str>,
+    }
+
+    impl ClaimVerifier for FakeRgbVerifier<'_> {
+        fn verify(&self, plan: &TransferPlan, txid: &str) -> Result<Option<VerifyResult>> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(self.status.map(|status| VerifyResult {
+                status: status.into(),
+                contract_id: Some(plan.contract_id.clone()),
+                anchor_txid: txid.into(),
+                checks: vec![],
+                explorer_url: None,
+            }))
+        }
+    }
+
+    fn fixture_plan() -> TransferPlan {
+        serde_json::from_value(serde_json::json!({
+            "contract_id": "rgb:test",
+            "chain_net": "liquid-testnet",
+            "ticker": "s3",
+            "send_amount": 1,
+            "change_amount": 0,
+            "alice_seal": format!("{}:0", "aa".repeat(32)),
+            "bob_seal_placeholder": "witness:1:0",
+            "change_seal_placeholder": "none",
+            "bundle_id_hex": "11".repeat(32),
+            "transition_opid_hex": "22".repeat(32),
+            "mpc_root_hex": "33".repeat(32),
+            "commitment_spk_hex": "5120".to_string() + &"44".repeat(32),
+            "tapret_address": "tex1fixture",
+            "internal_key_hex": DEMO_INTERNAL_XONLY_HEX,
+            "static_entropy": 7,
+            "protocol_id_hex": "55".repeat(32),
+            "message_hex": "66".repeat(32)
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn broadcast_failure_short_circuits_verifier() {
+        let broadcasts = Cell::new(0);
+        let verifies = Cell::new(0);
+        let broadcaster = FakeBroadcaster {
+            calls: &broadcasts,
+            result: Err("broadcast rejected"),
+        };
+        let verifier = FakeRgbVerifier {
+            calls: &verifies,
+            status: Some("valid"),
+        };
+        let err = execute_claim_io(&broadcaster, &verifier, "00", &fixture_plan()).unwrap_err();
+        assert!(err.to_string().contains("broadcast rejected"));
+        assert_eq!(broadcasts.get(), 1);
+        assert_eq!(verifies.get(), 0);
+    }
+
+    #[test]
+    fn invalid_verification_is_never_promoted_to_valid() {
+        let broadcasts = Cell::new(0);
+        let verifies = Cell::new(0);
+        let broadcaster = FakeBroadcaster {
+            calls: &broadcasts,
+            result: Ok("claim-txid".into()),
+        };
+        let verifier = FakeRgbVerifier {
+            calls: &verifies,
+            status: Some("invalid"),
+        };
+        let (txid, result) =
+            execute_claim_io(&broadcaster, &verifier, "00", &fixture_plan()).unwrap();
+        assert_eq!(txid, "claim-txid");
+        assert_eq!(result.unwrap().status, "invalid");
+        assert_eq!(broadcasts.get(), 1);
+        assert_eq!(verifies.get(), 1);
+    }
+
+    #[test]
+    fn unavailable_verifier_remains_pending() {
+        let broadcasts = Cell::new(0);
+        let verifies = Cell::new(0);
+        let broadcaster = FakeBroadcaster {
+            calls: &broadcasts,
+            result: Ok("claim-txid".into()),
+        };
+        let verifier = FakeRgbVerifier {
+            calls: &verifies,
+            status: None,
+        };
+        let (_, result) = execute_claim_io(&broadcaster, &verifier, "00", &fixture_plan()).unwrap();
+        assert!(result.is_none());
+        assert_eq!(broadcasts.get(), 1);
+        assert_eq!(verifies.get(), 1);
     }
 }

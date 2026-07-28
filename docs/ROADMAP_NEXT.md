@@ -137,18 +137,19 @@ MVP delivered: loopback RPC ports, `LABD_PUBLIC_READ_ONLY`, Bearer on POST, id r
 
 ## Engineering ladder (approved sequence)
 
-**Order:** S3 negatives → application services → **U5** Axum → S3 HTTP/browser → **S5**; **C5** docs in parallel.  
+**Completed order:** S3 negatives → application services → **U5** Axum → S3 HTTP/browser; **C5** docs in parallel.
+**S5** is intentionally moved to a post-freeze extension milestone.
 Do **not** add S3 mutation business logic to the handwritten HTTP server and then rewrite it.
 
 | Phase | Work | Scenario | Status |
 |-------|------|----------|--------|
 | 0a | Docker Trivy `load: true` | CI | **Done** (`.github/workflows/docker-public.yml`) |
 | 0b | Services + public swap view shared | prep for U5 | **Done** — `SwapService` + `lab_api::s3` fund-wrap/claim |
-| 1 | S3 offline negative matrix + witness extract tests | S3 harden | **Partial** — offline unit tests in CI; full fixture/fake-adapter matrix still open |
+| 1 | S3 offline negative matrix + witness extract tests | S3 harden | **Done** — real verifier mutations + fake broadcaster/verifier cases in required CI |
 | 2 | Axum/Hyper labd | **U5** — [U5_AXUM.md](./U5_AXUM.md) | **Done** (default); `LABD_HTTP=legacy` fallback |
 | 3 | Authenticated S3 HTTP + browser (preserve U2/U4) | S3 surfaces | **Done** — live HTTP `s3-browser-20260724-0112` → phase=done; console mode |
-| 4 | Round-trip twin swaps | **S5** | **Open / deferred** |
-| ∥ | LiquiDEX comparison writeup | **C5** — [C5_LIQUIDEX_COMPARISON.md](./C5_LIQUIDEX_COMPARISON.md) | **Partial** — docs skeleton only |
+| 4 | Round-trip twin swaps | **S5** | **Deferred** — post-freeze extension; not required by P1/S3 claims |
+| ∥ | LiquiDEX comparison writeup | **C5** — [C5_LIQUIDEX_COMPARISON.md](./C5_LIQUIDEX_COMPARISON.md) | **Complete** — sourced positioning; no implementation claim |
 
 **U5** is a new ops/platform scenario. It must not silently reopen **U4** or **P3**.  
 **Mainnet** remains out of scope throughout.
@@ -164,19 +165,28 @@ labd/Axum   → HTTP routing + U4 middleware; same services (U5)
 
 ### S3 negatives (CI)
 
-**Partial today:** offline domain + extract tests in `lab_rgb` (no public faucet).  
-**Still open:** complete negative matrix (fixtures, FakeBroadcaster/FakeRgbVerifier cases), required CI gate for every documented negative.  
-Optional: live testnet happy path via operator / `workflow_dispatch` only.
+**Done:** offline domain/extract tests, real claim-plan/witness mutations, and
+FakeBroadcaster/FakeRgbVerifier application-service cases run in the required
+`lab-rgb` + `lab-api` CI job. Optional live testnet mutation remains operator-run
+or `workflow_dispatch` only; public faucet state is not a deterministic CI gate.
 
-### Priority recommendation (status as of 2026-07-24)
+### Priority recommendation (status as of 2026-07-27)
 
 | Priority | Item | Status |
 |----------|------|--------|
-| 1 | S3 negative automation | **Partial** — offline yes; full matrix open |
+| 1 | S3 negative automation | **Closed** — offline verifier + application-service matrix required in CI |
 | 2 | Service extraction + Axum (U5) | **Closed** |
 | 3 | S3 browser/API workflow | **Closed** — live evidence in `artifacts/public/s3-browser-20260724.json` |
-| 4 | S5 round-trip | **Open** |
-| 5 | C5 LiquiDEX writeup | **Partial** — skeleton doc only |
+| 4 | S5 round-trip | **Deferred** — named post-freeze extension; non-blocking for current closure |
+| 5 | C5 LiquiDEX writeup | **Closed** — documentation positioning complete |
+
+### Post-freeze extension milestone
+
+**S5** remains a valid future protocol scenario with its original conservation
+criteria, but it is not part of the current testnet proof-of-concept freeze.
+Neither the closed P1 value-HTLC claim nor the S3 RGB-wrapped-claim evidence
+depends on a reverse swap. Reopening S5 requires a separately approved extension
+milestone, test plan, and evidence run.
 
 ---
 
@@ -193,8 +203,8 @@ Optional: live testnet happy path via operator / `workflow_dispatch` only.
 9. ~~**Service extraction** (`lab_api::s3` / `SwapService`).~~  
 10. ~~**U5** Axum default labd.~~ → [U5_AXUM.md](./U5_AXUM.md)  
 11. ~~**S3 HTTP + browser** + live testnet path.~~ → [S3_RGB_WRAP.md](./S3_RGB_WRAP.md) · `artifacts/public/s3-browser-20260724.json`  
-12. **S3 negatives (finish):** fixture/fake-adapter matrix in required CI.  
-13. **S5** round-trip twin swaps (protocol).  
-14. **C5** docs polish (positioning).  
-15. Optional: drop `LABD_HTTP=legacy` after soak.  
+12. ~~**S3 negatives:** fixture/fake-adapter matrix in required CI.~~
+13. **S5:** deferred to a separately approved post-freeze extension milestone.
+14. ~~**C5** docs polish (positioning).~~ → [C5_LIQUIDEX_COMPARISON.md](./C5_LIQUIDEX_COMPARISON.md)
+15. Retain `LABD_HTTP=legacy` through the first successful 24–48h public soak; removal is a post-soak cleanup gate.
 16. ~~Proof-first UI/UX refresh + documented rollback.~~ → [UI_REFRESH.md](./UI_REFRESH.md) · [UI_ROLLBACK_PLAN.md](./UI_ROLLBACK_PLAN.md)

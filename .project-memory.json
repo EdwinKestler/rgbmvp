@@ -1,0 +1,48 @@
+{
+  "project_slug": "rgbmvp",
+  "redis_url_envs": [
+    "PROJECT_MEMORY_URL",
+    "RGBMVP_PROJECT_MEMORY_URL"
+  ],
+  "include_patterns": [
+    ".project-memory.json",
+    "README.md",
+    "AGENTS.md",
+    "docs/**/*.md",
+    ".github/workflows/*.yml",
+    ".github/workflows/*.yaml",
+    ".agents/**/*.md",
+    ".claude/**/*.md",
+    ".codex/**/*.md",
+    "src/**/*.py",
+    "tests/**/*.py",
+    "scripts/**/*.py",
+    "scripts/**/*.sh",
+    "crates/**/*.rs",
+    "crates/**/Cargo.toml",
+    "programs/**/*.rs",
+    "programs/**/*.md",
+    "web/**/*.html",
+    "web/**/*.js",
+    "web/**/*.css",
+    "deploy/**/*.md",
+    "deploy/**/*.yaml",
+    "deploy/**/*.yml",
+    "docker/**/*",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "pyproject.toml",
+    "docker-compose.yml",
+    ".gitignore",
+    ".env.example"
+  ],
+  "exclude_directories": [
+    ".rgbmvp",
+    "target",
+    "artifacts",
+    "vendor",
+    "data",
+    "fixtures",
+    "secrets"
+  ]
+}

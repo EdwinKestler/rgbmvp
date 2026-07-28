@@ -176,9 +176,17 @@ vout1: claimer P2WPKH (RGB successor seal = WitnessTx:1)
 | contract id mismatch | error | `check_leg_contract_matches_session` |
 | value-only path | unchanged; no RGB fields required | `value_only_done_without_rgb_fields` |
 | GET public view | preimage never present | `lab_api::public_swap_view` test |
+| wrong commitment SPK | verifier returns `invalid`; seal/anchor checks fail | `s3_plan_tests::wrong_commitment_spk_is_invalid` |
+| wrong seal input | verifier returns `invalid`; seal closure fails | `s3_plan_tests::wrong_seal_is_invalid` |
+| corrupted serialized plan | verifier rejects malformed committed data | `s3_plan_tests::corrupted_serialized_plan_is_rejected` |
+| broadcast rejected | verifier is not called; claim execution errors | `s3::tests::broadcast_failure_short_circuits_verifier` |
+| verifier returns invalid | invalid status is preserved, never promoted | `s3::tests::invalid_verification_is_never_promoted_to_valid` |
+| witness unavailable | verification remains pending (`None`) | `s3::tests::unavailable_verifier_remains_pending` |
 
-**Status of negatives:** **Partial** — offline domain/extract tests land in normal `cargo test` / CI.  
-Still **open / optional live:** full RGB client verify with wrong commitment SPK on testnet, dual-leg broadcast+verify matrix, consignment corruption end-to-end, FakeBroadcaster-style application-service cases.
+**Status of negatives:** **Automated offline / required CI** — real claim-plan and witness
+mutations plus fake broadcaster/verifier application-service cases run in the normal
+`lab-rgb` + `lab-api` library test job. Live testnet mutation remains optional and
+operator-triggered; it is not required for deterministic CI.
 
 Run offline matrix:
 

@@ -226,7 +226,7 @@ cd ~/rgbmvp
 source .venv/bin/activate
 pytest -q
 cargo --version
-python scripts/project_memory.py status   # exit 0 if Redis up
+python3 project-memory.py status   # exit 0 if Redis up
 # optional:
 # ./SideSwap.AppImage --appimage-extract-and-run
 ```

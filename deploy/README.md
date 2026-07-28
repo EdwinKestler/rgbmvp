@@ -4,6 +4,8 @@
 Public posture: **read-only** labd + static UI. Full protocol demos stay on the operator machine.
 
 See [docs/U4_PUBLIC_HOSTING.md](../docs/U4_PUBLIC_HOSTING.md).
+For the complete administrator and rollback sequence, use
+[docs/PUBLISH_TUTORIAL.md](../docs/PUBLISH_TUTORIAL.md).
 
 ## Recommended split
 
