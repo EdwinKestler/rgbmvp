@@ -110,16 +110,46 @@ confidence. The manifest and indexing metrics report counts for every status; a 
 link remains `probable`, never authoritative. Attribute calls without an explicit binding remain
 unresolved rather than being guessed from a globally unique method name.
 
-v2.2 embeds per-file graph records in the active manifest. This keeps activation transactional but
-makes metadata reads proportional to graph size. Content-addressed Redis graph records are deferred
-until measurements justify that storage migration; current release evidence must report manifest
-size alongside symbol and edge counts.
+v2.2 embedded per-file graph records in the active manifest. That kept activation transactional but
+made metadata reads proportional to graph size.
 
 The rgbmvp RC measurement at 623 symbols and 6,168 edges was 2,102,555 manifest bytes, of which
-97.1% was the embedded graph. This is acceptable for the repository-local checkpoint but establishes
-external content-addressed graph records as the next storage milestone before broad replication.
+97.1% was the embedded graph. That measurement motivated the v2.3 storage migration before broad
+replication.
 The configured repository benchmark contains 25 definition, impact, and semantic-search cases;
 recall is a regression signal, not proof of general resolution accuracy.
+
+## v2.3 external graph storage
+
+v2.3 stores deterministic extraction graphs as content-addressed Redis records keyed by extractor
+schema, record schema, relative owner path, and file content hash. Path ownership is part of the
+identity because module-qualified names and symbol ids are path-dependent. The active manifest
+contains only the per-file graph references plus symbol, edge, and resolution summaries.
+Corpus-dependent cross-file resolution is derived after records are loaded; it is never written back
+into a shared content-addressed record.
+
+- `status` validates compact manifest references without loading graph records.
+- `search` and `symbols` load extraction graphs only when symbol data is requested.
+- `impact` loads the records and derives cross-file resolution in memory.
+- `validate --deep` loads every graph, validates record ownership and schema, recomputes extraction
+  from current source, and verifies the manifest summaries after resolution.
+- `index --incremental --repair-deep` semantically compares reusable graphs with current-source
+  extraction and rewrites only corrupted owner records; graph-only repair does not regenerate chunks.
+- Incremental indexing reuses unchanged graph keys, writes only missing or invalid records, and
+  registers staged graph keys before writes.
+- Activation remains a single fenced manifest-pointer update. Obsolete graph records and manifests
+  are collected only after activation; an interrupted cleanup leaves their exact keys in the scoped
+  registry for the next index run.
+- Embedded v2.2 graphs migrate automatically to external v2.3 records without regenerating unchanged
+  chunk embeddings.
+
+The key shape is an implementation detail: `<namespace>:graph:<identity>`, where `identity` hashes
+the graph schema, record schema, relative path, and file hash. Never scan or delete graph keys by
+wildcard; `clear` and garbage collection operate only on exact keys recorded by this namespace.
+
+The initial rgbmvp v2.3 migration produced a compact 80,434-byte manifest and 100 external graph
+records totaling 2,044,322 bytes. Compared with the 2,102,555-byte v2.2 embedded manifest, manifest
+transfer fell by 96.17% while preserving the same retrieval contract.
 
 The graph remains a disposable discovery aid. It does not replace compiler name resolution, type
 checking, or opening the returned current source file.

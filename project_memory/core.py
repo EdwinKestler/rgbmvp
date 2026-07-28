@@ -24,8 +24,9 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 SCHEMA = "project-memory:v2"
-BUNDLE_VERSION = "2.2.0"
+BUNDLE_VERSION = "2.3.0"
 GRAPH_SCHEMA = "project-memory:code-graph:v3"
+GRAPH_RECORD_SCHEMA = "project-memory:graph-record:v1"
 EMBEDDING_ID = "feature-hash-sha256-unigram-bigram-v1"
 DIMENSIONS = 384
 DEFAULT_URL = "redis://localhost:6379/0"
@@ -808,12 +809,28 @@ def _resolve_graph(
     return len(symbols), edge_count, resolution_counts
 
 
-def _valid_file_graphs(manifest: dict[str, Any]) -> bool:
-    graphs = manifest.get("file_graphs")
-    if not isinstance(graphs, dict) or set(graphs) != set(manifest.get("files", [])):
+def _reset_graph_resolution(file_graphs: dict[str, dict[str, Any]]) -> None:
+    for graph in file_graphs.values():
+        for edge in graph["edges"]:
+            edge["resolution"] = {
+                "status": "unresolved",
+                "confidence": "unknown",
+                "target_id": None,
+            }
+
+
+def _valid_graphs(
+    graphs: dict[str, dict[str, Any]],
+    files: list[str],
+    *,
+    symbol_count: int | None = None,
+    expected_edge_count: int | None = None,
+    resolution_metrics: dict[str, int] | None = None,
+) -> bool:
+    if not isinstance(graphs, dict) or set(graphs) != set(files):
         return False
     symbols = []
-    edge_count = 0
+    observed_edge_count = 0
     resolution_counts = {
         status: 0
         for status in (
@@ -875,13 +892,13 @@ def _valid_file_graphs(manifest: dict[str, Any]) -> bool:
                 return False
             status = resolution["status"]
             resolution_counts[status] = resolution_counts.get(status, 0) + 1
-            edge_count += 1
+            observed_edge_count += 1
     symbol_ids = [symbol["id"] for symbol in symbols]
     return (
         len(set(symbol_ids)) == len(symbol_ids)
-        and manifest.get("symbol_count") == len(symbols)
-        and manifest.get("edge_count") == edge_count
-        and manifest.get("resolution_metrics") == resolution_counts
+        and (symbol_count is None or symbol_count == len(symbols))
+        and (expected_edge_count is None or expected_edge_count == observed_edge_count)
+        and (resolution_metrics is None or resolution_metrics == resolution_counts)
     )
 
 
@@ -1022,6 +1039,91 @@ def _validate_chunk(key: str, raw: bytes | None, *, owner_path: str) -> bool:
         return False
 
 
+def _graph_identity(path: str, file_hash: str) -> str:
+    return hashlib.sha256(
+        f"{GRAPH_SCHEMA}\0{GRAPH_RECORD_SCHEMA}\0{path}\0{file_hash}".encode()
+    ).hexdigest()
+
+
+def _graph_key(prefix: str, path: str, file_hash: str) -> str:
+    return f"{prefix}:graph:{_graph_identity(path, file_hash)}"
+
+
+def _graph_payload(path: str, file_hash: str, graph: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "path": path,
+            "file_hash": file_hash,
+            "graph_schema": GRAPH_SCHEMA,
+            "record_schema": GRAPH_RECORD_SCHEMA,
+            "graph": graph,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _load_graph_record(
+    key: str,
+    raw: bytes | None,
+    *,
+    prefix: str,
+    path: str,
+    file_hash: str,
+) -> dict[str, Any] | None:
+    try:
+        payload = _json_load(raw)
+        if (
+            not isinstance(payload, dict)
+            or key != _graph_key(prefix, path, file_hash)
+            or payload.get("path") != path
+            or payload.get("file_hash") != file_hash
+            or payload.get("graph_schema") != GRAPH_SCHEMA
+            or payload.get("record_schema") != GRAPH_RECORD_SCHEMA
+            or not isinstance(payload.get("graph"), dict)
+            or not _valid_graphs({path: payload["graph"]}, [path])
+        ):
+            return None
+        return payload["graph"]
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        return None
+
+
+def _load_manifest_graphs(
+    client: Any,
+    manifest: dict[str, Any],
+    root: Path,
+    *,
+    resolve: bool = False,
+) -> dict[str, dict[str, Any]]:
+    references = manifest.get("file_graphs")
+    files = manifest.get("files")
+    hashes = manifest.get("file_hashes")
+    if (
+        not isinstance(references, dict)
+        or not isinstance(files, list)
+        or not isinstance(hashes, dict)
+    ):
+        raise TypeError("manifest contains invalid graph references")
+    keys = [references[path] for path in files]
+    values = _mget_batched(client, keys)
+    graphs = {}
+    for path, key, raw in zip(files, keys, values, strict=True):
+        graph = _load_graph_record(
+            key,
+            raw,
+            prefix=namespace(root),
+            path=path,
+            file_hash=hashes[path],
+        )
+        if graph is None:
+            raise ValueError("index contains malformed graph data; re-index required")
+        graphs[path] = graph
+    if resolve:
+        _resolve_graph(graphs)
+    return graphs
+
+
 def _mget_batched(client: Any, keys: list[str]) -> list[Any]:
     values = []
     for start in range(0, len(keys), MGET_BATCH_SIZE):
@@ -1084,13 +1186,13 @@ def _activate_generation(client: Any, root: Path, owner: str, manifest_key: str)
         raise ValueError("Project Memory index lock ownership was lost before activation")
 
 
-def _registered_keys(client: Any, prefix: str) -> tuple[set[str], set[str]]:
+def _registered_keys(client: Any, prefix: str) -> tuple[set[str], set[str], set[str]]:
     try:
         value = _json_load(client.execute("GET", f"{prefix}:chunk-registry"))
     except (ValueError, UnicodeError, json.JSONDecodeError):
-        return set(), set()
+        return set(), set(), set()
     if not isinstance(value, dict):
-        return set(), set()
+        return set(), set(), set()
     chunks = {
         key
         for key in value.get("chunk_keys", [])
@@ -1101,7 +1203,12 @@ def _registered_keys(client: Any, prefix: str) -> tuple[set[str], set[str]]:
         for key in value.get("manifest_keys", [])
         if isinstance(key, str) and key.startswith(prefix + ":generation:")
     }
-    return chunks, manifests
+    graphs = {
+        key
+        for key in value.get("graph_keys", [])
+        if isinstance(key, str) and key.startswith(prefix + ":graph:")
+    }
+    return chunks, manifests, graphs
 
 
 def _execute_many(client: Any, commands: list[tuple[str | bytes, ...]]) -> list[Any]:
@@ -1185,7 +1292,14 @@ def _manifest_state(
             return current, None
         bundle_version = manifest.get("bundle_version", "2.0.0")
         if isinstance(bundle_version, str) and bundle_version.startswith("2.2"):
-            if not _valid_file_graphs(manifest):
+            embedded_graphs = manifest.get("file_graphs")
+            if not isinstance(embedded_graphs, dict) or not _valid_graphs(
+                embedded_graphs,
+                manifest["files"],
+                symbol_count=manifest.get("symbol_count"),
+                expected_edge_count=manifest.get("edge_count"),
+                resolution_metrics=manifest.get("resolution_metrics"),
+            ):
                 return current, None
             if deep:
                 expected_graphs = {
@@ -1195,7 +1309,42 @@ def _manifest_state(
                     for path in files
                 }
                 _resolve_graph(expected_graphs)
-                if expected_graphs != manifest["file_graphs"]:
+                if expected_graphs != embedded_graphs:
+                    return current, None
+        elif isinstance(bundle_version, str) and bundle_version.startswith("2.3"):
+            graph_references = manifest.get("file_graphs")
+            if (
+                not isinstance(graph_references, dict)
+                or set(graph_references) != set(manifest["files"])
+                or any(
+                    not isinstance(key, str)
+                    or key
+                    != _graph_key(namespace(root), path, manifest["file_hashes"][path])
+                    for path, key in graph_references.items()
+                )
+                or not isinstance(manifest.get("symbol_count"), int)
+                or not isinstance(manifest.get("edge_count"), int)
+                or not isinstance(manifest.get("resolution_metrics"), dict)
+            ):
+                return current, None
+            if deep:
+                stored_graphs = _load_manifest_graphs(client, manifest, root)
+                expected_graphs = {
+                    path.relative_to(root).as_posix(): extract_file_graph(
+                        path.relative_to(root).as_posix(), path.read_text(encoding="utf-8")
+                    )
+                    for path in files
+                }
+                if expected_graphs != stored_graphs:
+                    return current, None
+                _resolve_graph(stored_graphs)
+                if not _valid_graphs(
+                    stored_graphs,
+                    manifest["files"],
+                    symbol_count=manifest["symbol_count"],
+                    expected_edge_count=manifest["edge_count"],
+                    resolution_metrics=manifest["resolution_metrics"],
+                ):
                     return current, None
         if deep and keys:
             values = _mget_batched(client, keys)
@@ -1267,10 +1416,33 @@ def _build_index_locked(
     old_manifest: dict[str, Any] | None = None
     with contextlib.suppress(ValueError, UnicodeError, json.JSONDecodeError):
         old_manifest = _active_manifest(client, root)
-    registered_chunks, registered_manifests = _registered_keys(client, prefix)
+    registered_chunks, registered_manifests, registered_graphs = _registered_keys(client, prefix)
     old_hashes = old_manifest.get("file_hashes", {}) if isinstance(old_manifest, dict) else {}
     old_file_chunks = old_manifest.get("file_chunks", {}) if isinstance(old_manifest, dict) else {}
-    old_file_graphs = old_manifest.get("file_graphs", {}) if isinstance(old_manifest, dict) else {}
+    old_file_graph_refs = old_manifest.get("file_graphs", {}) if isinstance(old_manifest, dict) else {}
+    old_file_graphs: dict[str, dict[str, Any]] = {}
+    if isinstance(old_file_graph_refs, dict):
+        embedded = {
+            path: graph
+            for path, graph in old_file_graph_refs.items()
+            if isinstance(path, str) and isinstance(graph, dict)
+        }
+        old_file_graphs.update(embedded)
+        referenced = [
+            (path, key)
+            for path, key in old_file_graph_refs.items()
+            if isinstance(path, str) and isinstance(key, str)
+        ]
+        referenced_values = _mget_batched(client, [key for _, key in referenced])
+        for (path, key), raw in zip(referenced, referenced_values, strict=True):
+            file_hash = old_hashes.get(path)
+            if not isinstance(file_hash, str):
+                continue
+            graph = _load_graph_record(
+                key, raw, prefix=prefix, path=path, file_hash=file_hash
+            )
+            if graph is not None:
+                old_file_graphs[path] = graph
     can_reuse_files = (
         isinstance(old_hashes, dict)
         and isinstance(old_file_chunks, dict)
@@ -1316,24 +1488,40 @@ def _build_index_locked(
     generated_payloads: dict[str, str] = {}
     generated_count = 0
     graph_generated_files = 0
+    graph_repaired_files = 0
+    graph_force_write_paths: set[str] = set()
     for path in files:
         relative = path.relative_to(root).as_posix()
+        text: str | None = None
+        expected_graph: dict[str, Any] | None = None
         chunks_reusable = relative in unchanged
         graph_reusable = (
-            chunks_reusable
+            old_hashes.get(relative) == file_hashes[relative]
             and isinstance(old_file_graphs.get(relative), dict)
             and old_file_graphs[relative].get("schema") == GRAPH_SCHEMA
         )
+        if graph_reusable and repair_deep:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"indexed file is not UTF-8: {relative}") from exc
+            expected_graph = extract_file_graph(relative, text)
+            _reset_graph_resolution({relative: expected_graph})
+            if old_file_graphs[relative] != expected_graph:
+                graph_reusable = False
+                graph_repaired_files += 1
+                graph_force_write_paths.add(relative)
         if chunks_reusable:
             file_chunks[relative] = list(old_file_chunks[relative])
         if graph_reusable:
             file_graphs[relative] = old_file_graphs[relative]
         if chunks_reusable and graph_reusable:
             continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError(f"indexed file is not UTF-8: {relative}") from exc
+        if text is None:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"indexed file is not UTF-8: {relative}") from exc
         if not chunks_reusable:
             keys = []
             for chunk in split_chunks(relative, text):
@@ -1354,10 +1542,20 @@ def _build_index_locked(
                 generated_count += 1
             file_chunks[relative] = keys
         if not graph_reusable:
-            file_graphs[relative] = extract_file_graph(relative, text)
+            file_graphs[relative] = expected_graph or extract_file_graph(relative, text)
             graph_generated_files += 1
 
-    symbol_count, edge_count, resolution_metrics = _resolve_graph(file_graphs)
+    _reset_graph_resolution(file_graphs)
+    resolved_graphs = json.loads(json.dumps(file_graphs))
+    symbol_count, edge_count, resolution_metrics = _resolve_graph(resolved_graphs)
+
+    file_graph_references = {
+        path: _graph_key(prefix, path, file_hashes[path]) for path in file_hashes
+    }
+    graph_payloads = {
+        file_graph_references[path]: _graph_payload(path, file_hashes[path], file_graphs[path])
+        for path in file_hashes
+    }
 
     chunk_keys = [key for path in file_hashes for key in file_chunks[path]]
     writes: list[tuple[str | bytes, ...]] = []
@@ -1366,8 +1564,28 @@ def _build_index_locked(
     for key, value in zip(generated_keys, existing, strict=True):
         if not _valid_chunk_value(value):
             writes.append(("SET", key, generated_payloads[key]))
+    graph_keys = list(file_graph_references.values())
+    existing_graph_values = _mget_batched(client, graph_keys)
+    graph_write_count = 0
+    for path, key, value in zip(file_hashes, graph_keys, existing_graph_values, strict=True):
+        if path in graph_force_write_paths or (
+            _load_graph_record(
+                key,
+                value,
+                prefix=prefix,
+                path=path,
+                file_hash=file_hashes[path],
+            )
+            is None
+        ):
+            writes.append(("SET", key, graph_payloads[key]))
+            graph_write_count += 1
     old_chunk_keys = set(old_manifest.get("chunk_keys", [])) if old_manifest else set()
     deleted_chunk_keys = (old_chunk_keys | registered_chunks) - set(chunk_keys)
+    old_graph_keys = {
+        key for key in old_file_graph_refs.values() if isinstance(key, str)
+    } if isinstance(old_file_graph_refs, dict) else set()
+    deleted_graph_keys = (old_graph_keys | registered_graphs) - set(graph_keys)
     reused_chunk_count = len(chunk_keys) - generated_count
     metrics = {
         "files": {
@@ -1388,7 +1606,10 @@ def _build_index_locked(
             "edges": edge_count,
             "resolution": resolution_metrics,
             "generated_files": graph_generated_files,
+            "repaired_files": graph_repaired_files,
             "reused_files": len(file_graphs) - graph_generated_files,
+            "written_records": graph_write_count,
+            "deleted_records": len(deleted_graph_keys),
         },
     }
     manifest = {
@@ -1401,7 +1622,7 @@ def _build_index_locked(
         "files": [path.relative_to(root).as_posix() for path in files],
         "file_hashes": file_hashes,
         "file_chunks": file_chunks,
-        "file_graphs": file_graphs,
+        "file_graphs": file_graph_references,
         "symbol_count": symbol_count,
         "edge_count": edge_count,
         "resolution_metrics": resolution_metrics,
@@ -1414,9 +1635,14 @@ def _build_index_locked(
     )
     # Register every old and staged key before any staged write can create an orphan.
     staged_chunk_keys = registered_chunks | set(chunk_keys)
+    staged_graph_keys = registered_graphs | set(graph_keys)
     staged_manifest_keys = registered_manifests | {manifest_key}
     if old_manifest:
         staged_chunk_keys.update(old_manifest.get("chunk_keys", []))
+        if isinstance(old_file_graph_refs, dict):
+            staged_graph_keys.update(
+                key for key in old_file_graph_refs.values() if isinstance(key, str)
+            )
         old_generation = old_manifest.get("generation")
         if isinstance(old_generation, str):
             staged_manifest_keys.add(f"{prefix}:generation:{old_generation}:manifest")
@@ -1426,6 +1652,7 @@ def _build_index_locked(
         json.dumps(
             {
                 "chunk_keys": sorted(staged_chunk_keys),
+                "graph_keys": sorted(staged_graph_keys),
                 "manifest_keys": sorted(staged_manifest_keys),
             },
             separators=(",", ":"),
@@ -1438,6 +1665,19 @@ def _build_index_locked(
         not _valid_chunk_value(value) for value in staged_values
     ):
         raise ValueError("staged generation failed chunk validation")
+    staged_graph_values = _mget_batched(client, graph_keys)
+    for path, key, raw in zip(file_hashes, graph_keys, staged_graph_values, strict=True):
+        if (
+            _load_graph_record(
+                key,
+                raw,
+                prefix=prefix,
+                path=path,
+                file_hash=file_hashes[path],
+            )
+            is None
+        ):
+            raise ValueError("staged generation failed graph validation")
     write_finished = time.monotonic()
 
     final_files = included_files(root)
@@ -1455,9 +1695,12 @@ def _build_index_locked(
     # Garbage collection happens only after the new generation is active.
     garbage_collection_started = time.monotonic()
     obsolete = sorted(deleted_chunk_keys)
+    obsolete_graphs = sorted(deleted_graph_keys)
     obsolete_manifests = sorted(staged_manifest_keys - {manifest_key})
     if obsolete:
         client.execute("DEL", *obsolete)
+    if obsolete_graphs:
+        client.execute("DEL", *obsolete_graphs)
     if obsolete_manifests:
         client.execute("DEL", *obsolete_manifests)
     garbage_collection_finished = time.monotonic()
@@ -1467,7 +1710,12 @@ def _build_index_locked(
         "SET",
         f"{prefix}:chunk-registry",
         json.dumps(
-            {"chunk_keys": chunk_keys, "manifest_keys": [manifest_key]}, separators=(",", ":")
+            {
+                "chunk_keys": chunk_keys,
+                "graph_keys": graph_keys,
+                "manifest_keys": [manifest_key],
+            },
+            separators=(",", ":"),
         ),
     )
     finished = time.monotonic()
@@ -1503,7 +1751,7 @@ def search(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> di
     qtokens = set(tokenize(query))
     query_normalized = query.strip().lower()
     symbols_by_path: dict[str, list[dict[str, Any]]] = {}
-    for path, graph in manifest.get("file_graphs", {}).items():
+    for path, graph in _load_manifest_graphs(client, manifest, root).items():
         symbols_by_path[path] = graph.get("symbols", [])
     results = []
     for raw in values:
@@ -1563,7 +1811,8 @@ def symbols(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> d
         raise ValueError(f"index is {state['status']}; run index before symbol lookup")
     normalized = query.strip().lower()
     results = []
-    for graph in state["manifest"].get("file_graphs", {}).values():
+    graphs = _load_manifest_graphs(client, state["manifest"], root)
+    for graph in graphs.values():
         for symbol in graph.get("symbols", []):
             name = symbol["name"].lower()
             qualified = symbol["qualified_name"].lower()
@@ -1588,9 +1837,10 @@ def impact(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> di
     if not fresh:
         raise ValueError(f"index is {state['status']}; run index before impact lookup")
     manifest = state["manifest"]
+    graphs = _load_manifest_graphs(client, manifest, root, resolve=True)
     all_symbols = [
         symbol
-        for graph in manifest.get("file_graphs", {}).values()
+        for graph in graphs.values()
         for symbol in graph.get("symbols", [])
     ]
     normalized = query.strip().lower()
@@ -1601,7 +1851,7 @@ def impact(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> di
     }
     symbols_by_id = {symbol["id"]: symbol for symbol in all_symbols}
     results = []
-    for graph in manifest.get("file_graphs", {}).values():
+    for graph in graphs.values():
         for edge in graph.get("edges", []):
             edge_target = edge.get("target", "").lower()
             short_target = re.split(r"[.:]+", edge_target)[-1]
@@ -1709,6 +1959,15 @@ def _clear_locked(client: RedisClient, root: Path) -> dict[str, Any]:
                 if isinstance(candidate, str) and candidate.startswith(prefix + ":chunk:")
             )
             if isinstance(value, dict):
+                graph_candidates = list(value.get("graph_keys", []))
+                file_graphs = value.get("file_graphs", {})
+                if isinstance(file_graphs, dict):
+                    graph_candidates.extend(file_graphs.values())
+                keys.extend(
+                    candidate
+                    for candidate in graph_candidates
+                    if isinstance(candidate, str) and candidate.startswith(prefix + ":graph:")
+                )
                 keys.extend(
                     candidate
                     for candidate in value.get("manifest_keys", [])

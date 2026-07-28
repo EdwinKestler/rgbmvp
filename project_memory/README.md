@@ -1,4 +1,4 @@
-# Portable Project Memory v2.2 bundle
+# Portable Project Memory v2.3 bundle
 
 Copy these paths to another repository while preserving their relative locations:
 
@@ -54,8 +54,8 @@ registry is reduced to the active generation. A final repository fingerprint che
 activating a mixed source snapshot. Operational timing/reuse metrics are returned beside, not stored
 inside, the immutable generation manifest.
 
-`status` checks manifest metadata and repository freshness without loading chunk payloads. In v2.2
-the manifest includes graph records, so metadata transfer is proportional to graph size. Use
+`status` checks compact manifest metadata and repository freshness without loading chunk or graph
+payloads. Use
 `validate --deep` to load every active chunk and recompute its identity, ownership,
 tokens, and vector from the stored text. If it reports semantic corruption, use
 `index --incremental --repair-deep` to regenerate only affected owner files.
@@ -71,6 +71,18 @@ provenance, and normal search reports cosine, lexical, and symbol-boost contribu
 `evaluation_queries` in `.project-memory.json`
 provide a repeatable recall-at-limit benchmark. Graph results remain discovery pointers: open the
 current source before relying on them.
+
+v2.3 moves extraction graphs out of the active manifest into path-owned, content-addressed per-file
+Redis records. Identity includes extractor schema, record schema, relative path, and file hash;
+identical bytes at different paths remain distinct because extracted names are path-dependent.
+Manifests retain graph references and aggregate counts, making `status` metadata-only again.
+`search` and `symbols` load graph records on demand; `impact` additionally derives cross-file
+resolution in memory. Deep validation verifies record identity, ownership, schema, current-source
+extraction, and resolved summary counts. Incremental indexing reuses unchanged graph records,
+transactionally stages exact graph keys, and safely collects obsolete records after activation.
+`index --incremental --repair-deep` semantically repairs only corrupted graph owners without
+regenerating chunks. Embedded v2.2 graphs migrate automatically without re-embedding unchanged
+chunks.
 
 Copy the Project Memory operating contract from the source repository's `AGENTS.md` into the
 target repository instructions. Repository files always remain authoritative; Redis results are

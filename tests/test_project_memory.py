@@ -323,7 +323,7 @@ def test_v20_manifest_without_file_chunk_map_migrates_on_next_index(tmp_path):
     migrated = migrated_result["manifest"]
 
     assert set(migrated["file_chunks"]) == set(first["files"])
-    assert migrated["bundle_version"] == "2.2.0"
+    assert migrated["bundle_version"] == "2.3.0"
     assert migrated_result["metrics"]["files"]["changed"] == len(first["files"])
     assert migrated_result["metrics"]["files"]["unchanged"] == 0
     assert pm.validate(redis, root, deep=True)[1] is True
@@ -451,11 +451,42 @@ def test_staged_registry_precedes_chunk_writes(tmp_path):
     final_registry = json.loads(redis.data[registry_key])
     assert final_registry == {
         "chunk_keys": recovered["chunk_keys"],
+        "graph_keys": list(recovered["file_graphs"].values()),
         "manifest_keys": [redis.data[active_key].decode()],
     }
     assert {
         key for key in redis.data if ":chunk:" in key
     } == set(recovered["chunk_keys"])
+
+
+def test_staged_registry_precedes_graph_writes(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)["manifest"]
+    active_key = f"{pm.namespace(root)}:active-generation"
+    registry_key = f"{pm.namespace(root)}:chunk-registry"
+    old_pointer = redis.data[active_key]
+    (root / "README.md").write_text("# Changed before graph write\n")
+    original_execute = redis.execute
+
+    def fail_first_staged_graph(command, *args):
+        if command == "SET" and ":graph:" in args[0]:
+            raise RuntimeError("simulated graph write interruption")
+        return original_execute(command, *args)
+
+    redis.execute = fail_first_staged_graph
+    with pytest.raises(RuntimeError, match="graph write interruption"):
+        pm.build_index(redis, root)
+
+    registry = json.loads(redis.data[registry_key])
+    assert redis.data[active_key] == old_pointer
+    assert set(first["file_graphs"].values()) <= set(registry["graph_keys"])
+    assert len(registry["graph_keys"]) == len(first["files"]) + 1
+
+    redis.execute = original_execute
+    recovered = pm.build_index(redis, root)["manifest"]
+    final_registry = json.loads(redis.data[registry_key])
+    assert set(final_registry["graph_keys"]) == set(recovered["file_graphs"].values())
 
 
 def test_registry_remains_union_if_garbage_collection_is_interrupted(tmp_path):
@@ -489,10 +520,42 @@ def test_registry_remains_union_if_garbage_collection_is_interrupted(tmp_path):
     final_registry = json.loads(redis.data[registry_key])
     assert final_registry == {
         "chunk_keys": recovered["chunk_keys"],
+        "graph_keys": list(recovered["file_graphs"].values()),
         "manifest_keys": [redis.data[active_key].decode()],
     }
     obsolete_first_keys = set(first["chunk_keys"]) - set(interrupted_manifest["chunk_keys"])
     assert obsolete_first_keys.isdisjoint(redis.data)
+
+
+def test_graph_registry_remains_union_if_graph_cleanup_is_interrupted(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)["manifest"]
+    active_key = f"{pm.namespace(root)}:active-generation"
+    registry_key = f"{pm.namespace(root)}:chunk-registry"
+    old_graph_key = first["file_graphs"]["README.md"]
+    (root / "README.md").write_text("# Changed before graph cleanup\n")
+    original_execute = redis.execute
+
+    def fail_graph_cleanup(command, *args):
+        if command == "DEL" and old_graph_key in args:
+            raise RuntimeError("simulated graph cleanup interruption")
+        return original_execute(command, *args)
+
+    redis.execute = fail_graph_cleanup
+    with pytest.raises(RuntimeError, match="graph cleanup interruption"):
+        pm.build_index(redis, root)
+
+    registry = json.loads(redis.data[registry_key])
+    assert old_graph_key in registry["graph_keys"]
+    assert redis.data[active_key].decode() in registry["manifest_keys"]
+
+    redis.execute = original_execute
+    recovered = pm.build_index(redis, root)["manifest"]
+    assert old_graph_key not in redis.data
+    assert json.loads(redis.data[registry_key])["graph_keys"] == list(
+        recovered["file_graphs"].values()
+    )
 
 
 @pytest.mark.parametrize("corruption", ["text", "vector", "tokens", "path", "lines", "id"])
@@ -869,24 +932,152 @@ def test_v21_manifest_without_graph_map_migrates_without_reembedding(tmp_path):
     assert set(migrated["manifest"]["file_graphs"]) == set(first["files"])
 
 
+def test_v22_embedded_graphs_migrate_to_external_records_without_reembedding(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)["manifest"]
+    active_key = f"{pm.namespace(root)}:active-generation"
+    manifest_key = redis.data[active_key].decode()
+    embedded_graphs = {
+        path: json.loads(redis.data[key])["graph"]
+        for path, key in first["file_graphs"].items()
+    }
+    pm._resolve_graph(embedded_graphs)
+    legacy = json.loads(redis.data[manifest_key])
+    legacy["bundle_version"] = "2.2.0"
+    legacy["file_graphs"] = embedded_graphs
+    redis.data[manifest_key] = json.dumps(legacy).encode()
+    for graph_key in first["file_graphs"].values():
+        redis.data.pop(graph_key)
+    registry_key = f"{pm.namespace(root)}:chunk-registry"
+    registry = json.loads(redis.data[registry_key])
+    registry.pop("graph_keys")
+    redis.data[registry_key] = json.dumps(registry).encode()
+
+    migrated = pm.build_index(redis, root)
+
+    assert migrated["metrics"]["chunks"]["generated"] == 0
+    assert migrated["metrics"]["graph"]["generated_files"] == 0
+    assert migrated["metrics"]["graph"]["written_records"] == len(first["files"])
+    assert all(
+        isinstance(key, str) and ":graph:" in key
+        for key in migrated["manifest"]["file_graphs"].values()
+    )
+    assert pm.validate(redis, root, deep=True)[1] is True
+
+
+def test_status_is_lazy_but_graph_consumers_and_deep_validation_load_records(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    manifest = pm.build_index(redis, root)["manifest"]
+    graph_key = manifest["file_graphs"]["src/pkg/service.py"]
+    redis.data.pop(graph_key)
+
+    assert pm.status(redis, root)[1] is True
+    with pytest.raises(ValueError, match="malformed graph data"):
+        pm.symbols(redis, "service", 5, root)
+    assert pm.validate(redis, root, deep=True)[1] is False
+
+
+def test_changed_file_replaces_and_collects_only_its_graph_record(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    first = pm.build_index(redis, root)["manifest"]
+    old_graphs = set(first["file_graphs"].values())
+    old_changed_key = first["file_graphs"]["src/pkg/service.py"]
+    (root / "src/pkg/service.py").write_text("def changed(): return 2\n")
+
+    result = pm.build_index(redis, root)
+    second = result["manifest"]
+
+    assert result["metrics"]["graph"]["generated_files"] == 1
+    assert result["metrics"]["graph"]["written_records"] == 1
+    assert old_changed_key not in redis.data
+    assert old_graphs - {old_changed_key} <= redis.data.keys()
+    assert second["file_graphs"]["src/pkg/service.py"] in redis.data
+
+
+def test_identical_code_files_have_distinct_path_owned_graph_records(tmp_path):
+    root = make_repo(tmp_path)
+    source = "def readiness():\n    return True\n"
+    (root / "src/pkg/one.py").write_text(source)
+    (root / "src/pkg/two.py").write_text(source)
+    redis = FakeRedis()
+
+    manifest = pm.build_index(redis, root)["manifest"]
+    first_key = manifest["file_graphs"]["src/pkg/one.py"]
+    second_key = manifest["file_graphs"]["src/pkg/two.py"]
+    graphs = pm._load_manifest_graphs(redis, manifest, root)
+
+    assert first_key != second_key
+    assert first_key == pm._graph_key(
+        pm.namespace(root), "src/pkg/one.py", manifest["file_hashes"]["src/pkg/one.py"]
+    )
+    assert second_key == pm._graph_key(
+        pm.namespace(root), "src/pkg/two.py", manifest["file_hashes"]["src/pkg/two.py"]
+    )
+    assert any(
+        symbol["qualified_name"] == "src.pkg.one.readiness"
+        for symbol in graphs["src/pkg/one.py"]["symbols"]
+    )
+    assert any(
+        symbol["qualified_name"] == "src.pkg.two.readiness"
+        for symbol in graphs["src/pkg/two.py"]["symbols"]
+    )
+
+
+def test_identical_non_code_files_have_distinct_path_owned_graph_records(tmp_path):
+    root = make_repo(tmp_path)
+    (root / "docs/one.md").write_text("same text\n")
+    (root / "docs/two.md").write_text("same text\n")
+    redis = FakeRedis()
+
+    manifest = pm.build_index(redis, root)["manifest"]
+
+    assert manifest["file_hashes"]["docs/one.md"] == manifest["file_hashes"]["docs/two.md"]
+    assert manifest["file_graphs"]["docs/one.md"] != manifest["file_graphs"]["docs/two.md"]
+    assert pm.validate(redis, root, deep=True)[1] is True
+
+
+def test_deep_repair_regenerates_only_semantically_corrupted_graph(tmp_path):
+    root = make_repo(tmp_path)
+    redis = FakeRedis()
+    manifest = pm.build_index(redis, root)["manifest"]
+    path = "src/pkg/service.py"
+    key = manifest["file_graphs"][path]
+    payload = json.loads(redis.data[key])
+    payload["graph"]["symbols"][0]["name"] = "semantically_wrong"
+    redis.data[key] = json.dumps(payload).encode()
+
+    assert pm.validate(redis, root, deep=True)[1] is False
+    ordinary = pm.build_index(redis, root)
+    assert ordinary["metrics"]["graph"]["generated_files"] == 0
+    assert pm.validate(redis, root, deep=True)[1] is False
+
+    repaired = pm.build_index(redis, root, repair_deep=True)
+
+    assert repaired["metrics"]["files"]["changed"] == 0
+    assert repaired["metrics"]["chunks"]["generated"] == 0
+    assert repaired["metrics"]["graph"]["generated_files"] == 1
+    assert repaired["metrics"]["graph"]["repaired_files"] == 1
+    assert repaired["metrics"]["graph"]["written_records"] == 1
+    assert pm.validate(redis, root, deep=True)[1] is True
+
+
 def test_stale_graph_schema_reextracts_graphs_without_reembedding(tmp_path):
     root = make_repo(tmp_path)
     redis = FakeRedis()
     first = pm.build_index(redis, root)["manifest"]
-    manifest_key = redis.data[f"{pm.namespace(root)}:active-generation"].decode()
-    stale = json.loads(redis.data[manifest_key])
-    for graph in stale["file_graphs"].values():
-        graph.pop("schema")
-    redis.data[manifest_key] = json.dumps(stale).encode()
+    for graph_key in first["file_graphs"].values():
+        payload = json.loads(redis.data[graph_key])
+        payload["graph"]["schema"] = "project-memory:code-graph:stale"
+        redis.data[graph_key] = json.dumps(payload).encode()
 
     migrated = pm.build_index(redis, root)
 
     assert migrated["metrics"]["chunks"]["generated"] == 0
     assert migrated["metrics"]["graph"]["generated_files"] == len(first["files"])
-    assert all(
-        graph["schema"] == pm.GRAPH_SCHEMA
-        for graph in migrated["manifest"]["file_graphs"].values()
-    )
+    assert all(isinstance(key, str) for key in migrated["manifest"]["file_graphs"].values())
 
 
 def test_symbol_lookup_impact_and_search_explanations(tmp_path):
@@ -917,11 +1108,10 @@ def test_deep_validation_rejects_corrupted_graph(tmp_path):
     root = make_repo(tmp_path)
     redis = FakeRedis()
     manifest = pm.build_index(redis, root)["manifest"]
-    active_key = f"{pm.namespace(root)}:active-generation"
-    manifest_key = redis.data[active_key].decode()
-    graph = manifest["file_graphs"]["src/pkg/service.py"]
-    graph["symbols"][0]["name"] = "corrupted"
-    redis.data[manifest_key] = json.dumps(manifest).encode()
+    graph_key = manifest["file_graphs"]["src/pkg/service.py"]
+    payload = json.loads(redis.data[graph_key])
+    payload["graph"]["symbols"][0]["name"] = "corrupted"
+    redis.data[graph_key] = json.dumps(payload).encode()
 
     assert pm.status(redis, root)[1] is True
     assert pm.validate(redis, root, deep=True)[1] is False

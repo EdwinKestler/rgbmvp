@@ -107,6 +107,10 @@ python3 project-memory.py evaluate --limit 10
 python3 project-memory.py clear    # this namespace only — never FLUSHDB
 ```
 
+v2.3 keeps graph extraction breadth unchanged while storing per-file extraction graphs as
+content-addressed records referenced by a compact transactional manifest. Graph consumers load
+records lazily; repository files remain authoritative.
+
 | Env / flag | Purpose |
 |------------|---------|
 | `PROJECT_MEMORY_URL` | Portable Redis URL override |
