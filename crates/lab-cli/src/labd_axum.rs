@@ -223,6 +223,8 @@ fn router(state: AppState) -> Router {
         .route("/audit.html", get(page_audit))
         .route("/status", get(page_status))
         .route("/status.html", get(page_status))
+        .route("/swap", get(page_swap))
+        .route("/swap.html", get(page_swap))
         .route("/manifest.json", get(artifact_manifest))
         .route("/artifacts/public/{*rest}", get(artifact_public))
         .route("/v1", get(v1_root))
@@ -348,6 +350,15 @@ fn apply_cors(headers: &mut HeaderMap, acao: Option<&str>) {
     }
 }
 
+/// Origin Cloudflare Turnstile serves its widget script and iframe from.
+///
+/// W9.1: the bot check cannot render without BOTH `script-src` and `frame-src`
+/// allowing this exact origin — with no `frame-src` directive the iframe falls
+/// back to `default-src 'self'` and is blocked. Deliberately kept to this one
+/// origin; `connect-src` stays `'self'` because siteverify is server-side, so
+/// the browser never talks to Cloudflare directly.
+const TURNSTILE_ORIGIN: &str = "https://challenges.cloudflare.com";
+
 /// Transport hardening for Cloud Run / public HTML+JSON (not protocol logic).
 fn apply_security_headers(headers: &mut HeaderMap, path: &str) {
     headers.insert(
@@ -364,11 +375,14 @@ fn apply_security_headers(headers: &mut HeaderMap, path: &str) {
         headers.insert(HeaderName::from_static("permissions-policy"), v);
     }
     // Tight CSP: same-origin API, inline script/style for static lab pages.
-    if let Ok(v) = HeaderValue::from_str(
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; \
-         img-src 'self' data: https:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; \
-         base-uri 'self'; form-action 'self'",
-    ) {
+    let csp = format!(
+        "default-src 'self'; script-src 'self' 'unsafe-inline' {t}; \
+         style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; \
+         font-src 'self'; frame-src {t}; frame-ancestors 'none'; base-uri 'self'; \
+         form-action 'self'",
+        t = TURNSTILE_ORIGIN
+    );
+    if let Ok(v) = HeaderValue::from_str(&csp) {
         headers.insert(header::CONTENT_SECURITY_POLICY, v);
     }
     let cache = if path.starts_with("/artifacts/public/") || path == "/manifest.json" {
@@ -457,6 +471,16 @@ async fn page_status(State(s): State<AppState>) -> Html<String> {
         &s.web_dir,
         "status.html",
         "<html><body><h1>/status</h1><p>missing web/status.html</p></body></html>",
+    )
+    .await
+}
+
+/// W9 — public demo swap page. Static; all state comes from `/v1/demo/*`.
+async fn page_swap(State(s): State<AppState>) -> Html<String> {
+    read_html(
+        &s.web_dir,
+        "swap.html",
+        "<html><body><h1>/swap</h1><p>missing web/swap.html</p></body></html>",
     )
     .await
 }
@@ -952,6 +976,14 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
+    /// Repo `web/` directory, resolved from the manifest.
+    ///
+    /// `cargo test` runs with CWD at the crate root, so a bare "web" path
+    /// silently resolves to nothing and the handlers serve their fallback HTML.
+    fn repo_web_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web")
+    }
+
     /// Build state around a config, with demo swaps off unless a test opts in.
     fn state_with(cfg: Config, demo_policy: lab_core::DemoSwapPolicy) -> AppState {
         AppState {
@@ -1051,6 +1083,45 @@ mod tests {
         // an unauthenticated POST is refused rather than reaching the handler.
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
         std::env::remove_var("LABD_PUBLIC_READ_ONLY");
+    }
+
+    /// W9: the public swap page is served, and must not ship key material or a
+    /// preimage. It is static, so anything sensitive here would be permanent.
+    #[tokio::test]
+    async fn public_swap_page_is_served_and_leaks_nothing() {
+        let mut state = test_state();
+        state.web_dir = repo_web_dir();
+        let app = router(state);
+        for path in ["/swap", "/swap.html"] {
+            let res = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "path {path}");
+            let body = axum::body::to_bytes(res.into_body(), 512 * 1024)
+                .await
+                .unwrap();
+            let html = String::from_utf8_lossy(&body).to_lowercase();
+            assert!(
+                html.contains("run a demo swap"),
+                "{path} should render the real page, not the fallback"
+            );
+            // Disclaimers are the point of the page; keep them non-optional.
+            assert!(html.contains("testnet only"), "{path} must state testnet-only");
+            for bad in ["preimage_hex", "mnemonic", "wif", "xprv", "tprv", "secret_dir"] {
+                assert!(!html.contains(bad), "{path} must not contain {bad}");
+            }
+            // The page must drive the bounded endpoint, never the arbitrary one.
+            assert!(
+                html.contains("/v1/demo/swap"),
+                "{path} must use the bounded public trigger"
+            );
+            assert!(
+                !html.contains("/v1/swap/init") && !html.contains("/action"),
+                "{path} must not call the token-gated operator endpoints"
+            );
+        }
     }
 
     /// Quota endpoint is a public GET and must never leak wallet secrets.
@@ -1211,6 +1282,19 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         assert!(csp.contains("default-src 'self'"), "csp={csp}");
+        // W9.1: Turnstile needs exactly this origin in script-src AND frame-src.
+        assert!(
+            csp.contains(&format!("script-src 'self' 'unsafe-inline' {TURNSTILE_ORIGIN}")),
+            "turnstile script origin must be allowed: csp={csp}"
+        );
+        assert!(
+            csp.contains(&format!("frame-src {TURNSTILE_ORIGIN}")),
+            "turnstile iframe origin must be allowed: csp={csp}"
+        );
+        // The relaxation is script/frame only — the page must never be able to
+        // call out to a third party directly.
+        assert!(csp.contains("connect-src 'self';"), "connect-src must stay self: csp={csp}");
+        assert!(csp.contains("frame-ancestors 'none'"), "csp={csp}");
         assert_eq!(
             h.get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
             Some("no-store")

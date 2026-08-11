@@ -662,6 +662,15 @@ pub fn sweep_stuck_demo_swaps_blocking(
     report
 }
 
+/// Cloudflare Turnstile **sitekey**. Public by design (it ships in the HTML),
+/// unlike the secret, which never leaves the server.
+pub fn turnstile_sitekey() -> Option<String> {
+    std::env::var("LABD_DEMO_TURNSTILE_SITEKEY")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Public JSON for `GET /v1/demo/quota`.
 pub fn quota_json(gov: &DemoGovernor, floats: Option<Floats>) -> Value {
     let p = gov.policy();
@@ -672,6 +681,10 @@ pub fn quota_json(gov: &DemoGovernor, floats: Option<Floats>) -> Value {
         "leg_sats": p.leg_sats,
         "rgb_wrap": lab_core::demo::DEMO_RGB_WRAP,
         "csv_delay": p.csv_delay,
+        "turnstile_required": p.turnstile_required,
+        // Absent until a Cloudflare sitekey is provisioned; the page renders a
+        // "bot check unavailable" state rather than a broken widget.
+        "turnstile_sitekey": turnstile_sitekey(),
         "limits": {
             "daily_cap": p.daily_cap,
             "max_concurrent": p.max_concurrent,

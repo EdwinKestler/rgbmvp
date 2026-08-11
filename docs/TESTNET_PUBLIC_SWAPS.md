@@ -254,11 +254,83 @@ in [`deploy/README.md` §5.6](../deploy/README.md).
 - E2E refund path on testnet (fund → wait CSV → auto-refund).
 - Keep the existing required CI (`cargo test`, gitleaks, Trivy, `cargo audit`).
 
-### W9 — Public UX
-- Web “run a demo swap” flow with Turnstile, live phase tracker (poll
-  `GET /v1/swap/{id}`), explorer links, and **honest disclaimers** (testnet only,
-  no real value, capped, may pause when float is low).
-- Preimage stays redacted on all public views (regression test already exists).
+### W9 — Public UX  *(implemented 2026-08-11, except the Turnstile key)*
+
+**No endpoint changes are required.** The API is already shaped for this UI:
+`GET /v1/swap/{id}` returns a ready-made `steps[]` array (`created → funded_btc →
+funded_lq → claimed_lq → claimed_btc → done`, each with `done` + `label`) plus a
+`links{}` map of explorer URLs; `GET /v1/demo/quota` exposes limits, budget,
+floats and usage; denials return typed codes with `Retry-After`. W9 is a
+presentation layer over what already exists.
+
+**Decision: a new self-contained `web/swap.html` at `/swap`.** The operator
+console in `index.html` drives `/v1/swap/init` and `/v1/swap/{id}/action` — the
+arbitrary-parameter endpoints, which are token-gated and return 403 in public
+mode. The public flow must not reuse it. A separate page keeps the two audiences
+apart and means nothing already shipping in the read-only freeze is edited.
+
+#### W9.1 — CSP (blocking prerequisite, and a U4 decision)
+
+The current header (`labd_axum.rs`, `apply_security_headers`) is:
+
+```
+default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self';
+frame-ancestors 'none'; …
+```
+
+Turnstile loads a script from `challenges.cloudflare.com` **and renders inside an
+iframe from that origin**. There is no `frame-src` directive, so it falls back to
+`default-src 'self'` — widget script *and* iframe are both blocked. **W9 cannot
+work until this changes.**
+
+Surgical change only:
+- `script-src`: add `https://challenges.cloudflare.com`
+- add `frame-src https://challenges.cloudflare.com`
+- **`connect-src` stays `'self'`** — siteverify is server-side, so the browser
+  never talks to Cloudflare directly.
+
+Extend `security_headers_on_v1_get` to pin the exact allowed origin, so a later
+edit cannot quietly widen the policy.
+
+#### W9.2–W9.7 — the page
+
+| Item | Work |
+|---|---|
+| W9.2 | Turnstile widget → `POST /v1/demo/swap` with `{turnstile_token}` → `{swap_id}` |
+| W9.3 | Poll `GET /v1/swap/{id}`; render `steps[]` as a checklist with per-tx explorer links; stop on `done`/`refunded`; surface the wait honestly (“waiting for a Bitcoin block — this can take a while on testnet”) |
+| W9.4 | Quota banner from `/v1/demo/quota`: swaps left today, “paused — awaiting faucet refill” when a float floor is hit, disable the button with a countdown on `Retry-After` |
+| W9.5 | Typed denial rendering — friendly copy per `code` (`turnstile_required`, `demo_cooldown`, `demo_daily_cap`, `demo_busy`, `demo_budget_exhausted`, `demo_low_float`, `demo_float_unknown`); never show raw JSON |
+| W9.6 | Disclaimers: testnet only · no real value · capped · may pause · **the swap runs between the lab's own wallets, not yours** |
+| W9.7 | Route `/swap` + `/swap.html` in labd; nav entry on all pages; hide the operator wizard when `public_read_only`; test asserting the public page never renders a preimage |
+
+**Constraints to preserve:** single self-contained HTML file, one inline
+`<script>`, **no build step and no external JS dependency** beyond the Turnstile
+widget itself — matching every other page in `web/`.
+
+**Out of scope:** endpoint changes (none needed), bundlers/frameworks, and
+Turnstile key provisioning (a Cloudflare account step, tracked separately).
+
+#### Status
+
+| Item | State |
+|---|---|
+| W9.1 CSP + pinned test | **Done** — verified live on the served header |
+| W9.2 Turnstile widget → trigger | **Wired, unproven** — needs a sitekey |
+| W9.3 phase tracker | **Done** — binds `steps[]` + `links{}` |
+| W9.4 quota banner / pause / cooldown | **Done** |
+| W9.5 typed denial copy | **Done** — one message per code |
+| W9.6 disclaimers | **Done** |
+| W9.7 route, nav, leak test | **Done** — `/swap`, `/swap.html` |
+
+`LABD_DEMO_TURNSTILE_SITEKEY` (public, non-secret) is surfaced through
+`/v1/demo/quota`. **Without it the page renders a "bot check is not configured"
+state and keeps the trigger disabled** rather than showing a broken widget — so
+the Turnstile-shaped hole fails safe, and closing it later is config-only, not
+a code change.
+
+**Still unverifiable until a key exists:** the Turnstile *pass* path, end to end
+in a browser — the same gap noted in [T1_FIRST_SWAP.md](./T1_FIRST_SWAP.md) §10.
+Everything else was exercised with `LABD_DEMO_TURNSTILE_REQUIRED=0`.
 
 ---
 

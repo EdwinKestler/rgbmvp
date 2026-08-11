@@ -118,6 +118,10 @@ spec:
               value: "1"
             - name: LABD_DEMO_TURNSTILE_REQUIRED
               value: "1"
+            # Public sitekey — ships in the HTML, served by /v1/demo/quota.
+            # Replace with the value from your Turnstile widget.
+            - name: LABD_DEMO_TURNSTILE_SITEKEY
+              value: TURNSTILE_SITEKEY
             - name: LABD_DEMO_TURNSTILE_SECRET
               valueFrom:
                 secretKeyRef:
@@ -130,12 +134,19 @@ spec:
             # --- Budget (docs/TESTNET_PUBLIC_SWAPS.md §1a) ---
             - name: LABD_DEMO_LEG_SATS
               value: "1000"
+            # Fees: repo-proven values, measured live at 5.25 / 3.63 sat/vB
+            # (docs/T1_FIRST_SWAP.md). An earlier draft used 200/100 from vbyte
+            # arithmetic (~1.4 sat/vB) which risks sitting unconfirmed.
             - name: LABD_DEMO_BTC_FEE_SATS
-              value: "200"
+              value: "800"
+            - name: LABD_DEMO_BTC_CLAIM_FEE_SATS
+              value: "500"
             - name: LABD_DEMO_LQ_FEE_SATS
-              value: "100"
+              value: "300"
+            # MUST be >= BTC_FEE + BTC_CLAIM_FEE or the budget under-reserves
+            # (labd warns at startup if it is).
             - name: LABD_DEMO_MAX_FEE_SATS
-              value: "400"
+              value: "1300"
             - name: LABD_DEMO_FEE_BUDGET_SATS
               value: "28000"
             - name: LABD_DEMO_DAILY_CAP
@@ -157,6 +168,8 @@ spec:
               value: "900"
             - name: LABD_DEMO_SWEEP_MIN_AGE_SECS
               value: "5400"
+            - name: LABD_DEMO_LQ_SWEEP_FEE_SATS
+              value: "400"
             - name: LABD_VERIFY_RATE_LIMIT
               value: "30"
           resources:

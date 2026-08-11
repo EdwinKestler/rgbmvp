@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Run a demo swap — rgbmvp</title>
+<meta name="description" content="Trigger a real Bitcoin↔Liquid testnet HTLC atomic swap between the lab's own wallets. Testnet only, no real value."/>
+<style>
+  :root{--bg:#0b0d10;--panel:#14181d;--line:#242b33;--fg:#e6edf3;--muted:#93a1b1;--ok:#3fb950;--warn:#d29922;--err:#f85149;--accent:#58a6ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .shell{max-width:860px;margin:0 auto;padding:0 1rem}
+  .topbar{border-bottom:1px solid var(--line);background:#0d1117}
+  .topbar .shell{display:flex;align-items:center;gap:1rem;flex-wrap:wrap;padding-top:.7rem;padding-bottom:.7rem}
+  .brand{font-weight:700;color:var(--fg);text-decoration:none}
+  nav a{color:var(--muted);text-decoration:none;margin-right:.85rem;font-size:.94rem}
+  nav a:hover,nav a[aria-current]{color:var(--fg)}
+  .network-badge{margin-left:auto;font-size:.72rem;letter-spacing:.08em;border:1px solid var(--warn);color:var(--warn);padding:.15rem .5rem;border-radius:999px}
+  main{padding:1.6rem 0 3rem}
+  h1{font-size:1.6rem;margin:0 0 .4rem}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1.1rem;margin:1rem 0}
+  .muted{color:var(--muted)}
+  .small{font-size:.88rem}
+  button{background:var(--accent);color:#06121f;border:0;border-radius:8px;padding:.7rem 1.1rem;font-weight:700;font-size:1rem;cursor:pointer}
+  button[disabled]{background:#30363d;color:var(--muted);cursor:not-allowed}
+  .banner{border-radius:8px;padding:.7rem .9rem;margin:.6rem 0;border:1px solid var(--line)}
+  .banner.ok{border-color:var(--ok);color:var(--ok)}
+  .banner.warn{border-color:var(--warn);color:var(--warn)}
+  .banner.err{border-color:var(--err);color:var(--err)}
+  ol.steps{list-style:none;padding:0;margin:.6rem 0}
+  ol.steps li{display:flex;align-items:center;gap:.6rem;padding:.42rem 0;border-bottom:1px dashed var(--line)}
+  ol.steps li:last-child{border-bottom:0}
+  .dot{width:1.15rem;text-align:center;flex:0 0 auto}
+  .done .dot{color:var(--ok)}
+  .pending .dot{color:var(--muted)}
+  .grow{flex:1 1 auto}
+  a.tx{color:var(--accent);font-size:.86rem;text-decoration:none;white-space:nowrap}
+  a.tx:hover{text-decoration:underline}
+  dl.facts{display:grid;grid-template-columns:auto 1fr;gap:.25rem .8rem;margin:.5rem 0 0;font-size:.9rem}
+  dl.facts dt{color:var(--muted)}
+  dl.facts dd{margin:0}
+  code{background:#0d1117;border:1px solid var(--line);border-radius:5px;padding:.05rem .35rem;font-size:.86rem}
+  .disclaim li{margin:.25rem 0}
+  .skip{position:absolute;left:-999px}.skip:focus{left:1rem;top:1rem;background:var(--panel);padding:.5rem}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="shell">
+  <a class="brand" href="/">rgbmvp</a>
+  <nav aria-label="Primary navigation">
+    <a href="/status">Proofs</a><a href="/#lab">Lab</a><a href="/demo">Board</a>
+    <a href="/swap" aria-current="page">Swap</a><a href="/audit">Audit</a>
+    <a href="https://github.com/EdwinKestler/rgbmvp" target="_blank" rel="noopener noreferrer">Docs ↗</a>
+  </nav>
+  <span class="network-badge">TESTNET ONLY</span>
+</div></header>
+
+<main id="main" class="shell">
+  <h1>Run a demo swap</h1>
+  <p class="muted">Triggers a <strong>real</strong> Bitcoin ↔ Liquid testnet HTLC atomic swap
+  and shows it settle on-chain, step by step.</p>
+
+  <!-- Honest disclaimers (W9.6) -->
+  <div class="panel">
+    <ul class="disclaim small muted">
+      <li><strong>Testnet only.</strong> No real value moves. Mainnet is refused by the software itself.</li>
+      <li><strong>The swap runs between this lab's own wallets</strong> — not yours. You are triggering a demonstration, not trading.</li>
+      <li><strong>Capped.</strong> Small fixed amounts, a daily limit, and a total fee budget for the run.</li>
+      <li><strong>It may pause.</strong> Testnet coins come from faucets; when a wallet runs low the demo stops until it is refilled.</li>
+      <li>Bitcoin confirmations pace the swap. Testnet blocks are irregular — a run can take anywhere from minutes to over an hour.</li>
+    </ul>
+  </div>
+
+  <!-- Quota / availability (W9.4) -->
+  <div class="panel">
+    <div id="quota-banner" class="banner muted">Checking availability…</div>
+    <dl class="facts" id="quota-facts"></dl>
+  </div>
+
+  <!-- Trigger (W9.2) -->
+  <div class="panel">
+    <div id="turnstile-slot"></div>
+    <div id="bot-note" class="small muted" style="margin:.4rem 0 .7rem"></div>
+    <button id="run" disabled>Run a demo swap</button>
+    <div id="run-msg" class="small muted" style="margin-top:.6rem"></div>
+  </div>
+
+  <!-- Live tracker (W9.3) -->
+  <div class="panel" id="tracker" hidden>
+    <div><strong>Swap</strong> <code id="swap-id"></code> <span id="phase-chip" class="small muted"></span></div>
+    <ol class="steps" id="steps"></ol>
+    <div id="tracker-note" class="small muted"></div>
+  </div>
+
+  <p class="small muted">The preimage is never shown here. It becomes public on the Liquid
+  chain when the first claim is broadcast — that is how the second leg is unlocked — but this
+  page only ever renders the redacted view.</p>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var esc = function (s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  };
+
+  var state = { sitekey: null, required: true, token: null, widgetId: null, polling: null, cooldown: null };
+
+  // ---- Friendly copy for every typed denial code (W9.5) -------------------
+  var DENIALS = {
+    turnstile_required:    "Please complete the bot check first.",
+    turnstile_failed:      "The bot check did not pass. Reload the page and try again.",
+    demo_cooldown:         "A demo swap started very recently. One runs at a time.",
+    demo_per_ip_quota:     "You have used your share of demo swaps for now. Try again later.",
+    demo_daily_cap:        "Today's demo swap budget is used up. Please come back tomorrow.",
+    demo_busy:             "A demo swap is already running — watch it below, or try again shortly.",
+    demo_budget_exhausted: "The testnet fee budget for this demo run is exhausted.",
+    demo_low_float:        "Demo paused: a testnet wallet is low and is waiting on a faucet refill.",
+    demo_float_unknown:    "Demo paused: wallet balances are temporarily unavailable.",
+    demo_disabled:         "Live demo swaps are not enabled on this deployment."
+  };
+  function denialText(code, fallback) { return DENIALS[code] || fallback || "The demo is unavailable right now."; }
+
+  function setBanner(el, cls, html) {
+    el.className = "banner " + (cls || "muted");
+    el.innerHTML = html;
+  }
+
+  // ---- Quota / availability ---------------------------------------------
+  function renderQuota(q) {
+    var b = $("quota-banner"), f = $("quota-facts");
+    if (!q || !q.enabled) {
+      setBanner(b, "warn", "Live demo swaps are <strong>not enabled</strong> on this deployment. " +
+        "Everything else on this site is read-only proof data.");
+      f.innerHTML = "";
+      $("bot-note").textContent = "";
+      return false;
+    }
+    var u = q.usage || {}, lim = q.limits || {}, bud = q.budget || {}, fl = q.floats;
+    var left = Math.max(0, (lim.daily_cap || 0) - (u.swaps_today || 0));
+    var paused = null;
+    if (fl && fl.btc_sats < fl.btc_floor_sats) paused = "Bitcoin";
+    else if (fl && fl.lq_sats < fl.lq_floor_sats) paused = "Liquid";
+    else if ((bud.swaps_remaining_est || 0) <= 0) paused = "budget";
+
+    if (paused === "budget") {
+      setBanner(b, "warn", "<strong>Demo paused</strong> — the fee budget for this run is used up.");
+    } else if (paused) {
+      setBanner(b, "warn", "<strong>Demo paused</strong> — the " + esc(paused) +
+        " testnet wallet is low and awaiting a faucet refill.");
+    } else if (u.in_flight > 0) {
+      setBanner(b, "muted", "A demo swap is <strong>running right now</strong>. One runs at a time.");
+    } else if (left <= 0) {
+      setBanner(b, "warn", "<strong>Today's demo budget is used up.</strong> Please come back tomorrow.");
+    } else {
+      setBanner(b, "ok", "<strong>" + left + "</strong> of " + esc(lim.daily_cap) +
+        " demo swaps available today.");
+    }
+
+    var rows = [
+      ["Amount per side", esc(q.leg_sats) + " sats"],
+      ["Running now", esc(u.in_flight || 0) + " (max " + esc(lim.max_concurrent) + ")"],
+      ["Used today", esc(u.swaps_today || 0) + " of " + esc(lim.daily_cap)],
+      ["Swaps left in run budget", "~" + esc(bud.swaps_remaining_est)]
+    ];
+    if (fl) rows.push(["Lab wallet floats", esc(fl.btc_sats) + " sats BTC · " + esc(fl.lq_sats) + " sats L-BTC"]);
+    f.innerHTML = rows.map(function (r) { return "<dt>" + r[0] + "</dt><dd>" + r[1] + "</dd>"; }).join("");
+
+    return !paused && left > 0 && !(u.in_flight > 0);
+  }
+
+  // ---- Turnstile: renders only when a sitekey is provisioned (W9.2) ------
+  function mountBotCheck() {
+    var note = $("bot-note");
+    if (!state.required) {
+      note.innerHTML = "<em>Bot check disabled on this host (local/testing mode).</em>";
+      return true;
+    }
+    if (!state.sitekey) {
+      note.innerHTML = "<strong>Bot check is not configured on this deployment</strong>, " +
+        "so the trigger is disabled. (Operators: set <code>LABD_DEMO_TURNSTILE_SITEKEY</code>.)";
+      return false;
+    }
+    if (window.turnstile && state.widgetId === null) {
+      state.widgetId = window.turnstile.render("#turnstile-slot", {
+        sitekey: state.sitekey,
+        callback: function (t) { state.token = t; refreshButton(); },
+        "expired-callback": function () { state.token = null; refreshButton(); },
+        "error-callback": function () { state.token = null; refreshButton(); }
+      });
+      note.textContent = "";
+      return true;
+    }
+    note.innerHTML = "Loading bot check…";
+    return false;
+  }
+
+  var available = false;
+  function refreshButton() {
+    var btn = $("run");
+    if (state.cooldown) { btn.disabled = true; return; }
+    var needToken = state.required && state.sitekey;
+    btn.disabled = !available || (needToken && !state.token);
+  }
+
+  function startCooldown(secs) {
+    clearInterval(state.cooldown);
+    var left = secs;
+    var tick = function () {
+      if (left <= 0) { clearInterval(state.cooldown); state.cooldown = null; refreshButton(); loadQuota(); return; }
+      $("run-msg").textContent = "You can try again in " + left + "s.";
+      left -= 1;
+    };
+    state.cooldown = setInterval(tick, 1000);
+    tick();
+  }
+
+  function loadQuota() {
+    return fetch("/v1/demo/quota", { headers: { accept: "application/json" } })
+      .then(function (r) { return r.json(); })
+      .then(function (q) {
+        state.sitekey = q.turnstile_sitekey || null;
+        state.required = q.turnstile_required !== false;
+        available = renderQuota(q);
+        if (q.enabled) { if (!mountBotCheck()) available = false; }
+        refreshButton();
+      })
+      .catch(function () {
+        setBanner($("quota-banner"), "err", "Could not reach the lab API.");
+        available = false; refreshButton();
+      });
+  }
+
+  // ---- Live tracker (W9.3) ----------------------------------------------
+  var LINK_FOR = { funded_btc: "btc_fund", funded_lq: "lq_fund", claimed_lq: "lq_claim", claimed_btc: "btc_claim" };
+
+  function renderSteps(s) {
+    var links = s.links || {};
+    $("steps").innerHTML = (s.steps || []).map(function (st) {
+      var href = links[LINK_FOR[st.id]];
+      var tx = href ? ' <a class="tx" href="' + esc(href) + '" target="_blank" rel="noopener noreferrer">explorer ↗</a>' : "";
+      return '<li class="' + (st.done ? "done" : "pending") + '">' +
+             '<span class="dot">' + (st.done ? "✓" : "○") + "</span>" +
+             '<span class="grow">' + esc(st.label) + "</span>" + tx + "</li>";
+    }).join("");
+  }
+
+  function poll(id) {
+    return fetch("/v1/swap/" + encodeURIComponent(id), { headers: { accept: "application/json" } })
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        $("phase-chip").textContent = "phase: " + (s.phase || "?");
+        renderSteps(s);
+        var note = $("tracker-note");
+        if (s.phase === "done") {
+          note.innerHTML = "<strong>Swap complete.</strong> Both legs settled atomically.";
+          clearInterval(state.polling); state.polling = null; loadQuota();
+        } else if (s.phase === "refunded") {
+          note.innerHTML = "<strong>Refunded.</strong> The swap did not complete in time, so the " +
+            "timelock returned the funds — the safety path working as designed.";
+          clearInterval(state.polling); state.polling = null; loadQuota();
+        } else {
+          note.textContent = "Waiting for confirmations. Bitcoin testnet blocks are irregular; " +
+            "this step can take a while. You can leave this page open.";
+        }
+      })
+      .catch(function () { /* transient; next tick retries */ });
+  }
+
+  function track(id) {
+    $("swap-id").textContent = id;
+    $("tracker").hidden = false;
+    clearInterval(state.polling);
+    poll(id);
+    state.polling = setInterval(function () { poll(id); }, 10000);
+  }
+
+  // ---- Trigger ----------------------------------------------------------
+  $("run").addEventListener("click", function () {
+    var btn = $("run"); btn.disabled = true;
+    $("run-msg").textContent = "Starting…";
+    fetch("/v1/demo/swap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(state.token ? { turnstile_token: state.token } : {})
+    }).then(function (r) {
+      var retry = parseInt(r.headers.get("retry-after") || "0", 10);
+      return r.json().then(function (j) { return { ok: r.ok, status: r.status, retry: retry, body: j }; });
+    }).then(function (res) {
+      // One-shot token: Turnstile tokens are single-use, so always reset.
+      state.token = null;
+      if (window.turnstile && state.widgetId !== null) { try { window.turnstile.reset(state.widgetId); } catch (e) {} }
+
+      if (res.ok && res.body && res.body.swap_id) {
+        $("run-msg").textContent = "Started. Watch it settle below.";
+        track(res.body.swap_id);
+        loadQuota();
+        return;
+      }
+      var code = res.body && res.body.code;
+      setBanner($("quota-banner"), res.status >= 500 ? "warn" : "err",
+                esc(denialText(code, res.body && res.body.error)));
+      $("run-msg").textContent = "";
+      if (res.retry > 0) startCooldown(res.retry); else { loadQuota(); }
+    }).catch(function () {
+      $("run-msg").textContent = "";
+      setBanner($("quota-banner"), "err", "Could not reach the lab API.");
+      refreshButton();
+    });
+  });
+
+  loadQuota();
+  setInterval(function () { if (!state.polling) loadQuota(); }, 30000);
+
+  // Turnstile loads async; mount once it is ready.
+  window.onTurnstileLoad = function () { mountBotCheck(); refreshButton(); };
+})();
+</script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onTurnstileLoad&render=explicit" async defer></script>
+</body>
+</html>
