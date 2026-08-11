@@ -122,3 +122,6 @@ web/build/
 # Docker (if added later — keep ignore patterns ready)
 docker-compose.override.yml
 *.dockerignore.local
+
+# Local .env backups — contain real secrets, never commit
+.env.bak*
