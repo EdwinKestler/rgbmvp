@@ -250,14 +250,25 @@ pub fn import_from_env(cfg: &Config, btc: &BtcConfig, force: bool) -> Result<Btc
     import_wif(cfg, btc, DEFAULT_NAME, wif, expect, force)
 }
 
+/// Load a wallet's WIF for signing (never printed to logs).
+///
+/// W3: prefers a mounted Secret Manager entry (`RGBMVP_SECRET_DIR`) over the
+/// local wallet copy, so public deployments never sign with image-baked keys.
 fn load_wif(cfg: &Config, name: &str) -> Result<PrivateKey> {
-    let path = wallet_dir(cfg, name).join("wif");
-    if !path.exists() {
-        bail!(
-            "btc wallet {name:?} missing WIF at {}; run: rgbmvp btc import-env",
-            path.display()
-        );
-    }
+    let fallback = wallet_dir(cfg, name);
+    let path = lab_core::resolve_secret_path(
+        &lab_core::secret_dirs(),
+        &fallback,
+        name,
+        lab_core::KIND_WIF,
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "btc wallet {name:?} missing WIF at {} (and no RGBMVP_SECRET_DIR mount); \
+             run: rgbmvp btc import-env",
+            fallback.join("wif").display()
+        )
+    })?;
     let s = lab_core::read_trimmed(&path)?;
     PrivateKey::from_wif(&s).context("parse stored WIF")
 }

@@ -181,3 +181,144 @@ curl -s -X POST http://127.0.0.1:8080/v1/swap/init -d '{}' | jq .
 ## 4. Modal.com
 
 Not used for the public site. Optional later for ephemeral regtest jobs only.
+
+---
+
+## 5. T1 demo swap deployment (operator runbook)
+
+Deploys `deploy/cloudrun-demo.yaml` — the **only** profile where the public can
+trigger a state change. It holds spendable **testnet** keys. Read
+[`docs/TESTNET_PUBLIC_SWAPS.md`](../docs/TESTNET_PUBLIC_SWAPS.md) first.
+
+**Rollback at any point:** redeploy `deploy/cloudrun.yaml` (the read-only
+freeze). One revision removes the keys, the volume, and the public mutation.
+
+Run these yourself and paste the output back; none need `sudo`.
+
+```bash
+export PROJECT=silicon-pointer-490721-r0     # your project
+export REGION=us-central1
+export BUCKET="${PROJECT}-rgbmvp-demo-data"
+```
+
+### 5.1 Enable APIs and create the runtime identity
+
+```bash
+gcloud services enable run.googleapis.com secretmanager.googleapis.com \
+  storage.googleapis.com --project "$PROJECT"
+
+gcloud iam service-accounts create rgbmvp-demo-run \
+  --display-name="rgbmvp T1 demo runtime (testnet keys)" --project "$PROJECT"
+```
+
+### 5.2 Persistent state bucket (W4)
+
+Without this the fee budget resets on every restart and the run can overshoot
+its ceiling. Versioning on, so a bad write is recoverable.
+
+```bash
+gcloud storage buckets create "gs://${BUCKET}" \
+  --project "$PROJECT" --location "$REGION" --uniform-bucket-level-access
+gcloud storage buckets update "gs://${BUCKET}" --versioning
+
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
+  --member="serviceAccount:rgbmvp-demo-run@${PROJECT}.iam.gserviceaccount.com" \
+  --role=roles/storage.objectAdmin
+```
+
+### 5.3 Wallet secrets (W3)
+
+The demo signs with **btc-alice** (WIF) and **bob** (mnemonic). Startup refuses
+to run if these are not mounted on a public bind.
+
+> Pipe from your local files — do **not** paste key material into shell history.
+> These are testnet keys with a small float, but treat them as real anyway.
+
+```bash
+gcloud secrets create rgbmvp-demo-btc-alice-wif --project "$PROJECT" \
+  --replication-policy=automatic
+gcloud secrets versions add rgbmvp-demo-btc-alice-wif --project "$PROJECT" \
+  --data-file=.rgbmvp/wallets/btc-alice/wif
+
+gcloud secrets create rgbmvp-demo-bob-mnemonic --project "$PROJECT" \
+  --replication-policy=automatic
+gcloud secrets versions add rgbmvp-demo-bob-mnemonic --project "$PROJECT" \
+  --data-file=.rgbmvp/wallets/bob/mnemonic
+
+# Turnstile secret (from the Cloudflare dashboard).
+printf '%s' "$TURNSTILE_SECRET" | gcloud secrets create rgbmvp-demo-turnstile-secret \
+  --project "$PROJECT" --replication-policy=automatic --data-file=-
+
+for S in rgbmvp-demo-btc-alice-wif rgbmvp-demo-bob-mnemonic rgbmvp-demo-turnstile-secret; do
+  gcloud secrets add-iam-policy-binding "$S" --project "$PROJECT" \
+    --member="serviceAccount:rgbmvp-demo-run@${PROJECT}.iam.gserviceaccount.com" \
+    --role=roles/secretmanager.secretAccessor
+done
+```
+
+### 5.4 Deploy
+
+Edit `deploy/cloudrun-demo.yaml`, replacing `PROJECT`, `REGION`, `TAG`, then:
+
+```bash
+gcloud run services replace deploy/cloudrun-demo.yaml \
+  --project "$PROJECT" --region "$REGION"
+
+gcloud run services add-iam-policy-binding rgbmvp-demo \
+  --project "$PROJECT" --region "$REGION" \
+  --member=allUsers --role=roles/run.invoker
+```
+
+### 5.5 Post-deploy verification (run BEFORE announcing)
+
+```bash
+URL=$(gcloud run services describe rgbmvp-demo --project "$PROJECT" \
+  --region "$REGION" --format='value(status.url)')
+
+# U4 posture retained
+curl -s "$URL/v1/security" | jq '.public_read_only'          # expect true
+# Arbitrary-parameter mutations still refused
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$URL/v1/swap/init" -d '{}'   # expect 403
+# Demo quota visible, budget intact
+curl -s "$URL/v1/demo/quota" | jq '{enabled, leg_sats, rgb_wrap, budget, floats}'
+# Demo trigger rejects a missing bot token
+curl -s -X POST "$URL/v1/demo/swap" -H 'content-type: application/json' -d '{}' | jq '.code'
+#   expect "turnstile_required"
+```
+
+Then confirm in the logs that custody passed:
+
+```bash
+gcloud run services logs read rgbmvp-demo --project "$PROJECT" --region "$REGION" \
+  --limit=50 | grep -E 'T1 (custody|demo|refund)'
+```
+
+Expect `T1 custody OK`, `T1 demo swaps: ENABLED`, `T1 refund watcher`. If you
+see `custody preflight failed`, the service is intentionally refusing to sign —
+fix the mount before proceeding.
+
+### 5.6 Kill switch
+
+Instant: flip the flag off (keeps the revision otherwise identical).
+
+```bash
+gcloud run services update rgbmvp-demo --project "$PROJECT" --region "$REGION" \
+  --update-env-vars=LABD_DEMO_SWAPS=0
+```
+
+Full rollback to the read-only freeze:
+
+```bash
+gcloud run services replace deploy/cloudrun.yaml --project "$PROJECT" --region "$REGION"
+```
+
+### 5.7 Key rotation
+
+```bash
+gcloud secrets versions add rgbmvp-demo-bob-mnemonic --project "$PROJECT" \
+  --data-file=/path/to/new/mnemonic
+gcloud run services update rgbmvp-demo --project "$PROJECT" --region "$REGION"  # restart to remount
+```
+
+Rotate after the soak, and immediately if the container is ever suspected
+compromised. Old wallets keep only a small float by design.

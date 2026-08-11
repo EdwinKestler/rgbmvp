@@ -255,12 +255,20 @@ fn open_wollet(descriptor: &str) -> Result<Wollet> {
         .map_err(|e| anyhow::anyhow!("WolletBuilder: {e}"))
 }
 
-/// Load mnemonic from disk (signing; never print to logs by default).
+/// Load mnemonic for signing (never printed to logs).
+///
+/// W3: a mounted Secret Manager entry (`RGBMVP_SECRET_DIR`) wins over the local
+/// wallet copy, so a public deployment signs with runtime-injected material
+/// instead of anything baked into the image.
 pub fn load_mnemonic(cfg: &Config, name: &str) -> Result<String> {
-    let path = cfg.wallet_path(name).join("mnemonic");
-    if !Path::new(&path).exists() {
-        bail!("mnemonic missing for wallet {name}");
-    }
+    let fallback = cfg.wallet_path(name);
+    let path = lab_core::resolve_secret_path(
+        &lab_core::secret_dirs(),
+        &fallback,
+        name,
+        lab_core::KIND_MNEMONIC,
+    )
+    .ok_or_else(|| anyhow::anyhow!("mnemonic missing for wallet {name}"))?;
     lab_core::read_trimmed(&path)
 }
 

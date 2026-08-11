@@ -1,0 +1,293 @@
+# Testnet public swaps — live demo plan (bounded public trigger)
+
+**Status:** Proposed · 2026-08-10
+**Goal:** Let public visitors trigger **real Liquid/Bitcoin testnet HTLC swaps**
+from the hosted site, run that live for **~2 weeks**, then use the evidence to
+open a separate mainnet-readiness program.
+**Execution model (decided):** *Bounded public trigger* — visitors click
+“run a demo swap”; the server executes both sides with **hard caps, per-IP
+quotas, global rate limits, a capped faucet float, and bot protection**.
+
+> This document reverses part of ADR-U4 on purpose. The current public freeze is
+> **read-only, no wallets, no token** (`deploy/cloudrun.yaml`). Running swaps
+> means the server now **holds spendable testnet keys and broadcasts
+> transactions**. That is a categorically larger attack surface; the controls
+> below exist to make it acceptable **on testnet only**. Mainnet remains refused
+> at config load (`lab-core/src/lib.rs`, `lab-btc/src/lib.rs`) throughout.
+
+---
+
+## 1. Threat model (what changes vs. the read-only freeze)
+
+| New capability on the public box | Abuse it enables | Primary control |
+|---|---|---|
+| Server signs + broadcasts testnet txs | Faucet drain; broadcast spam; mempool/DoS | Amount caps · faucet float cap · per-IP + global rate limit · concurrency cap |
+| Public can trigger mutations | Automated abuse, cost blow-up | Turnstile (bot check) · single constrained endpoint · no arbitrary params |
+| Hot testnet keys in container | Key exfiltration if RCE | Secret Manager (not env) · dedicated low-float wallets · rotation · kill switch |
+| Long-lived swap state | Stuck/leaked funds on restart | Persistent volume · refund watcher · min-instances=1 |
+
+**Non-goals for the 2 weeks:** real value, mainnet, non-custodial browser
+signing, and exposing the raw `/v1/swap/{id}/action` endpoint publicly (it takes
+arbitrary `amount_sats`, `fee_sats`, `csv_delay`, wallet names — keep it
+token-gated).
+
+---
+
+## 1a. Wallet inventory & budget (measured 2026-08-10)
+
+Swaps run **only between our known lab wallets** (visitor triggers, never
+supplies keys or amounts). Live balances at planning time:
+
+| Chain | Wallet | Balance (sats) | Role in demo |
+|---|---|---|---|
+| Liquid | maker | 983,764 | reserve |
+| Liquid | carol | 600,950 | observer / reserve |
+| Liquid | **bob** | 146,633 | **swap counterparty (LQ leg)** |
+| Liquid | alice | 103,946 | actor |
+| Liquid | lab0 | 94,433 | misc |
+| **Liquid total** | | **1,929,726** | plentiful; faucet easier |
+| BTC | btc-funder | 104,861 | deep reserve / refill source |
+| BTC | **btc-alice** | 33,607 | **active swap wallet (BTC leg)** |
+| **BTC total** | | **138,468** | **scarce; faucets hard** |
+
+**Binding constraint: BTC testnet — specifically btc-alice (~33.6k sats).** BTC
+testnet faucets are slow/dry, so the demo is sized around **BTC fee burn**, not
+Liquid. Every swap permanently loses only *fees + any dust*; the swap *value*
+recycles between our own wallets (see recycle watcher, W5).
+
+**Cost-minimization defaults (money-saving):**
+- **Value-only HTLC path (`rgb_wrap=false`) is the public default** — it avoids
+  the tapret commitment dust (~330 sats/leg) and the extra RGB transactions.
+  RGB-wrapped swaps stay operator-only / token-gated for showcase.
+- **Minimal leg size:** ~1,000 sats/leg (just above dust), server-fixed.
+- **Low feerate:** target ≤ ~400 sats total BTC fee per full swap.
+- **Recycle:** sweep swapped value back to the funding wallet after each swap so
+  only fees leave the pool (no directional drift draining btc-alice).
+
+### Budget-grounded quota table (starting values — tune during soak)
+
+| Control | Value | Rationale |
+|---|---|---|
+| Leg size (BTC & LQ) | 1,000 sats | Just above dust; minimal footprint |
+| Target BTC fee/swap | ≤ 400 sats | Low feerate, value-only path |
+| **2-week BTC fee budget** | **~28,000 sats** | ~of btc-alice’s 33.6k, leaves buffer |
+| **Total swaps / 2 weeks** | **~70** | 28,000 / 400 |
+| Daily cap | 6 swaps | ~70 over 12 active days + margin |
+| Global rate | 1 concurrent · 1 new / 10 min | Prevents bursts / mempool spam |
+| Per-IP quota | 1 / hour · max 2 / day | One visitor can’t hog the budget |
+| Pause floor — btc-alice | < 5,000 sats | Auto-refill from btc-funder, else pause |
+| Pause floor — bob (LQ) | < 20,000 sats | Comfortable; LQ is plentiful |
+
+These are deliberately conservative. If the soak shows headroom (fees lower than
+budgeted, faucet refills land), raise the daily/global caps via config without a
+redeploy. If BTC runs low, the demo **pauses gracefully** (returns to a
+“demo paused — faucet refill pending” state), never drains or crashes.
+
+---
+
+## 2. Architecture — the constrained trigger
+
+Do **not** expose the granular action endpoint. Add one new public endpoint that
+runs a **fully server-parameterized** swap:
+
+```
+POST /v1/demo/swap            (public, Turnstile-gated, rate-limited)
+  body: { turnstile_token }   ← no amounts, no wallets, no csv from the client
+  server fixes: amount, fee, csv_delay, wallets (faucet pool), rgb_wrap
+  returns: { swap_id }        ← then the UI polls GET /v1/swap/{id}
+
+GET  /v1/swap/{id}            (already public-safe; preimage always redacted)
+GET  /v1/demo/quota           (optional: remaining global/per-IP budget)
+```
+
+Server-side orchestrator walks the existing phases
+(`init → fund_btc → fund_lq → claim_lq → claim_btc → done`) via the internal
+`SwapService`, never via the public HTTP action path. Every mutating step stays
+behind the existing `MutationPolicy` (token/loopback); the public endpoint is the
+*only* new hole, and it carries no attacker-controlled protocol parameters.
+
+**ADR-T1 (new):** public mutation is allowed **only** through `/v1/demo/swap`,
+with server-fixed parameters, on testnet, behind Turnstile + quotas. All other
+mutating endpoints remain denied in public mode. Reverting = unset the demo flag.
+
+---
+
+## 3. Workstreams
+
+### W1 — Constrained execution endpoint
+- New `POST /v1/demo/swap` gated by a new env flag (e.g. `LABD_DEMO_SWAPS=1`)
+  that is **independent** of `LABD_PUBLIC_READ_ONLY` and **off by default**.
+- Server-side orchestrator: run the scripted swap end-to-end with fixed params;
+  persist `swap_id`; return immediately and let the UI poll.
+- Reject if global/per-IP/concurrency budgets are exceeded (see W2).
+- Keep `/v1/swap/{id}/action` token-gated and undocumented on the public UI.
+
+### W2 — Abuse controls (the core of “bounded”)
+All starting values are in the **§1a quota table** (budget-grounded on the
+measured BTC scarcity). Implement each as config so they tune without a redeploy.
+- **Amount cap:** demo leg size server-fixed at ~1,000 sats; reject any request
+  or config that raises it in demo mode. Value-only path by default.
+- **Faucet float floor:** pause new swaps when btc-alice < 5,000 sats (auto-refill
+  from btc-funder if available) or bob (LQ) < 20,000; alert on low float.
+- **Per-IP quota + global rate limit + concurrency cap + daily/total budget:**
+  extend the existing `RateLimiter` (`lab-core/src/security.rs`) to cover
+  `/v1/demo/swap`; add an in-flight counter, a per-day swap counter, and a
+  running 2-week fee-budget counter that hard-stops at ~28,000 sats BTC.
+- **Bot protection:** Cloudflare **Turnstile** in front of the trigger
+  (server-side siteverify). Use the `turnstile-spin` workflow.
+- **Body/label limits:** already enforced (`DefaultBodyLimit`, `is_safe_path_id`).
+
+### W3 — Custody & key management
+- Dedicated **demo faucet wallets** (Alice/Bob roles), low float, **not** the
+  issuer keys; separate from any operator wallet.
+- Inject mnemonics via **GCP Secret Manager** mounted at runtime — **never** as
+  plain Cloud Run env vars, never baked into the image (gitleaks + Trivy already
+  in CI guard the image).
+- **Rotation** procedure + a **kill switch** (unset `LABD_DEMO_SWAPS`, redeploy)
+  that instantly returns the box to the read-only freeze.
+- Runtime SA keeps **no** project IAM roles beyond Secret Manager accessor.
+
+### W4 — State persistence (swaps outlive restarts)
+- Move `RGBMVP_DATA_DIR` off `/tmp` to a **persistent** store: Cloud Run volume
+  (GCS/Filestore) or a small persistent disk; set **`min-instances=1`** so the
+  demo is always warm and refund timers keep running.
+- Ensure swap sessions + consignments survive revision changes; verify a swap
+  mid-flight during a deploy is not orphaned.
+
+### W5 — Refund/liveness safety
+- **Refund watcher:** background task that, after the CSV window, auto-refunds
+  funded-but-unclaimed HTLCs back to the faucet pool so float is recovered.
+- Bound the demo to the value path + optional `rgb_wrap`; make CSV delay short
+  enough to recover funds within the demo window but valid on testnet.
+- Idempotency: never double-fund (the action path already guards this); make the
+  orchestrator resumable from persisted phase.
+
+### W6 — Deployment infra
+- New Cloud Run profile (or a `deploy/cloudrun-demo.yaml`) diffed from the freeze:
+  `LABD_DEMO_SWAPS=1`, Secret Manager mounts, persistent volume, `min-instances=1`,
+  egress allowed to public **Esplora + Electrum** testnet endpoints.
+- Keep the freeze profile as the **rollback** target (one redeploy away).
+- Budget alerts + max-instances cap to bound cost.
+
+### W7 — Observability & ops
+
+**Metrics source:** `GET /v1/demo/quota` is the single public scrape target. Its
+field contract is pinned by a test (`quota_json_exposes_the_fields_ops_alerts_depend_on`)
+so a refactor cannot silently blind monitoring. Unknown balances report `floats:
+null` rather than `0`, so a monitoring gap never reads as an empty wallet.
+
+**Alert thresholds** (Cloud Monitoring / any poller against `/v1/demo/quota`):
+
+| Alert | Condition | Why it matters |
+|---|---|---|
+| Budget nearly spent | `budget.swaps_remaining_est < 10` | Run is ending; decide on refill or stop |
+| BTC float low | `floats.btc_sats < floats.btc_floor_sats * 1.5` | Faucet refill needed *before* it pauses |
+| Liquid float low | `floats.lq_sats < floats.lq_floor_sats * 1.5` | Same, Liquid side |
+| Demo paused | any `503` from `/v1/demo/swap` | Visitors are being turned away |
+| Stuck swap | `usage.in_flight == 1` for > 90 min | Driver wedged; check the refund watcher |
+| Instance down | `/v1/health` failing | `min-instances=1`, so this is real downtime |
+
+**Log queries** (`gcloud run services logs read rgbmvp-demo`):
+
+| Grep | Meaning |
+|---|---|
+| `T1 custody` | Startup custody verdict — `OK` or a refusal |
+| `T1 demo budget restored` | Confirms W4 persistence is actually working |
+| `demo sweep:` | Refund watcher activity (only logs when it acts or errors) |
+| `demo: swap .* failed` | Driver failures worth investigating |
+| `turnstile` | Bot-check misconfiguration |
+
+**Secret hygiene:** no log line carries key material. Denial messages are
+public-facing and are asserted secret-free by
+`denial_messages_leak_nothing_sensitive`; the quota endpoint is asserted
+secret-free by `demo_quota_is_public_and_safe`; the public swap view already had
+a preimage-redaction regression test.
+
+**Daily soak checklist:** budget remaining · both floats vs floors · error rate ·
+one end-to-end swap spot-checked on the explorer · cost vs budget alert.
+
+**Incident response:** kill switch is `LABD_DEMO_SWAPS=0` (one `gcloud run
+services update`); full rollback is redeploying `deploy/cloudrun.yaml`. Both are
+in [`deploy/README.md` §5.6](../deploy/README.md).
+
+### W8 — Testing (before public exposure)
+- Abuse simulation: hammer `/v1/demo/swap` past per-IP and global limits;
+  confirm rejects, not faucet drain.
+- Faucet-drain simulation: run to float exhaustion; confirm graceful “demo
+  paused” state, not crashes or stuck funds.
+- Chaos: kill the instance mid-swap; confirm resume + refund watcher recovers.
+- E2E refund path on testnet (fund → wait CSV → auto-refund).
+- Keep the existing required CI (`cargo test`, gitleaks, Trivy, `cargo audit`).
+
+### W9 — Public UX
+- Web “run a demo swap” flow with Turnstile, live phase tracker (poll
+  `GET /v1/swap/{id}`), explorer links, and **honest disclaimers** (testnet only,
+  no real value, capped, may pause when float is low).
+- Preimage stays redacted on all public views (regression test already exists).
+
+---
+
+## 4. The 2-week soak
+
+**Entry gates (all green before public launch):**
+- W1–W8 complete; abuse + chaos + refund tests pass.
+- Secrets via Secret Manager; image scans clean; `cargo audit` clean.
+- Kill switch verified: one redeploy returns to read-only freeze.
+- `GET /v1/security` shows expected posture; only `/v1/demo/swap` is publicly
+  mutating.
+
+**Daily during soak:**
+- Check faucet float, error rates, quota saturation, cost vs. budget.
+- Spot-check a live swap end-to-end on the explorer.
+- Watch for abuse patterns; tighten quotas if needed (config-only, no redeploy
+  where possible).
+
+**Success criteria (what the 2 weeks must prove):**
+- N successful public swaps with zero custody incidents and zero stuck funds.
+- Abuse controls held (no faucet drain, no runaway cost, no DoS outage).
+- Refund watcher recovered every unclaimed HTLC.
+- Clean logs (no secret leakage), stable uptime.
+
+---
+
+## 5. Mainnet-readiness gate (separate program — NOT in these 2 weeks)
+
+A successful testnet soak is **necessary but far from sufficient** for mainnet.
+Mainnet is a distinct, higher-bar program. Minimum deltas before it is even
+scoped:
+
+- **Independent security audit** of the HTLC scripts, the vendored
+  `rgb-consensus-patched` seal/DBC verification, and the custody path.
+- **Custody rethink:** custodial hot-key server is acceptable on testnet, **not**
+  for real value. Move to non-custodial browser signing, MPC, or a hardware-backed
+  signer + strict spend policy before mainnet.
+- **Real-value controls:** withdrawal limits, monitoring/alerting SLOs, formal
+  incident response, and a tested disaster-recovery plan.
+- **Legal/compliance review** for operating a live swap service.
+- Remove the mainnet config refusal only behind an explicit, reviewed ADR — it is
+  the current safety backstop and stays until this gate is passed.
+
+---
+
+## 6. Risk register (top items)
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Faucet drain / cost blow-up | Med | Med | Amount + float caps, quotas, budget alerts, kill switch |
+| Stuck/orphaned HTLC funds | Med | Med | Persistent state, refund watcher, min-instances=1 |
+| Hot-key exfiltration via RCE | Low | High (testnet) | Secret Manager, low float, rotation, minimal SA, dep audit |
+| Broadcast spam / mempool abuse | Med | Low | Global rate limit, concurrency cap, Turnstile |
+| Secret leakage in logs | Low | Med | Scrubber + test, redaction already on public views |
+| Posture creep toward mainnet | Low | High | Mainnet refused at config load; separate gated program |
+
+---
+
+## 7. Indicative schedule (~2 weeks prep + 2 weeks soak)
+
+- **Days 1–3:** W1 endpoint + W2 caps/quotas + Turnstile.
+- **Days 4–6:** W3 secrets/custody + W4 persistence + W5 refund watcher.
+- **Days 7–9:** W6 deploy profile + W7 observability/alerts + runbook.
+- **Days 10–12:** W8 abuse/chaos/refund tests; fix; re-test.
+- **Day 13:** entry-gate review; kill-switch drill.
+- **Day 14:** public launch → **2-week soak** with daily ops.
+- **Post-soak:** write results; open the mainnet-readiness program (§5).

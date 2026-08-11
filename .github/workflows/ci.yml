@@ -81,3 +81,21 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: pytest -q
+
+  audit:
+    name: cargo audit (RustSec advisories)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      # Audits Cargo.lock against the RustSec advisory DB. Fails on known
+      # vulnerabilities; unmaintained/yanked crates are warnings only (no
+      # nonzero exit) so a stale transitive dep does not block CI. To silence
+      # a specific advisory the team has assessed, add an audit.toml with
+      # `[advisories] ignore = ["RUSTSEC-YYYY-NNNN"]`.
+      - name: Audit dependencies
+        run: cargo audit

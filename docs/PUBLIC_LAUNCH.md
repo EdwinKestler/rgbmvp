@@ -72,6 +72,13 @@ administrator approval are still required before announcement.
 | 24–48h soak (GET only) | ⏳ **operator** after first public URL |
 | Announce | ⏳ after soak |
 
+> **T1 note.** `deploy/cloudrun.yaml` (read-only, no wallets) remains the
+> publication profile and the target of this soak. The separate
+> `deploy/cloudrun-demo.yaml` profile enables bounded public swaps and holds
+> spendable testnet keys — it is **not** part of this launch and must not be
+> deployed until its own gates pass. See
+> [TESTNET_PUBLIC_SWAPS.md](./TESTNET_PUBLIC_SWAPS.md).
+
 ### Soak procedure (operator)
 
 1. Deploy Cloud Run freeze revision (`rgbmvp-public`, max 1 instance, runtime SA no privileges).  

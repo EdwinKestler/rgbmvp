@@ -13,6 +13,7 @@ use lab_rgb::{
 };
 use lab_rgb::htlc;
 
+mod demo_swap;
 mod http_api;
 mod labd_axum;
 mod labd_legacy;
