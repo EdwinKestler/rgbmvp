@@ -70,6 +70,8 @@ impl DemoWallets {
 pub struct DemoFees {
     /// Fee for the BTC funding transaction.
     pub btc_fee_sats: u64,
+    /// Fee for a Liquid demo-exit sweep transaction.
+    pub lq_sweep_fee_sats: u64,
     /// Fee for the BTC claim/refund transaction.
     pub btc_claim_fee_sats: u64,
     pub lq_fee_sats: u64,
@@ -81,6 +83,7 @@ impl DemoFees {
             btc_fee_sats: env_u64("LABD_DEMO_BTC_FEE_SATS", 800),
             btc_claim_fee_sats: env_u64("LABD_DEMO_BTC_CLAIM_FEE_SATS", 500),
             lq_fee_sats: env_u64("LABD_DEMO_LQ_FEE_SATS", 300),
+            lq_sweep_fee_sats: env_u64("LABD_DEMO_LQ_SWEEP_FEE_SATS", 400),
         }
     }
 
@@ -490,8 +493,10 @@ pub struct SweepReport {
     pub refunded_lq: usize,
     pub skipped_young: usize,
     pub errors: usize,
-    /// Sats recovered from demo exit addresses back into the funding wallet.
+    /// BTC sats recovered from demo exit addresses back into the funding wallet.
     pub recycled_sats: u64,
+    /// L-BTC sats recovered from the Liquid demo exit addresses.
+    pub recycled_lq_sats: u64,
 }
 
 /// Sweep the BTC demo exit addresses back into the funding wallet.
@@ -499,6 +504,28 @@ pub struct SweepReport {
 /// Runs after the refund pass: refunds land at `alice-refund` and completed
 /// swaps at `bob-claimer`, neither of which is the funding wallet. Skips
 /// silently when there is nothing to recover.
+fn recycle_lq_exits_blocking(cfg: &Config, wallets: &DemoWallets, fee_sats: u64) -> u64 {
+    match lab_chain::sweep_all_demo_exits_lq(cfg, &wallets.bob_lq, fee_sats) {
+        Ok(results) => {
+            let mut total = 0;
+            for r in results {
+                if let Some(txid) = &r.txid {
+                    total += r.swept_sats;
+                    eprintln!(
+                        "demo recycle: swept {} L-BTC sats from {} -> {} ({txid})",
+                        r.swept_sats, r.label, wallets.bob_lq
+                    );
+                }
+            }
+            total
+        }
+        Err(e) => {
+            eprintln!("demo recycle: liquid sweep failed: {e:#}");
+            0
+        }
+    }
+}
+
 fn recycle_btc_exits_blocking(cfg: &Config, wallets: &DemoWallets, fee_sats: u64) -> u64 {
     let btc = lab_btc::BtcConfig::from_env();
     if btc.ensure_testnet().is_err() {
@@ -631,6 +658,7 @@ pub fn sweep_stuck_demo_swaps_blocking(
     // Runs every sweep, not only when a refund fired: completed swaps also pay
     // out to `bob-claimer` and would otherwise strand there.
     report.recycled_sats = recycle_btc_exits_blocking(cfg, wallets, fees.btc_claim_fee_sats);
+    report.recycled_lq_sats = recycle_lq_exits_blocking(cfg, wallets, fees.lq_sweep_fee_sats);
     report
 }
 
@@ -689,7 +717,7 @@ mod tests {
     /// The driver must never emit an RGB-wrapped or oversized leg.
     #[test]
     fn driver_steps_are_value_only_and_fixed() {
-        let steps = driver_steps(1_000, DemoFees { btc_fee_sats: 800, btc_claim_fee_sats: 500, lq_fee_sats: 300 });
+        let steps = driver_steps(1_000, DemoFees { btc_fee_sats: 800, btc_claim_fee_sats: 500, lq_fee_sats: 300, lq_sweep_fee_sats: 400 });
         assert_eq!(steps.len(), 4);
         for (name, payload) in &steps {
             assert_eq!(
@@ -710,7 +738,7 @@ mod tests {
 
     #[test]
     fn driver_steps_follow_htlc_order() {
-        let steps = driver_steps(1_000, DemoFees { btc_fee_sats: 800, btc_claim_fee_sats: 500, lq_fee_sats: 300 });
+        let steps = driver_steps(1_000, DemoFees { btc_fee_sats: 800, btc_claim_fee_sats: 500, lq_fee_sats: 300, lq_sweep_fee_sats: 400 });
         let names: Vec<&str> = steps.iter().map(|(n, _)| *n).collect();
         // Alice must claim Liquid (revealing the preimage) before Bob claims BTC.
         assert_eq!(names, vec!["fund_btc", "fund_lq", "claim_lq", "claim_btc"]);

@@ -209,9 +209,13 @@ no human in the loop. Fees measured (5.25 / 3.63 sat/vB); the driver's retry
 loop recovered from both an unconfirmed-UTXO wait and an Esplora propagation
 race; W2 reservation→spend and W4 persistence observed live.
 
-**Still not proven:** Turnstile against a real request (run 2 ran with the bot
-check disabled locally), the **W5 refund watcher**, the CSV refund path, and the
-Liquid-side exit sweep (not implemented). Those gate any public exposure. Mainnet remains refused at
+Run 3 exercised the **W5 refund watcher** and CSV refund path unattended, and
+the Liquid-side exit sweep was implemented and proven live (118,624 sats
+recovered from 119,024 stranded).
+
+**Still not proven:** **Turnstile against a real request** — every run used
+`LABD_DEMO_TURNSTILE_REQUIRED=0` (no Cloudflare secret locally). That is now the
+last functional gate before public exposure. Mainnet remains refused at
 config load throughout; §5 of the plan gates it behind a separate program.
 
 ### Post-freeze extension milestone

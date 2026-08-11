@@ -185,14 +185,101 @@ is load-bearing, not a nicety.
 
 ---
 
-## 10. Still unproven after both runs
+---
 
-- **Turnstile against a real request.** Run 2 used
-  `LABD_DEMO_TURNSTILE_REQUIRED=0` (no secret available locally). The
-  fail-closed path is unit-tested; the pass path is not exercised live.
-- **W5 refund watcher and the CSV refund path** — both swaps completed, so no
-  refund ever fired, and the 900 s watcher timer did not elapse during the run.
-- **Liquid-side exit sweep** is not implemented (BTC only).
+# Run 3 — refund path and W5 watcher (deliberate timeout)
+
+**Date:** 2026-08-10 · **Session:** `demo-1786427775-99`
+**Result:** ✅ watcher refunded and recycled **unattended**.
+
+Designed to be the cheapest test that exercises the refund path: the BTC leg was
+funded and the **Liquid leg deliberately left unfunded**, so the swap could only
+ever exit via `refund_btc`. Funding
+[`bdfc4033…dc65`](https://blockstream.info/testnet/tx/bdfc4033ba36d72b5502bc130340061e8f017a4198d4e5a41af63d42fda9dc65)
+confirmed at block 5,105,516; `OP_CHECKSEQUENCEVERIFY` gates the refund on 6
+confirmations, reached at 5,105,521.
+
+labd was then started with `LABD_DEMO_SWEEP_INTERVAL_SECS=60`. The watcher fired
+on its first cycle:
+
+```
+demo sweep: refunded bitcoin leg of demo-1786427775-99
+demo recycle: swept 500 sats from bob-claimer -> btc-alice (33ac073e…2438)
+demo sweep: SweepReport { scanned: 2, eligible: 1, refunded_btc: 1,
+                          refunded_lq: 0, skipped_young: 0, errors: 0,
+                          recycled_sats: 500 }
+```
+
+Phase `funded_btc` → **`refunded`** via
+[`82240323…04ac`](https://blockstream.info/testnet/tx/822403239ab65b7755a3ecfe22c6b3309d250c17fa7b9f92105d450d833a04ac).
+
+What that report line establishes:
+
+| Field | Meaning |
+|---|---|
+| `scanned: 2, eligible: 1` | Examined both demo swaps; picked only the stuck one, left the completed one alone |
+| `refunded_lq: 0` | Did not attempt a Liquid refund on a leg that was never funded |
+| `errors: 0` | CSV maturity respected — no rejected broadcast |
+| `recycled_sats: 500` | Refund **and** sweep chained in one cycle: value freed from the HTLC, then returned to `btc-alice` |
+
+The id filter also held: only `demo-<epoch>-<seq>` sessions were touched.
+`T1 demo budget restored: spent=1300sats` on startup confirmed W4 persistence
+across a second real restart.
+
+---
+
+# Liquid-side exit sweep (added after run 3)
+
+Extending exit inspection to Liquid revealed the same defect, larger:
+
+```
+liquid   alice-claimer   119,024 sats  (7 utxos)   <- stranded
+liquid   bob-refund            0 sats
+bitcoin  bob-claimer       1,000 sats              <- 500 per swap
+bitcoin  alice-refund          0 sats
+```
+
+**119,024 L-BTC sats** had accumulated at `alice-claimer` across the repo's
+entire P0/P1/S3 history — ~81% of `bob`'s working balance. Inspection was built
+before the sweep deliberately, so the (more involved) Elements signing work was
+justified by a measured number rather than a hypothesis.
+
+`lab_chain::sweep_demo_exit_lq` consolidates confirmed explicit policy-asset
+UTXOs into one output plus the Elements fee output, signing each input with the
+BIP143 P2WPKH script code. Proven live:
+[`4f91fa14…24a4`](https://blockstream.info/liquidtestnet/tx/4f91fa1457a176a5e5b42122ad0dd29854da1a5e324cedd4ea9ea2c306c124a4)
+— **7 inputs → 2 outputs, 602 vB, 118,624 sats recovered** for a 400 sat fee.
+
+Both chains are now wired into the W5 watcher (`recycled_sats` +
+`recycled_lq_sats`) and available manually:
+
+```bash
+rgbmvp btc demo-exits                       # inspect both chains
+rgbmvp btc sweep-demo --to btc-alice --include-liquid --lq-to bob
+```
+
+**Dust guard observed working:** the 500 sats the refund left at `alice-refund`
+were *not* swept — `balance 500 does not cover fee 500 plus dust threshold`.
+Sweeping would have destroyed value, so it correctly declined.
+
+---
+
+## 10. Status after three runs
+
+**Proven live**
+- Value-only HTLC swap, end to end (runs 1 and 2).
+- Cross-chain preimage extraction from a Liquid witness.
+- The **W1 automated driver**, including retry recovery from an unconfirmed-UTXO
+  wait and an Esplora propagation race.
+- W2 reservation → spend accounting; W4 persistence across two restarts.
+- The **W5 refund watcher**, CSV refund path, and recycle-after-refund.
+- Demo-exit sweep on **both** chains, and its dust guard.
+- Preimage redaction on the public view, mid-flight.
+
+**Still unproven**
+- **Turnstile against a real request.** Every run used
+  `LABD_DEMO_TURNSTILE_REQUIRED=0` (no Cloudflare secret available locally). The
+  fail-closed path is unit-tested; the pass path is not exercised live. This is
+  the last functional gap before public exposure.
 - Behaviour under a slow-block stretch, and a restart *during* a live swap.
-
-A public run should additionally exercise Turnstile and the refund watcher.
+- Confidential Liquid outputs are invisible to the sweep (explicit L-BTC only).

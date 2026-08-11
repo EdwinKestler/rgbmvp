@@ -180,7 +180,12 @@ async fn serve_async(cfg: Config, bind: String) -> Result<()> {
                 })
                 .await
                 {
-                    Ok(rep) if rep.eligible > 0 || rep.errors > 0 || rep.recycled_sats > 0 => {
+                    Ok(rep)
+                        if rep.eligible > 0
+                            || rep.errors > 0
+                            || rep.recycled_sats > 0
+                            || rep.recycled_lq_sats > 0 =>
+                    {
                         eprintln!("demo sweep: {rep:?}");
                     }
                     Ok(_) => {}
@@ -964,6 +969,7 @@ mod tests {
                 btc_fee_sats: 800,
                 btc_claim_fee_sats: 500,
                 lq_fee_sats: 300,
+                lq_sweep_fee_sats: 400,
             },
             demo_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
