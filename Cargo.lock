@@ -1927,7 +1927,7 @@ name = "lab-chain"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "elements 0.25.3",
+ "elements 0.26.2",
  "lab-core",
  "lab-rgb",
  "lwk_common",
@@ -1982,7 +1982,7 @@ dependencies = [
  "anyhow",
  "bech32 0.11.1",
  "bitcoin",
- "elements 0.25.3",
+ "elements 0.26.2",
  "hex",
  "rgb-consensus",
  "rgb-ops",
