@@ -255,12 +255,20 @@ fn open_wollet(descriptor: &str) -> Result<Wollet> {
         .map_err(|e| anyhow::anyhow!("WolletBuilder: {e}"))
 }
 
-/// Load mnemonic from disk (signing; never print to logs by default).
+/// Load mnemonic for signing (never printed to logs).
+///
+/// W3: a mounted Secret Manager entry (`RGBMVP_SECRET_DIR`) wins over the local
+/// wallet copy, so a public deployment signs with runtime-injected material
+/// instead of anything baked into the image.
 pub fn load_mnemonic(cfg: &Config, name: &str) -> Result<String> {
-    let path = cfg.wallet_path(name).join("mnemonic");
-    if !Path::new(&path).exists() {
-        bail!("mnemonic missing for wallet {name}");
-    }
+    let fallback = cfg.wallet_path(name);
+    let path = lab_core::resolve_secret_path(
+        &lab_core::secret_dirs(),
+        &fallback,
+        name,
+        lab_core::KIND_MNEMONIC,
+    )
+    .ok_or_else(|| anyhow::anyhow!("mnemonic missing for wallet {name}"))?;
     lab_core::read_trimmed(&path)
 }
 
@@ -786,4 +794,261 @@ pub fn address_spk_hex(address: &str) -> Result<Vec<u8>> {
     use std::str::FromStr;
     let a = elements::Address::from_str(address).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(a.script_pubkey().into_bytes())
+}
+
+// ---------------------------------------------------------------------------
+// T1/W5 — Liquid demo HTLC exit addresses.
+//
+// Mirror of `lab_btc::demo_exit_address` for the Liquid legs. Both Liquid exit
+// paths (Alice's claim, Bob's refund) pay a P2WPKH derived from
+// `htlc::demo_keypair(<label>)`, never the funding wallet — same defect class
+// documented in docs/TESTNET_PUBLIC_SWAPS.md §1a.
+// ---------------------------------------------------------------------------
+
+/// Labels every Liquid-side HTLC exit pays out to.
+pub const LQ_DEMO_EXIT_LABELS: [&str; 2] = ["alice-claimer", "bob-refund"];
+
+/// Unconfidential Liquid P2WPKH address a demo label receives at.
+pub fn demo_exit_address_lq(label: &str) -> Result<String> {
+    // demo_keypair already hands back the 33-byte compressed pubkey, so no
+    // secp dependency is needed here.
+    let (_, pk_bytes) = lab_rgb::htlc::demo_keypair(label)?;
+    // Same witness program as the Bitcoin form; Liquid testnet encodes it with
+    // the `tex` HRP as an unconfidential address.
+    let wpkh = elements::bitcoin::PublicKey::from_slice(&pk_bytes)
+        .map_err(|e| anyhow::anyhow!("pubkey: {e}"))?
+        .wpubkey_hash()
+        .map_err(|e| anyhow::anyhow!("wpubkey_hash: {e}"))?;
+    let spk = elements::script::Builder::new()
+        .push_int(0)
+        .push_slice(&wpkh[..])
+        .into_script();
+    let addr = elements::Address::from_script(
+        &spk,
+        None,
+        &elements::AddressParams::LIQUID_TESTNET,
+    )
+    .context("liquid address from script")?;
+    Ok(addr.to_string())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LqExitBalance {
+    pub label: String,
+    pub address: String,
+    pub utxo_count: usize,
+    pub balance_sats: u64,
+}
+
+/// Read the L-BTC balance sitting at a Liquid demo exit address.
+///
+/// Only counts the explicit policy asset; confidential outputs are invisible
+/// here and would need a wallet scan.
+pub fn demo_exit_balance_lq(cfg: &Config, label: &str) -> Result<LqExitBalance> {
+    let address = demo_exit_address_lq(label)?;
+    let api = esplora_api_base(cfg);
+    let url = format!("{api}/address/{address}/utxo");
+    let v: serde_json::Value = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?
+        .get(&url)
+        .send()?
+        .error_for_status()?
+        .json()?;
+    let arr = v.as_array().cloned().unwrap_or_default();
+    let balance_sats = arr.iter().filter_map(|u| u["value"].as_u64()).sum();
+    Ok(LqExitBalance {
+        label: label.to_string(),
+        address,
+        utxo_count: arr.len(),
+        balance_sats,
+    })
+}
+
+/// Result of sweeping one Liquid demo exit address.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LqSweepResult {
+    pub label: String,
+    pub address: String,
+    pub utxo_count: usize,
+    pub swept_sats: u64,
+    pub fee_sats: u64,
+    pub txid: Option<String>,
+    pub explorer_url: Option<String>,
+    pub skipped_reason: Option<String>,
+}
+
+/// Sweep the explicit L-BTC sitting at one Liquid demo exit address.
+///
+/// Consolidates every confirmed policy-asset UTXO into a single output paid to
+/// `to_address`, plus the explicit Elements fee output. Confidential outputs are
+/// invisible to this path and are left untouched.
+pub fn sweep_demo_exit_lq(
+    cfg: &Config,
+    label: &str,
+    to_address: &str,
+    fee_sats: u64,
+) -> Result<LqSweepResult> {
+    use elements::confidential::{Asset, Nonce, Value};
+    use elements::encode::serialize_hex;
+    use elements::hashes::Hash as _;
+    use elements::secp256k1_zkp::{Message, Secp256k1};
+    use elements::sighash::SighashCache;
+    use elements::{
+        AssetId, EcdsaSighashType, OutPoint, Script, Sequence, Transaction, TxIn, TxInWitness,
+        TxOut, TxOutWitness, Txid,
+    };
+    use std::str::FromStr;
+
+    let (sk_btc, pk_bytes) = lab_rgb::htlc::demo_keypair(label)?;
+    let address = demo_exit_address_lq(label)?;
+    let policy = Network::TestnetLiquid.policy_asset().to_string();
+
+    // Collect confirmed, explicit policy-asset UTXOs.
+    let api = esplora_api_base(cfg);
+    let v: serde_json::Value = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?
+        .get(format!("{api}/address/{address}/utxo"))
+        .send()?
+        .error_for_status()?
+        .json()?;
+    let mut utxos: Vec<(Txid, u32, u64)> = Vec::new();
+    for u in v.as_array().cloned().unwrap_or_default() {
+        let confirmed = u["status"]["confirmed"].as_bool().unwrap_or(false);
+        let asset_ok = u["asset"].as_str().map(|a| a == policy).unwrap_or(false);
+        let value = u["value"].as_u64().unwrap_or(0);
+        if confirmed && asset_ok && value > 0 {
+            utxos.push((
+                Txid::from_str(u["txid"].as_str().unwrap_or_default())?,
+                u["vout"].as_u64().unwrap_or(0) as u32,
+                value,
+            ));
+        }
+    }
+    let total: u64 = utxos.iter().map(|(_, _, v)| *v).sum();
+
+    let mut result = LqSweepResult {
+        label: label.to_string(),
+        address: address.clone(),
+        utxo_count: utxos.len(),
+        swept_sats: 0,
+        fee_sats,
+        txid: None,
+        explorer_url: None,
+        skipped_reason: None,
+    };
+    if utxos.is_empty() {
+        result.skipped_reason = Some("no confirmed explicit L-BTC utxos".into());
+        return Ok(result);
+    }
+    if total <= fee_sats {
+        result.skipped_reason =
+            Some(format!("balance {total} does not cover fee {fee_sats}"));
+        return Ok(result);
+    }
+
+    let asset = Asset::Explicit(AssetId::from_str(&policy)?);
+    let dest_spk = Script::from(address_spk_hex(to_address)?);
+    let out_sats = total - fee_sats;
+
+    let mut tx = Transaction {
+        version: 2,
+        lock_time: elements::LockTime::ZERO,
+        input: utxos
+            .iter()
+            .map(|(txid, vout, _)| TxIn {
+                previous_output: OutPoint::new(*txid, *vout),
+                is_pegin: false,
+                script_sig: Script::new(),
+                sequence: Sequence::from_consensus(0xffff_fffd),
+                asset_issuance: Default::default(),
+                witness: TxInWitness::default(),
+            })
+            .collect(),
+        output: vec![
+            TxOut {
+                asset,
+                value: Value::Explicit(out_sats),
+                nonce: Nonce::Null,
+                script_pubkey: dest_spk,
+                witness: TxOutWitness::default(),
+            },
+            // Elements carries the fee as an explicit, script-less output.
+            TxOut {
+                asset,
+                value: Value::Explicit(fee_sats),
+                nonce: Nonce::Null,
+                script_pubkey: Script::new(),
+                witness: TxOutWitness::default(),
+            },
+        ],
+    };
+
+    // BIP143 script code for P2WPKH is the equivalent P2PKH script.
+    let pk = elements::bitcoin::PublicKey::from_slice(&pk_bytes)
+        .map_err(|e| anyhow::anyhow!("pubkey: {e}"))?;
+    let wpkh = pk
+        .wpubkey_hash()
+        .map_err(|e| anyhow::anyhow!("wpubkey_hash: {e}"))?;
+    let script_code = elements::script::Builder::new()
+        .push_opcode(elements::opcodes::all::OP_DUP)
+        .push_opcode(elements::opcodes::all::OP_HASH160)
+        .push_slice(&wpkh[..])
+        .push_opcode(elements::opcodes::all::OP_EQUALVERIFY)
+        .push_opcode(elements::opcodes::all::OP_CHECKSIG)
+        .into_script();
+
+    let secp = Secp256k1::new();
+    let sk = elements::secp256k1_zkp::SecretKey::from_slice(&sk_btc.secret_bytes())
+        .context("secret key")?;
+    let mut witnesses = Vec::with_capacity(utxos.len());
+    for (i, (_, _, value)) in utxos.iter().enumerate() {
+        let sighash = SighashCache::new(&tx).segwitv0_sighash(
+            i,
+            &script_code,
+            Value::Explicit(*value),
+            EcdsaSighashType::All,
+        );
+        let msg = Message::from_digest(sighash.to_byte_array());
+        let mut sig = secp.sign_ecdsa(&msg, &sk).serialize_der().to_vec();
+        sig.push(EcdsaSighashType::All as u8);
+        witnesses.push(vec![sig, pk_bytes.to_vec()]);
+    }
+    for (i, w) in witnesses.into_iter().enumerate() {
+        tx.input[i].witness.script_witness = w;
+    }
+
+    let hex_tx = serialize_hex(&tx);
+    let txid = broadcast_raw_hex(cfg, &hex_tx)?;
+    result.swept_sats = out_sats;
+    result.txid = Some(txid.clone());
+    result.explorer_url = Some(format!("{}/tx/{}", cfg.explorer_base, txid));
+    Ok(result)
+}
+
+/// Sweep all Liquid demo exit addresses into a lab wallet's receive address.
+pub fn sweep_all_demo_exits_lq(
+    cfg: &Config,
+    to_wallet: &str,
+    fee_sats: u64,
+) -> Result<Vec<LqSweepResult>> {
+    let dest = wallet_address(cfg, to_wallet, None)?.address;
+    let mut out = Vec::new();
+    for label in LQ_DEMO_EXIT_LABELS {
+        match sweep_demo_exit_lq(cfg, label, &dest, fee_sats) {
+            Ok(r) => out.push(r),
+            Err(e) => out.push(LqSweepResult {
+                label: label.to_string(),
+                address: String::new(),
+                utxo_count: 0,
+                swept_sats: 0,
+                fee_sats,
+                txid: None,
+                explorer_url: None,
+                skipped_reason: Some(format!("error: {e}")),
+            }),
+        }
+    }
+    Ok(out)
 }

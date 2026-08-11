@@ -14,7 +14,7 @@ Inspired by [KaleidoSwap’s RGB-on-Liquid work](https://github.com/kaleidoswap/
 | **Purpose** | Prove RGB-on-Liquid, twin HTLC swaps, Simplicity/BFA seals, and a safe local browser console |
 | **Networks** | Liquid Testnet · Bitcoin Testnet (P1) · Elements regtest (P2) · **no mainnet** |
 | **Status** | **P0–P3 closed** · **S3** + **C2** + **C4** + **U4** done · public artifacts + CI ([ROADMAP_NEXT](docs/ROADMAP_NEXT.md)) |
-| **Public demo** | **Read-only** status board + canned proofs — [web/status.html](web/status.html) · [artifacts/public](artifacts/public/) · [PUBLIC_LAUNCH](docs/PUBLIC_LAUNCH.md) |
+| **Public demo** | **Read-only** status board + canned proofs — [web/status.html](web/status.html) · [artifacts/public](artifacts/public/) · [PUBLIC_LAUNCH](docs/PUBLIC_LAUNCH.md). A bounded live-swap trigger (**T1**) exists in-tree but ships **disabled**; see [TESTNET_PUBLIC_SWAPS](docs/TESTNET_PUBLIC_SWAPS.md) |
 | **Full lab** | **Run locally** (CLI + wallets + regtest) — never put hot keys on the Internet |
 | **UI** | Proof-first landing · issue / transfer / verify / guided swap · read-only `/demo` + `/status` · BFA audit (**no browser keys**) — [refresh evidence](docs/UI_REFRESH.md) |
 
@@ -157,6 +157,7 @@ cp .env.example .env
 | **Demo v0** | Read-only `/demo` board | Done |
 | **P2** | Simplicity + BFA audit | **Closed** (C0+C3; C1 stretch) |
 | **P3** | Browser lab console | **Closed** — [P3_CLOSED.md](docs/P3_CLOSED.md) |
+| **T1** | Bounded public demo swaps | **In tree, OFF by default, not deployed** — [TESTNET_PUBLIC_SWAPS.md](docs/TESTNET_PUBLIC_SWAPS.md); two live swaps proven, incl. the automated driver — [T1_FIRST_SWAP.md](docs/T1_FIRST_SWAP.md) |
 
 ---
 
@@ -189,6 +190,10 @@ cp .env.example .env
 | [docs/STACK.md](docs/STACK.md) | LWK, RGB, toolchain |
 | [docs/TESTNET_WALLETS.md](docs/TESTNET_WALLETS.md) | alice/bob/carol/maker + btc-alice |
 | [docs/PROJECT_MEMORY.md](docs/PROJECT_MEMORY.md) | Optional Redis source index |
+| [docs/TESTNET_PUBLIC_SWAPS.md](docs/TESTNET_PUBLIC_SWAPS.md) | **T1** bounded public demo swaps — plan, budget, ADR-T1 (off by default) |
+| [docs/T1_FIRST_SWAP.md](docs/T1_FIRST_SWAP.md) | **T1** live swap evidence — CLI + automated driver runs, measured fees, value flow |
+| [deploy/README.md](deploy/README.md) | Cloud Run / Vercel runbooks, incl. **§5** T1 demo deployment |
+| [SECURITY.md](SECURITY.md) | Vulnerability disclosure policy |
 | [AGENTS.md](AGENTS.md) | Agent instructions |
 
 ---

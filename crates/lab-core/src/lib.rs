@@ -2,7 +2,10 @@
 //!
 //! Phase 0: network identity, paths, health JSON. RGB types arrive in P0.
 //! U4: public-hosting security helpers (`security` module).
+//! T1: bounded public demo-swap policy and budget governor (`demo` module).
 
+pub mod demo;
+pub mod custody;
 pub mod security;
 
 use std::env;
@@ -11,6 +14,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
+pub use demo::{DemoDenial, DemoGovernor, DemoStatus, DemoSwapPolicy, Floats};
+pub use custody::{
+    resolve_secret_path, secret_dirs, CustodyCheck, CustodyIssue, KIND_MNEMONIC, KIND_WIF,
+};
 pub use security::{
     constant_time_eq, cors_allow_origin, is_loopback_bind, is_mutation_method, is_safe_path_id,
     parse_cors_origins, validate_path_id, AuthDecision, MutationPolicy, RateLimiter,

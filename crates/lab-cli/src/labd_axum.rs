@@ -17,7 +17,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use lab_core::{
     cors_allow_origin, is_loopback_bind, is_mutation_method, validate_path_id, AuthDecision, Config,
-    RateLimiter,
+    DemoGovernor, RateLimiter,
+};
+
+use crate::demo_swap::{
+    self, quota_json, BotCheck, DemoFees, DemoWallets, FloatCache,
 };
 use lab_rgb::storage::RgbStore;
 use lab_rgb::swap::SwapStore;
@@ -37,6 +41,13 @@ struct AppState {
     web_dir: PathBuf,
     artifacts_dir: PathBuf,
     verify_limiter: Arc<RateLimiter>,
+    /// T1 bounded public demo swaps: admission + spend governor (off by default).
+    demo: Arc<DemoGovernor>,
+    demo_floats: Arc<FloatCache>,
+    demo_wallets: DemoWallets,
+    demo_fees: DemoFees,
+    /// Monotonic counter feeding demo swap ids.
+    demo_seq: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Run labd on Axum (blocks the calling thread via Tokio runtime).
@@ -70,12 +81,119 @@ async fn serve_async(cfg: Config, bind: String) -> Result<()> {
     let artifacts_dir = PathBuf::from(
         std::env::var("LABD_ARTIFACTS_DIR").unwrap_or_else(|_| "artifacts/public".into()),
     );
+    let demo = Arc::new(DemoGovernor::from_env());
+    if demo.enabled() {
+        let p = demo.policy();
+        eprintln!(
+            "  T1 demo swaps: ENABLED leg={}sats rgb_wrap=false csv={} daily={} concurrent={} budget={}sats (~{} swaps)",
+            p.leg_sats,
+            p.csv_delay,
+            p.daily_cap,
+            p.max_concurrent,
+            p.fee_budget_sats,
+            demo.swaps_remaining_in_budget()
+        );
+        if !p.turnstile_required {
+            eprintln!("  WARNING: demo swaps running WITHOUT bot protection (local/testing only)");
+        }
+        // Budget accounting reserves `max_fee_per_swap_sats` per swap. If the
+        // fees we actually pay exceed that, the reservation under-counts and the
+        // run can overshoot its ceiling.
+        let fees = DemoFees::from_env();
+        if fees.btc_total_per_swap() > p.max_fee_per_swap_sats {
+            eprintln!(
+                "  WARNING: BTC fees per swap ({} = {} fund + {} claim) exceed \
+                 LABD_DEMO_MAX_FEE_SATS ({}); the fee budget will under-reserve",
+                fees.btc_total_per_swap(),
+                fees.btc_fee_sats,
+                fees.btc_claim_fee_sats,
+                p.max_fee_per_swap_sats
+            );
+        }
+        // W3: refuse to sign with image-baked or over-permissive key material.
+        // Public = anything not bound to loopback, or explicitly read-only mode.
+        let wallets = DemoWallets::from_env();
+        let public = !is_loopback_bind(&bind) || sec.public_read_only;
+        let required = vec![
+            (wallets.alice_btc.clone(), lab_core::KIND_WIF.to_string()),
+            (wallets.bob_lq.clone(), lab_core::KIND_MNEMONIC.to_string()),
+        ];
+        let issues = lab_core::custody::preflight(&lab_core::CustodyCheck {
+            required: &required,
+            wallet_dir: &cfg.wallet_dir,
+            public,
+        });
+        for i in &issues {
+            eprintln!("  custody: {}", i.message());
+        }
+        lab_core::custody::enforce(&issues)
+            .context("demo swaps refused to start (W3 custody preflight)")?;
+        eprintln!(
+            "  T1 custody OK: secret_dir={} public={}",
+            {
+                let d = lab_core::secret_dirs();
+                if d.is_empty() {
+                    "(local wallet dir)".to_string()
+                } else {
+                    d.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(":")
+                }
+            },
+            public
+        );
+        // W4: recover the spend ceiling so a restart cannot silently reset it.
+        demo_swap::restore_budget(&cfg, &demo);
+    }
     let state = AppState {
         cfg: cfg.clone(),
         web_dir,
         artifacts_dir,
         verify_limiter: Arc::new(RateLimiter::from_env_verify()),
+        demo,
+        demo_floats: Arc::new(FloatCache::new()),
+        demo_wallets: DemoWallets::from_env(),
+        demo_fees: DemoFees::from_env(),
+        demo_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
+
+    // W5: periodic refund/recycle watcher. HTLC refunds return value to the
+    // original funder, so a swap that stalls does not permanently drain the
+    // faucet pool — only fees burn.
+    if state.demo.enabled() {
+        let (interval_secs, min_age_secs) = demo_swap::sweep_config_from_env();
+        let sweep_cfg = state.cfg.clone();
+        let sweep_wallets = state.demo_wallets.clone();
+        let fees = state.demo_fees;
+        eprintln!(
+            "  T1 refund watcher: every {interval_secs}s, sweeping swaps older than {min_age_secs}s"
+        );
+        tokio::spawn(async move {
+            let mut tick =
+                tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            // The first tick fires immediately; skip it so startup stays quiet.
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                let cfg = sweep_cfg.clone();
+                let wallets = sweep_wallets.clone();
+                match tokio::task::spawn_blocking(move || {
+                    demo_swap::sweep_stuck_demo_swaps_blocking(&cfg, &wallets, fees, min_age_secs)
+                })
+                .await
+                {
+                    Ok(rep)
+                        if rep.eligible > 0
+                            || rep.errors > 0
+                            || rep.recycled_sats > 0
+                            || rep.recycled_lq_sats > 0 =>
+                    {
+                        eprintln!("demo sweep: {rep:?}");
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("demo sweep task failed: {e}"),
+                }
+            }
+        });
+    }
 
     let app = router(state.clone()).layer(
         ServiceBuilder::new()
@@ -105,6 +223,8 @@ fn router(state: AppState) -> Router {
         .route("/audit.html", get(page_audit))
         .route("/status", get(page_status))
         .route("/status.html", get(page_status))
+        .route("/swap", get(page_swap))
+        .route("/swap.html", get(page_swap))
         .route("/manifest.json", get(artifact_manifest))
         .route("/artifacts/public/{*rest}", get(artifact_public))
         .route("/v1", get(v1_root))
@@ -126,6 +246,11 @@ fn router(state: AppState) -> Router {
         .route("/v1/rgb/transfer", post(v1_rgb_transfer))
         .route("/v1/audit/bfa/samples", get(v1_bfa_samples))
         .route("/v1/audit/bfa", post(v1_audit_bfa))
+        // T1 — bounded public demo swaps. The POST is exempt from the U4
+        // mutation-token check (see `u4_middleware`) because it carries its own
+        // Turnstile + quota + budget gate and accepts no protocol parameters.
+        .route("/v1/demo/swap", post(v1_demo_swap))
+        .route("/v1/demo/quota", get(v1_demo_quota))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             u4_middleware,
@@ -133,13 +258,28 @@ fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Client IP resolved once by the middleware and carried in request extensions.
+///
+/// Centralized so every consumer sees the same value and the trust rules for
+/// `X-Forwarded-For` live in exactly one place.
+#[derive(Clone, Debug)]
+struct ClientIp(String);
+
 /// U4: CORS echo, mutation auth, OPTIONS short-circuit + security headers.
 async fn u4_middleware(
     State(state): State<AppState>,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
 ) -> Response {
     let path = req.uri().path().to_string();
+    // Resolve the peer once; absent when the server is not wired with
+    // ConnectInfo (e.g. tower `oneshot` in tests) — handled conservatively.
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0);
+    let resolved_ip = client_ip(req.headers(), peer);
+    req.extensions_mut().insert(ClientIp(resolved_ip));
     let origin = req
         .headers()
         .get(header::ORIGIN)
@@ -156,7 +296,13 @@ async fn u4_middleware(
         );
     }
 
-    if is_mutation_method(method.as_str()) {
+    // The bounded demo-swap trigger is the ONLY public mutation. It is exempt
+    // from the Bearer-token requirement, but only on an exact path match and
+    // only while the demo flag is on; its own gate (Turnstile + per-IP quota +
+    // daily cap + fee budget + float floors) runs inside the handler.
+    let demo_exempt = state.demo.enabled() && path == "/v1/demo/swap";
+
+    if is_mutation_method(method.as_str()) && !demo_exempt {
         let auth = req
             .headers()
             .get(header::AUTHORIZATION)
@@ -204,6 +350,15 @@ fn apply_cors(headers: &mut HeaderMap, acao: Option<&str>) {
     }
 }
 
+/// Origin Cloudflare Turnstile serves its widget script and iframe from.
+///
+/// W9.1: the bot check cannot render without BOTH `script-src` and `frame-src`
+/// allowing this exact origin — with no `frame-src` directive the iframe falls
+/// back to `default-src 'self'` and is blocked. Deliberately kept to this one
+/// origin; `connect-src` stays `'self'` because siteverify is server-side, so
+/// the browser never talks to Cloudflare directly.
+const TURNSTILE_ORIGIN: &str = "https://challenges.cloudflare.com";
+
 /// Transport hardening for Cloud Run / public HTML+JSON (not protocol logic).
 fn apply_security_headers(headers: &mut HeaderMap, path: &str) {
     headers.insert(
@@ -220,11 +375,14 @@ fn apply_security_headers(headers: &mut HeaderMap, path: &str) {
         headers.insert(HeaderName::from_static("permissions-policy"), v);
     }
     // Tight CSP: same-origin API, inline script/style for static lab pages.
-    if let Ok(v) = HeaderValue::from_str(
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; \
-         img-src 'self' data: https:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; \
-         base-uri 'self'; form-action 'self'",
-    ) {
+    let csp = format!(
+        "default-src 'self'; script-src 'self' 'unsafe-inline' {t}; \
+         style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; \
+         font-src 'self'; frame-src {t}; frame-ancestors 'none'; base-uri 'self'; \
+         form-action 'self'",
+        t = TURNSTILE_ORIGIN
+    );
+    if let Ok(v) = HeaderValue::from_str(&csp) {
         headers.insert(header::CONTENT_SECURITY_POLICY, v);
     }
     let cache = if path.starts_with("/artifacts/public/") || path == "/manifest.json" {
@@ -313,6 +471,16 @@ async fn page_status(State(s): State<AppState>) -> Html<String> {
         &s.web_dir,
         "status.html",
         "<html><body><h1>/status</h1><p>missing web/status.html</p></body></html>",
+    )
+    .await
+}
+
+/// W9 — public demo swap page. Static; all state comes from `/v1/demo/*`.
+async fn page_swap(State(s): State<AppState>) -> Html<String> {
+    read_html(
+        &s.web_dir,
+        "swap.html",
+        "<html><body><h1>/swap</h1><p>missing web/swap.html</p></body></html>",
     )
     .await
 }
@@ -608,6 +776,183 @@ async fn v1_rgb_transfer(State(s): State<AppState>, body: bytes::Bytes) -> Respo
     }
 }
 
+/// Resolve the client IP used for per-IP demo quotas.
+///
+/// Defaults to the socket peer, which cannot be spoofed. Behind exactly one
+/// trusted proxy (Cloud Run / GCLB) set `LABD_TRUST_XFF=1`: that proxy appends
+/// the real client IP to `X-Forwarded-For`, so the **rightmost** entry is the
+/// trustworthy one. Never take the leftmost — it is attacker-supplied and would
+/// let one visitor mint unlimited quota identities.
+///
+/// When the peer address is unavailable, all such requests share the single
+/// `"unknown"` quota bucket — deliberately stricter, never more permissive.
+fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
+    let trust_xff = std::env::var("LABD_TRUST_XFF")
+        .map(|v| {
+            let t = v.trim().to_ascii_lowercase();
+            t == "1" || t == "true" || t == "yes" || t == "on"
+        })
+        .unwrap_or(false);
+    if trust_xff {
+        if let Some(xff) = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+        {
+            if let Some(last) = xff
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .next_back()
+            {
+                return last.to_string();
+            }
+        }
+    }
+    peer.map(|p| p.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn demo_denial_response(d: &lab_core::DemoDenial) -> Response {
+    let sc = StatusCode::from_u16(d.status()).unwrap_or(StatusCode::FORBIDDEN);
+    let mut res = (
+        sc,
+        Json(json!({
+            "status": "error",
+            "code": d.code(),
+            "error": d.message(),
+        })),
+    )
+        .into_response();
+    if let Some(secs) = d.retry_after_secs() {
+        if let Ok(v) = HeaderValue::from_str(&secs.to_string()) {
+            res.headers_mut().insert(header::RETRY_AFTER, v);
+        }
+    }
+    res
+}
+
+/// `POST /v1/demo/swap` — bounded public trigger (T1).
+///
+/// Accepts only a Turnstile token. Every protocol parameter is server-fixed;
+/// the swap runs between the lab's own wallets. Returns immediately with the
+/// swap id so the UI can poll `GET /v1/swap/{id}`.
+async fn v1_demo_swap(
+    State(s): State<AppState>,
+    axum::extract::Extension(ClientIp(ip)): axum::extract::Extension<ClientIp>,
+    body: bytes::Bytes,
+) -> Response {
+    use lab_core::DemoDenial;
+
+    if !s.demo.enabled() {
+        return demo_denial_response(&DemoDenial::Disabled);
+    }
+
+    // Bot check first: cheapest rejection, and it must gate the chain reads.
+    if s.demo.policy().turnstile_required {
+        let token = serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|v| {
+                v.get("turnstile_token")
+                    .or_else(|| v.get("token"))
+                    .and_then(|t| t.as_str())
+                    .map(|t| t.to_string())
+            });
+        let ip_for_check = ip.clone();
+        let check = tokio::task::spawn_blocking(move || {
+            demo_swap::verify_turnstile_blocking(token.as_deref(), Some(&ip_for_check))
+        })
+        .await
+        .unwrap_or(BotCheck::Failed);
+        match check {
+            BotCheck::Pass => {}
+            BotCheck::Missing => {
+                return demo_denial_response(&DemoDenial::TurnstileRequired)
+            }
+            BotCheck::Failed => {
+                return demo_denial_response(&DemoDenial::TurnstileFailed)
+            }
+        }
+    }
+
+    // Observe floats (cached; fail-closed when unavailable).
+    let cfg = s.cfg.clone();
+    let wallets = s.demo_wallets.clone();
+    let floats_cache = s.demo_floats.clone();
+    let floats = tokio::task::spawn_blocking(move || {
+        floats_cache.observe_blocking(&cfg, &wallets)
+    })
+    .await
+    .unwrap_or(None);
+
+    // Admission: quotas, daily cap, concurrency, cooldown, budget, floors.
+    if let Err(d) = s.demo.try_admit(&ip, demo_swap::now_epoch(), floats) {
+        return demo_denial_response(&d);
+    }
+
+    // Admitted — create the session with server-fixed parameters.
+    let seq = s
+        .demo_seq
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let cfg = s.cfg.clone();
+    let wallets = s.demo_wallets.clone();
+    let created =
+        tokio::task::spawn_blocking(move || demo_swap::create_demo_session(&cfg, &wallets, seq))
+            .await;
+
+    let swap_id = match created {
+        Ok(Ok(id)) => id,
+        Ok(Err(e)) => {
+            s.demo.abort();
+            return err_json(StatusCode::INTERNAL_SERVER_ERROR, e);
+        }
+        Err(e) => {
+            s.demo.abort();
+            return err_json(StatusCode::INTERNAL_SERVER_ERROR, e);
+        }
+    };
+
+    // Drive the swap in the background; the visitor polls GET /v1/swap/{id}.
+    {
+        let cfg = s.cfg.clone();
+        let gov = s.demo.clone();
+        let id = swap_id.clone();
+        let leg = s.demo.policy().leg_sats;
+        let fees = s.demo_fees;
+        tokio::task::spawn_blocking(move || {
+            match demo_swap::drive_demo_swap_blocking(&cfg, &id, leg, fees) {
+                Ok(fee) => gov.finish(fee),
+                Err(e) => {
+                    eprintln!("demo: swap {id} failed: {e}");
+                    // Counters are intentionally retained (anti retry-spam);
+                    // only the in-flight slot and fee reservation are released.
+                    gov.abort();
+                }
+            }
+            // W4: settle to disk immediately, so spend survives a restart.
+            demo_swap::persist_budget(&cfg, &gov);
+        });
+    }
+
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "status": "accepted",
+            "swap_id": swap_id,
+            "poll": format!("/v1/swap/{swap_id}"),
+            "leg_sats": s.demo.policy().leg_sats,
+            "rgb_wrap": lab_core::demo::DEMO_RGB_WRAP,
+            "note": "Testnet demo swap between lab wallets. No real value.",
+        })),
+    )
+        .into_response()
+}
+
+/// `GET /v1/demo/quota` — public budget/limit visibility.
+async fn v1_demo_quota(State(s): State<AppState>) -> Response {
+    let floats = s.demo_floats.peek();
+    Json(quota_json(&s.demo, floats)).into_response()
+}
+
 async fn v1_audit_bfa(body: bytes::Bytes) -> Response {
     let body = String::from_utf8_lossy(&body).into_owned();
     match tokio::task::spawn_blocking(move || handle_bfa_audit_post(&body)).await {
@@ -631,18 +976,44 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
+    /// Repo `web/` directory, resolved from the manifest.
+    ///
+    /// `cargo test` runs with CWD at the crate root, so a bare "web" path
+    /// silently resolves to nothing and the handlers serve their fallback HTML.
+    fn repo_web_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web")
+    }
+
+    /// Build state around a config, with demo swaps off unless a test opts in.
+    fn state_with(cfg: Config, demo_policy: lab_core::DemoSwapPolicy) -> AppState {
+        AppState {
+            cfg,
+            web_dir: PathBuf::from("web"),
+            artifacts_dir: PathBuf::from("artifacts/public"),
+            verify_limiter: Arc::new(RateLimiter::new(100, std::time::Duration::from_secs(60))),
+            demo: Arc::new(DemoGovernor::new(demo_policy)),
+            demo_floats: Arc::new(FloatCache::new()),
+            demo_wallets: DemoWallets {
+                alice_btc: "btc-alice".into(),
+                bob_lq: "bob".into(),
+            },
+            demo_fees: DemoFees {
+                btc_fee_sats: 800,
+                btc_claim_fee_sats: 500,
+                lq_fee_sats: 300,
+                lq_sweep_fee_sats: 400,
+            },
+            demo_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+
     fn test_state() -> AppState {
         let _ = dotenvy::dotenv();
         // Minimal config without full env: use load if possible
         let cfg = Config::load().unwrap_or_else(|_| {
             panic!("Config::load failed in test — set RGBMVP_NETWORK=liquid-testnet")
         });
-        AppState {
-            cfg,
-            web_dir: PathBuf::from("web"),
-            artifacts_dir: PathBuf::from("artifacts/public"),
-            verify_limiter: Arc::new(RateLimiter::new(100, std::time::Duration::from_secs(60))),
-        }
+        state_with(cfg, lab_core::DemoSwapPolicy::default())
     }
 
     #[tokio::test]
@@ -670,12 +1041,7 @@ mod tests {
         std::env::remove_var("LABD_API_TOKEN");
         let mut cfg = Config::load().expect("config");
         cfg.security = lab_core::MutationPolicy::from_env(&cfg.labd_bind);
-        let state = AppState {
-            cfg,
-            web_dir: PathBuf::from("web"),
-            artifacts_dir: PathBuf::from("artifacts/public"),
-            verify_limiter: Arc::new(RateLimiter::new(100, std::time::Duration::from_secs(60))),
-        };
+        let state = state_with(cfg, lab_core::DemoSwapPolicy::default());
         let app = router(state);
         let res = app
             .oneshot(
@@ -690,6 +1056,198 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
         std::env::remove_var("LABD_PUBLIC_READ_ONLY");
+    }
+
+    /// With the flag off, the demo trigger must not exist as a public mutation.
+    #[tokio::test]
+    async fn demo_swap_disabled_by_default() {
+        std::env::set_var("LABD_PUBLIC_READ_ONLY", "1");
+        std::env::remove_var("LABD_API_TOKEN");
+        let mut cfg = Config::load().expect("config");
+        cfg.security = lab_core::MutationPolicy::from_env(&cfg.labd_bind);
+        // Default policy => demo disabled.
+        let state = state_with(cfg, lab_core::DemoSwapPolicy::default());
+        let app = router(state);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/demo/swap")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // The U4 middleware still guards it (demo exemption is flag-gated), so
+        // an unauthenticated POST is refused rather than reaching the handler.
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        std::env::remove_var("LABD_PUBLIC_READ_ONLY");
+    }
+
+    /// W9: the public swap page is served, and must not ship key material or a
+    /// preimage. It is static, so anything sensitive here would be permanent.
+    #[tokio::test]
+    async fn public_swap_page_is_served_and_leaks_nothing() {
+        let mut state = test_state();
+        state.web_dir = repo_web_dir();
+        let app = router(state);
+        for path in ["/swap", "/swap.html"] {
+            let res = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "path {path}");
+            let body = axum::body::to_bytes(res.into_body(), 512 * 1024)
+                .await
+                .unwrap();
+            let html = String::from_utf8_lossy(&body).to_lowercase();
+            assert!(
+                html.contains("run a demo swap"),
+                "{path} should render the real page, not the fallback"
+            );
+            // Disclaimers are the point of the page; keep them non-optional.
+            assert!(html.contains("testnet only"), "{path} must state testnet-only");
+            for bad in ["preimage_hex", "mnemonic", "wif", "xprv", "tprv", "secret_dir"] {
+                assert!(!html.contains(bad), "{path} must not contain {bad}");
+            }
+            // The page must drive the bounded endpoint, never the arbitrary one.
+            assert!(
+                html.contains("/v1/demo/swap"),
+                "{path} must use the bounded public trigger"
+            );
+            assert!(
+                !html.contains("/v1/swap/init") && !html.contains("/action"),
+                "{path} must not call the token-gated operator endpoints"
+            );
+        }
+    }
+
+    /// Quota endpoint is a public GET and must never leak wallet secrets.
+    #[tokio::test]
+    async fn demo_quota_is_public_and_safe() {
+        let state = test_state();
+        let app = router(state);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/demo/quota")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["enabled"], json!(false));
+        assert_eq!(v["rgb_wrap"], json!(false));
+        let dump = v.to_string();
+        for bad in ["mnemonic", "preimage", "wif", "descriptor"] {
+            assert!(!dump.contains(bad), "quota JSON must not expose {bad}");
+        }
+    }
+
+    /// The demo exemption must be an EXACT path match — no prefix escape.
+    #[tokio::test]
+    async fn demo_exemption_does_not_leak_to_other_mutations() {
+        std::env::set_var("LABD_PUBLIC_READ_ONLY", "1");
+        std::env::remove_var("LABD_API_TOKEN");
+        let mut cfg = Config::load().expect("config");
+        cfg.security = lab_core::MutationPolicy::from_env(&cfg.labd_bind);
+        // Demo ENABLED — the exemption is live for /v1/demo/swap only.
+        let state = state_with(
+            cfg,
+            lab_core::DemoSwapPolicy {
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        let app = router(state);
+        // The arbitrary-parameter swap endpoints must still demand a token.
+        for path in ["/v1/swap/init", "/v1/rgb/issue", "/v1/rgb/transfer"] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::FORBIDDEN,
+                "{path} must stay token-gated even with demo swaps enabled"
+            );
+        }
+        std::env::remove_var("LABD_PUBLIC_READ_ONLY");
+    }
+
+    /// Turnstile must gate the handler before any chain read or admission.
+    #[tokio::test]
+    async fn demo_swap_requires_turnstile_token() {
+        std::env::set_var("LABD_PUBLIC_READ_ONLY", "1");
+        std::env::set_var("LABD_DEMO_TURNSTILE_SECRET", "test-secret");
+        std::env::remove_var("LABD_API_TOKEN");
+        let mut cfg = Config::load().expect("config");
+        cfg.security = lab_core::MutationPolicy::from_env(&cfg.labd_bind);
+        let state = state_with(
+            cfg,
+            lab_core::DemoSwapPolicy {
+                enabled: true,
+                turnstile_required: true,
+                ..Default::default()
+            },
+        );
+        let app = router(state);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/demo/swap")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // No token supplied -> refused before any wallet/chain access.
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["code"], json!("turnstile_required"));
+        std::env::remove_var("LABD_DEMO_TURNSTILE_SECRET");
+        std::env::remove_var("LABD_PUBLIC_READ_ONLY");
+    }
+
+    #[test]
+    fn client_ip_prefers_peer_unless_xff_trusted() {
+        let peer: SocketAddr = "203.0.113.9:1234".parse().unwrap();
+        let mut h = HeaderMap::new();
+        h.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("1.1.1.1, 2.2.2.2"),
+        );
+        std::env::remove_var("LABD_TRUST_XFF");
+        assert_eq!(client_ip(&h, Some(peer)), "203.0.113.9", "peer IP by default");
+
+        std::env::set_var("LABD_TRUST_XFF", "1");
+        // Rightmost = appended by the trusted proxy; leftmost is spoofable.
+        assert_eq!(client_ip(&h, Some(peer)), "2.2.2.2");
+        std::env::remove_var("LABD_TRUST_XFF");
+
+        // No peer info: one shared, stricter bucket rather than a 500.
+        std::env::remove_var("LABD_TRUST_XFF");
+        assert_eq!(client_ip(&HeaderMap::new(), None), "unknown");
     }
 
     #[tokio::test]
@@ -724,6 +1282,19 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         assert!(csp.contains("default-src 'self'"), "csp={csp}");
+        // W9.1: Turnstile needs exactly this origin in script-src AND frame-src.
+        assert!(
+            csp.contains(&format!("script-src 'self' 'unsafe-inline' {TURNSTILE_ORIGIN}")),
+            "turnstile script origin must be allowed: csp={csp}"
+        );
+        assert!(
+            csp.contains(&format!("frame-src {TURNSTILE_ORIGIN}")),
+            "turnstile iframe origin must be allowed: csp={csp}"
+        );
+        // The relaxation is script/frame only — the page must never be able to
+        // call out to a third party directly.
+        assert!(csp.contains("connect-src 'self';"), "connect-src must stay self: csp={csp}");
+        assert!(csp.contains("frame-ancestors 'none'"), "csp={csp}");
         assert_eq!(
             h.get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
             Some("no-store")

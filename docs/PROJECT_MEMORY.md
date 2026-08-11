@@ -11,9 +11,14 @@ Agents use the portable root `project-memory.py`; the raw Redis representation i
 
 ```bash
 python3 project-memory.py index --incremental
+python3 project-memory.py index --incremental --repair-deep
 python3 project-memory.py status
 python3 project-memory.py validate
+python3 project-memory.py validate --deep
 python3 project-memory.py search "health readiness boundary" --limit 5
+python3 project-memory.py symbols "qualified.name" --limit 20
+python3 project-memory.py impact "symbol_name" --limit 20
+python3 project-memory.py evaluate --limit 10
 python3 project-memory.py clear
 ```
 
@@ -22,12 +27,16 @@ All output is JSON.
 | Command | Success behavior | Exit codes |
 |---------|------------------|------------|
 | `status` | Prints machine-parseable manifest and freshness data | `0` fresh; `2` missing/stale/invalid; `1` connection/protocol/command error |
-| `index` | Stages and atomically activates this project's generation | `0` success; `1` error |
-| `validate` | Validates the active generation and current corpus | `0` fresh; `2` invalid/stale; `1` error |
+| `index` | Atomically activates a staged generation; `--repair-deep` regenerates owners of semantically invalid reused chunks | `0` success; `1` error |
+| `validate` | Validates the active manifest and current corpus; `--deep` also verifies every chunk/vector | `0` fresh; `2` invalid/stale; `1` error |
 | `search QUERY [--limit N]` | Ranked path, line range, score, and text pointers | `0` success; `1` error (rejects missing/stale by default) |
+| `symbols QUERY [--limit N]` | Symbol definition pointers with parser confidence | `0` success; `1` error |
+| `impact QUERY [--limit N]` | Distinct incoming typed edges with resolution provenance | `0` success; `1` error |
+| `evaluate [--limit N]` | Configured retrieval recall benchmark | `0` all pass; `2` misses; `1` error |
 | `clear` | Deletes only this namespace's recorded keys | `0` success; `1` error |
 
 `clear` never runs `FLUSHDB` or `FLUSHALL`. Connection and protocol failures are reported clearly with `cache_consulted: false`.
+Indexing and namespace clearing share the same ownership lock and cannot run concurrently.
 
 ## Connection configuration
 
@@ -46,11 +55,104 @@ rgbmvp:project-memory:v2:*
 
 Schema id: `project-memory:v2`. Embedding id: `feature-hash-sha256-unigram-bigram-v1` (384 dimensions).
 
-Each generation manifest records schema, namespace, generation, embedding identifier, dimensions, the exact ordered file list, per-file hashes, chunk count, chunk keys, and a SHA-256 corpus fingerprint computed from every included relative path and its exact bytes. Any indexed-file byte change makes the active generation stale.
+Each generation manifest records bundle version, schema, namespace, generation, embedding identifier,
+dimensions, the exact ordered file list, per-file hashes and chunk maps, chunk count, chunk keys, and a
+SHA-256 corpus fingerprint computed from every included relative path and its exact bytes. Any
+indexed-file byte change makes the active generation stale.
 
 Source is divided into deterministic 80-line chunks with 16 lines of overlap. Retrieval uses deterministic, locally computed feature-hashed unigrams and bigrams (SHA-256, signed accumulation, L2 normalization) with cosine ranking and a small exact-token lexical component. It uses only Python's standard library: no model download, external embedding API, `redis-py`, NumPy, Redis Stack, RediSearch, RedisJSON, or `redis-cli`.
 
-Re-indexing reuses unchanged content-addressed chunks, pipelines missing chunk writes, stages a complete manifest, registers it for cleanup, then atomically switches `active-generation`. Readers see either the old complete generation or the new complete generation. Unknown schema, malformed metadata/vector data, decoding errors, or missing chunks are cache misses requiring re-indexing.
+Project Memory v2.1 records the chunk keys owned by each file. Re-indexing hashes the admitted corpus,
+then parses, chunks, and embeds only new, changed, or damaged-cache files. Unchanged files reuse their
+recorded chunk keys. v2.1.2 bounds batched `MGET` calls, gives every build a unique staging key, and
+uses a namespaced renewable Redis ownership lock with token-fenced activation. Every attempt carries
+the existing registry forward, so a successful retry collects leftovers from interrupted writes or
+garbage collection before reducing the registry to the active generation. A final repository
+fingerprint check prevents activation if source files changed during the build. Operational
+file/chunk/timing metrics are returned beside the immutable manifest.
+
+`status` is intentionally lightweight: it checks manifest structure and repository freshness without
+loading chunk payloads. `validate --deep` additionally loads every active chunk and recomputes its
+owner, content-derived identifier, tokens, and embedding vector while checking line bounds. Unknown
+schema, malformed or semantically inconsistent data, decoding errors, or missing chunks are cache
+misses requiring re-indexing.
+
+Normal incremental indexing performs inexpensive structural checks on reused chunks. After a deep
+validation failure, `index --incremental --repair-deep` performs semantic checks and regenerates only
+the files owning invalid chunks. Duplicate chunk keys are invalid manifest metadata.
+
+## v2.2 syntax and code graph
+
+Each file owns a deterministic graph record containing module-qualified symbols, typed edges,
+parser provenance, extraction confidence, resolution provenance, and diagnostics. Unchanged files
+reuse their graph records; only new and changed files
+are re-extracted. Deep validation recomputes the graph from current source in addition to validating
+chunks.
+
+- Python uses the standard-library AST. Definitions, imports, calls, inheritance, decorators, and
+  decorator-call forms are marked `python-ast` with authoritative extraction confidence. Module
+  prefixes, explicit aliases, unaliased dotted imports, lexical binding scopes, and package-relative
+  imports are retained. Resolution confidence is reported separately.
+- Rust uses `rust-syntax-v1`, a deterministic lightweight syntax extractor for definitions, `use`
+  statements, and call-shaped expressions. Its records are always marked `heuristic`, and its
+  diagnostic explicitly says it is not an AST parser.
+- Other admitted text remains searchable by chunks and has an empty `parser: none` graph record.
+
+`search` includes score-component explanations and exact symbol overlap. `symbols` provides
+definition pointers. `impact` reports uniquely resolved incoming edges plus exact target-name
+matches; ambiguous names remain labeled as name matches instead of being presented as resolved.
+Results are deduplicated by source symbol. `.project-memory.json` may define `evaluation_queries` with
+`mode`, `query`, and `expected_paths` to measure recall at a chosen result limit.
+
+Resolution status is one of `exact_qualified`, `lexical_scope`, `import_binding`,
+`heuristic_unique_short_name`, `ambiguous`, or `unresolved`. Only the first three carry `strong`
+confidence. The manifest and indexing metrics report counts for every status; a unique short-name
+link remains `probable`, never authoritative. Attribute calls without an explicit binding remain
+unresolved rather than being guessed from a globally unique method name.
+
+v2.2 embedded per-file graph records in the active manifest. That kept activation transactional but
+made metadata reads proportional to graph size.
+
+The rgbmvp RC measurement at 623 symbols and 6,168 edges was 2,102,555 manifest bytes, of which
+97.1% was the embedded graph. That measurement motivated the v2.3 storage migration before broad
+replication.
+The configured repository benchmark contains 25 definition, impact, and semantic-search cases;
+recall is a regression signal, not proof of general resolution accuracy.
+
+## v2.3 external graph storage
+
+v2.3 stores deterministic extraction graphs as content-addressed Redis records keyed by extractor
+schema, record schema, relative owner path, and file content hash. Path ownership is part of the
+identity because module-qualified names and symbol ids are path-dependent. The active manifest
+contains only the per-file graph references plus symbol, edge, and resolution summaries.
+Corpus-dependent cross-file resolution is derived after records are loaded; it is never written back
+into a shared content-addressed record.
+
+- `status` validates compact manifest references without loading graph records.
+- `search` and `symbols` load extraction graphs only when symbol data is requested.
+- `impact` loads the records and derives cross-file resolution in memory.
+- `validate --deep` loads every graph, validates record ownership and schema, recomputes extraction
+  from current source, and verifies the manifest summaries after resolution.
+- `index --incremental --repair-deep` semantically compares reusable graphs with current-source
+  extraction and rewrites only corrupted owner records; graph-only repair does not regenerate chunks.
+- Incremental indexing reuses unchanged graph keys, writes only missing or invalid records, and
+  registers staged graph keys before writes.
+- Activation remains a single fenced manifest-pointer update. Obsolete graph records and manifests
+  are collected only after activation; an interrupted cleanup leaves their exact keys in the scoped
+  registry for the next index run.
+- Embedded v2.2 graphs migrate automatically to external v2.3 records without regenerating unchanged
+  chunk embeddings.
+
+The key shape is an implementation detail: `<namespace>:graph:<identity>`, where `identity` hashes
+the graph schema, record schema, relative path, and file hash. Never scan or delete graph keys by
+wildcard; `clear` and garbage collection operate only on exact keys recorded by this namespace.
+
+The initial rgbmvp v2.3 migration produced a compact 80,434-byte manifest and 100 external graph
+records totaling 2,044,322 bytes. Compared with the 2,102,555-byte v2.2 embedded manifest, manifest
+transfer fell by 96.17% while preserving the same retrieval contract.
+
+The graph remains a disposable discovery aid. It does not replace compiler name resolution, type
+checking, or opening the returned current source file.
 
 **Raw Redis layout, hash fields, vector encoding, and stored text formatting are private implementation details, not a stable API.** Agents must not depend on them.
 
@@ -76,6 +178,15 @@ Excluded content includes:
 - databases and local `data/` trees;
 - symlinks and files larger than 1 MB;
 - the portable memory implementation and compatibility wrapper themselves.
+
+Portable bundle v2.0.1 makes sensitive filename/path and private-key suffix
+filters mandatory and non-overridable. Known text-source types must also pass a
+UTF-8/binary probe, so broad test/schema globs cannot admit images, databases,
+archives, or invalid text payloads.
+
+v2.1.2 also rejects generic token, refresh/auth/OAuth token, and client-secret
+filenames when they use data/configuration suffixes, without excluding legitimate
+source modules such as `token.py`.
 
 Never cache credentials, tokens, passkeys, device keys, personal data, production payloads, or uncommitted content copied from external systems. Never write application/runtime state into the project-memory namespace.
 

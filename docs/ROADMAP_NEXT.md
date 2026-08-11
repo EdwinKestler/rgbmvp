@@ -180,6 +180,44 @@ or `workflow_dispatch` only; public faucet state is not a deterministic CI gate.
 | 4 | S5 round-trip | **Deferred** — named post-freeze extension; non-blocking for current closure |
 | 5 | C5 LiquiDEX writeup | **Closed** — documentation positioning complete |
 
+### T1 — bounded public demo swaps (new track, 2026-08-10)
+
+**In tree, OFF by default (`LABD_DEMO_SWAPS`), never deployed.** Plan, budget,
+and ADR-T1: [TESTNET_PUBLIC_SWAPS.md](./TESTNET_PUBLIC_SWAPS.md).
+
+T1 deliberately narrows ADR-U4 rather than reopening it: the read-only freeze
+remains the default and the only shipped public profile. When the flag is on,
+labd gains exactly **one** public mutation (`POST /v1/demo/swap`) which accepts
+no protocol parameters, and holds spendable **testnet** keys to run swaps
+between the lab's own wallets.
+
+| Workstream | State |
+|---|---|
+| W1 constrained trigger endpoint | Implemented |
+| W2 quotas / caps / fee budget | Implemented |
+| W3 Secret Manager custody + startup preflight | Implemented |
+| W4 budget persistence across restart | Implemented |
+| W5 refund / recycle watcher | Implemented |
+| W6 deploy profile + persistent volume | `deploy/cloudrun-demo.yaml` + runbook |
+| W7 observability / alert thresholds | Documented; quota field contract pinned by test |
+| W8 abuse + chaos tests | Implemented |
+| W9 public UX | **Not started** |
+
+**Two live swaps completed** — [T1_FIRST_SWAP.md](./T1_FIRST_SWAP.md):
+run 1 operator/CLI, run 2 via the **automated `POST /v1/demo/swap` driver** with
+no human in the loop. Fees measured (5.25 / 3.63 sat/vB); the driver's retry
+loop recovered from both an unconfirmed-UTXO wait and an Esplora propagation
+race; W2 reservation→spend and W4 persistence observed live.
+
+Run 3 exercised the **W5 refund watcher** and CSV refund path unattended, and
+the Liquid-side exit sweep was implemented and proven live (118,624 sats
+recovered from 119,024 stranded).
+
+**Still not proven:** **Turnstile against a real request** — every run used
+`LABD_DEMO_TURNSTILE_REQUIRED=0` (no Cloudflare secret locally). That is now the
+last functional gate before public exposure. Mainnet remains refused at
+config load throughout; §5 of the plan gates it behind a separate program.
+
 ### Post-freeze extension milestone
 
 **S5** remains a valid future protocol scenario with its original conservation

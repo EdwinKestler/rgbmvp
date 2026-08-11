@@ -13,6 +13,7 @@ use lab_rgb::{
 };
 use lab_rgb::htlc;
 
+mod demo_swap;
 mod http_api;
 mod labd_axum;
 mod labd_legacy;
@@ -325,6 +326,22 @@ enum BtcCmd {
         amount_sats: u64,
         #[arg(long, default_value_t = 500)]
         fee_sats: u64,
+    },
+    /// Show the deterministic demo HTLC exit addresses and their balances
+    DemoExits,
+    /// T1/W5: sweep demo HTLC exit addresses back into a funding wallet
+    SweepDemo {
+        #[arg(long, default_value = "btc-alice")]
+        to: String,
+        #[arg(long, default_value_t = 500)]
+        fee_sats: u64,
+        /// Also sweep the Liquid-side exits into --lq-to
+        #[arg(long, default_value_t = false)]
+        include_liquid: bool,
+        #[arg(long, default_value = "bob")]
+        lq_to: String,
+        #[arg(long, default_value_t = 300)]
+        lq_fee_sats: u64,
     },
 }
 
@@ -1242,6 +1259,57 @@ fn run() -> Result<()> {
                         "{}",
                         serde_json::to_string_pretty(&lab_btc::balance(&cfg, &btc, &name)?)?
                     );
+                }
+                BtcCmd::DemoExits => {
+                    let mut out = Vec::new();
+                    // Liquid-side exits: inspection only (no sweep implemented).
+                    for label in lab_chain::LQ_DEMO_EXIT_LABELS {
+                        match lab_chain::demo_exit_balance_lq(&cfg, label) {
+                            Ok(b) => out.push(serde_json::json!({
+                                "chain": "liquid",
+                                "label": b.label,
+                                "address": b.address,
+                                "utxo_count": b.utxo_count,
+                                "balance_sats": b.balance_sats,
+                                "sweep": "NOT IMPLEMENTED (inspection only)",
+                            })),
+                            Err(e) => out.push(serde_json::json!({
+                                "chain": "liquid", "label": label, "error": e.to_string(),
+                            })),
+                        }
+                    }
+                    for label in lab_btc::BTC_DEMO_EXIT_LABELS {
+                        let (_, addr) = lab_btc::demo_exit_address(&btc, label)?;
+                        let a = addr.to_string();
+                        let utxos = lab_btc::address_utxos(&btc, &a).unwrap_or_default();
+                        out.push(serde_json::json!({
+                            "chain": "bitcoin",
+                            "label": label,
+                            "address": a,
+                            "utxo_count": utxos.len(),
+                            "balance_sats": utxos.iter().map(|u| u.value_sats).sum::<u64>(),
+                            "confirmed_sats": utxos.iter().filter(|u| u.confirmed)
+                                .map(|u| u.value_sats).sum::<u64>(),
+                            "explorer": format!("{}/address/{}", btc.explorer_base, a),
+                        }));
+                    }
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                }
+                BtcCmd::SweepDemo {
+                    to,
+                    fee_sats,
+                    include_liquid,
+                    lq_to,
+                    lq_fee_sats,
+                } => {
+                    let btc_res = lab_btc::sweep_all_demo_exits(&cfg, &btc, &to, fee_sats)?;
+                    let mut out = serde_json::json!({ "bitcoin": btc_res });
+                    if include_liquid {
+                        let lq_res =
+                            lab_chain::sweep_all_demo_exits_lq(&cfg, &lq_to, lq_fee_sats)?;
+                        out["liquid"] = serde_json::to_value(&lq_res)?;
+                    }
+                    println!("{}", serde_json::to_string_pretty(&out)?);
                 }
                 BtcCmd::Utxos { name } => {
                     println!(

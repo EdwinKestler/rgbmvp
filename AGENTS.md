@@ -45,8 +45,37 @@ Full contract: [docs/PROJECT_MEMORY.md](docs/PROJECT_MEMORY.md) · protocol: [do
 - Prefer shared **`/v1` JSON** for CLI and web; no duplicate validation in the UI.  
 - Public demos: **Liquid Testnet** + **Bitcoin testnet** for P1/P3 swap. Mainnet only with explicit human flag.  
 - Never commit `.env`, `.rgbmvp/`, WIF, real seeds, or private consignments.  
-- Map features to scenario ids in `docs/SCENARIOS.md` (`R*`, `S*`, `C*`, `U*`).  
+- Map features to scenario ids in `docs/SCENARIOS.md` (`R*`, `S*`, `C*`, `U*`, `T*`).  
 - `GET /v1/swap/*` must keep **preimage redacted**.
+
+## T1 demo swaps — invariants (do not regress)
+
+`POST /v1/demo/swap` is the **only** endpoint an unauthenticated visitor may use
+to cause a state change, and only when `LABD_DEMO_SWAPS=1` (off by default).
+Contract: [docs/TESTNET_PUBLIC_SWAPS.md](docs/TESTNET_PUBLIC_SWAPS.md).
+
+- The demo endpoint accepts **only** a bot-check token. Amounts, fees, CSV delay,
+  wallet names, and `rgb_wrap=false` are server-fixed — never read them from the
+  request body.
+- Its exemption from the U4 mutation-token check is **exact-path and flag-gated**.
+  `/v1/swap/*`, `/v1/rgb/*`, `/v1/audit/*` stay token-gated at all times.
+- Spending rules live in `lab_core::demo` and must stay **pure** (no clock, no
+  network, no filesystem) so they remain deterministically testable.
+- Admission **reserves** the worst-case fee; failures release the slot but keep
+  day/IP quota (anti retry-spam). Unknown balances **fail closed**.
+- Custody (`lab_core::custody`) resolves keys from `RGBMVP_SECRET_DIR`
+  (colon-separated) before local wallet dirs, and labd refuses to start on a
+  public bind without it, or with a group/world-readable key.
+- The refund watcher may only touch ids it minted (`demo-<epoch>-<seq>`) — never
+  an operator's swap session.
+- **HTLC exits do NOT pay the funding wallet.** Claim and refund both pay
+  `P2WPKH(sha256(<label>))` for the four demo labels. Recovering that value
+  requires the sweep — `lab_btc::sweep_all_demo_exits` (BTC) and
+  `lab_chain::sweep_all_demo_exits_lq` (Liquid, explicit L-BTC only). Without it
+  both `btc-alice` and `bob` drain every swap. Never claim "refunds return value
+  to the funder".
+- `RGBMVP_DATA_DIR` must be persistent in deployment, or the fee budget resets
+  on restart and the run can overshoot its ceiling.
 
 ## Local development
 

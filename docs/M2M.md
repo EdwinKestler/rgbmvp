@@ -97,10 +97,19 @@ python3 project-memory.py status
 # exit 0 = fresh; exit 2 = missing/stale/invalid; exit 1 = error
 
 python3 project-memory.py index --incremental    # atomic generation switch
+python3 project-memory.py index --incremental --repair-deep  # semantic cache repair
 python3 project-memory.py validate
+python3 project-memory.py validate --deep    # full active chunk/vector verification
 python3 project-memory.py search "QUERY" --limit 5
+python3 project-memory.py symbols "SYMBOL" --limit 20
+python3 project-memory.py impact "SYMBOL" --limit 20
+python3 project-memory.py evaluate --limit 10
 python3 project-memory.py clear    # this namespace only — never FLUSHDB
 ```
+
+v2.3 keeps graph extraction breadth unchanged while storing per-file extraction graphs as
+content-addressed records referenced by a compact transactional manifest. Graph consumers load
+records lazily; repository files remain authoritative.
 
 | Env / flag | Purpose |
 |------------|---------|

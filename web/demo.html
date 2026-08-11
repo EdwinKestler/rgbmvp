@@ -11,7 +11,9 @@
     .skip { position:fixed; top:-5rem; left:1rem; z-index:10; background:var(--accent); color:#080b0a; padding:.7rem 1rem; font-weight:800; } .skip:focus{top:1rem}
     .topbar { border-bottom:1px solid var(--line); } .topbar .shell { min-height:72px; display:flex; align-items:center; gap:1rem; }
     .brand { color:var(--ink); text-decoration:none; font-size:1.2rem; font-weight:900; } nav { margin-left:auto; display:flex; gap:.2rem; }
-    nav a { color:var(--muted); text-decoration:none; padding:.65rem .75rem; border-radius:.45rem; } nav a:hover,nav a[aria-current="page"]{color:var(--ink);background:var(--surface-2)}
+    nav,.site-nav{margin-left:auto;display:flex;gap:.2rem}
+    nav a,.site-nav a{color:var(--muted);text-decoration:none;padding:.65rem .75rem;border-radius:.45rem}
+    nav a:hover,nav a[aria-current="page"],.site-nav a:hover,.site-nav a[aria-current="page"]{color:var(--ink);background:var(--surface-2)}
     .network-badge { border:1px solid #8b6b21; color:var(--amber); border-radius:.35rem; padding:.35rem .55rem; font:700 .7rem ui-monospace,monospace; }
     main { padding:3rem 0 5rem; } h1 { font-size:clamp(2.2rem,6vw,4.5rem); letter-spacing:-.05em; line-height:1; margin:.5rem 0 1rem; } h2 { font-size:1.1rem; margin:2rem 0 .7rem; color:var(--ink); }
     .eyebrow { color:var(--accent); font:800 .75rem ui-monospace,monospace; letter-spacing:.14em; text-transform:uppercase; }
@@ -43,13 +45,13 @@
     button:hover { filter: brightness(1.1); }
     .bar { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin: 0.5rem 0 1rem; }
     #err { color:var(--bad); } :focus-visible{outline:3px solid var(--accent);outline-offset:3px}
-    @media(max-width:760px){.topbar .shell{flex-wrap:wrap;padding:.8rem 0}.topbar nav{order:3;width:100%;overflow:auto}.network-badge{margin-left:auto} main{padding-top:2rem} table{display:block;overflow-x:auto;white-space:nowrap}}
+    @media(max-width:760px){.topbar .shell{flex-wrap:wrap;padding:.8rem 0}.topbar nav,.topbar .site-nav{order:3;width:100%;overflow:auto}.network-badge{margin-left:auto} main{padding-top:2rem} table{display:block;overflow-x:auto;white-space:nowrap}}
     @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
   </style>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
-  <header class="topbar"><div class="shell"><a class="brand" href="/">rgbmvp</a><nav aria-label="Primary navigation"><a href="/status">Proofs</a><a href="/#lab">Lab</a><a href="/demo" aria-current="page">Board</a><a href="/audit">Audit</a><a href="https://github.com/EdwinKestler/rgbmvp" target="_blank" rel="noopener noreferrer">Docs ↗</a></nav><span class="network-badge">TESTNET ONLY</span></div></header>
+  <header class="topbar"><div class="shell"><a class="brand" href="/">rgbmvp</a><nav class="site-nav" aria-label="Primary navigation"><a href="/status">Proofs</a><a href="/#lab">Lab</a><a href="/demo" aria-current="page">Board</a><a href="/swap">Swap</a><a href="/audit">Audit</a><a href="https://github.com/EdwinKestler/rgbmvp" target="_blank" rel="noopener noreferrer">Docs ↗</a></nav><span class="network-badge">TESTNET ONLY</span></div></header>
   <main id="main" class="shell">
   <div class="eyebrow">Read-only observatory</div><h1>Lab activity, without custody.</h1>
   <p class="lede">Inspect testnet wallets, swaps, transfer plans, and RGB proofs. Keys and operator actions stay on labd and the CLI.</p>

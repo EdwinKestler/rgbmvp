@@ -250,14 +250,25 @@ pub fn import_from_env(cfg: &Config, btc: &BtcConfig, force: bool) -> Result<Btc
     import_wif(cfg, btc, DEFAULT_NAME, wif, expect, force)
 }
 
+/// Load a wallet's WIF for signing (never printed to logs).
+///
+/// W3: prefers a mounted Secret Manager entry (`RGBMVP_SECRET_DIR`) over the
+/// local wallet copy, so public deployments never sign with image-baked keys.
 fn load_wif(cfg: &Config, name: &str) -> Result<PrivateKey> {
-    let path = wallet_dir(cfg, name).join("wif");
-    if !path.exists() {
-        bail!(
-            "btc wallet {name:?} missing WIF at {}; run: rgbmvp btc import-env",
-            path.display()
-        );
-    }
+    let fallback = wallet_dir(cfg, name);
+    let path = lab_core::resolve_secret_path(
+        &lab_core::secret_dirs(),
+        &fallback,
+        name,
+        lab_core::KIND_WIF,
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "btc wallet {name:?} missing WIF at {} (and no RGBMVP_SECRET_DIR mount); \
+             run: rgbmvp btc import-env",
+            fallback.join("wif").display()
+        )
+    })?;
     let s = lab_core::read_trimmed(&path)?;
     PrivateKey::from_wif(&s).context("parse stored WIF")
 }
@@ -631,4 +642,178 @@ pub fn find_htlc_utxo(btc: &BtcConfig, address: &str, min_sats: u64) -> Result<B
         .into_iter()
         .find(|u| u.value_sats >= min_sats)
         .ok_or_else(|| anyhow::anyhow!("no UTXO ≥ {min_sats} on {address}"))
+}
+
+// ---------------------------------------------------------------------------
+// T1/W5 — sweep demo HTLC exit addresses back into the funding wallet.
+//
+// Every HTLC exit path (claim AND refund, both chains) pays a P2WPKH address
+// derived from `htlc::demo_keypair(<label>)`, i.e. `sha256(label)` — NOT back to
+// the wallet that funded the leg. Without a sweep, btc-alice drains on every
+// swap regardless of outcome and the value strands at four fixed addresses.
+//
+// The keys are deterministic, so recovery is always possible; this just
+// automates it.
+// ---------------------------------------------------------------------------
+
+/// Labels every BTC-side HTLC exit pays out to.
+pub const BTC_DEMO_EXIT_LABELS: [&str; 2] = ["bob-claimer", "alice-refund"];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SweepResult {
+    pub label: String,
+    pub address: String,
+    pub utxo_count: usize,
+    pub swept_sats: u64,
+    pub fee_sats: u64,
+    pub txid: Option<String>,
+    pub explorer_url: Option<String>,
+    pub skipped_reason: Option<String>,
+}
+
+/// P2WPKH address a demo label receives at.
+pub fn demo_exit_address(btc: &BtcConfig, label: &str) -> Result<(SecretKey, Address)> {
+    let (sk, _) = lab_rgb::htlc::demo_keypair(label)?;
+    let secp = Secp256k1::new();
+    let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
+    let compressed = CompressedPublicKey(pk);
+    Ok((sk, Address::p2wpkh(&compressed, btc.network)))
+}
+
+/// Sweep every confirmed UTXO at one demo exit address into `to_address`.
+///
+/// Consolidates all inputs into a single output, so accumulated dust from many
+/// swaps is recovered in one transaction. Skips (rather than fails) when there
+/// is nothing to sweep or the balance cannot cover the fee.
+pub fn sweep_demo_exit(
+    btc: &BtcConfig,
+    label: &str,
+    to_address: &str,
+    fee_sats: u64,
+) -> Result<SweepResult> {
+    use bitcoin::absolute::LockTime;
+    use bitcoin::consensus::encode::serialize_hex;
+    use bitcoin::hashes::Hash;
+    use bitcoin::secp256k1::Message;
+    use bitcoin::sighash::{EcdsaSighashType, SighashCache};
+    use bitcoin::transaction::Version;
+    use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
+
+    btc.ensure_testnet()?;
+    let (sk, from_addr) = demo_exit_address(btc, label)?;
+    let spk = from_addr.script_pubkey();
+    let address = from_addr.to_string();
+
+    // Only confirmed UTXOs: an unconfirmed claim output may still be replaced.
+    let utxos: Vec<BtcUtxo> = address_utxos(btc, &address)?
+        .into_iter()
+        .filter(|u| u.confirmed)
+        .collect();
+    let total: u64 = utxos.iter().map(|u| u.value_sats).sum();
+
+    let mut result = SweepResult {
+        label: label.to_string(),
+        address: address.clone(),
+        utxo_count: utxos.len(),
+        swept_sats: 0,
+        fee_sats,
+        txid: None,
+        explorer_url: None,
+        skipped_reason: None,
+    };
+    if utxos.is_empty() {
+        result.skipped_reason = Some("no confirmed utxos".into());
+        return Ok(result);
+    }
+    // Dust guard: sweeping for less than the fee would destroy value.
+    if total <= fee_sats + 294 {
+        result.skipped_reason = Some(format!(
+            "balance {total} does not cover fee {fee_sats} plus dust threshold"
+        ));
+        return Ok(result);
+    }
+
+    let dest = parse_address(btc, to_address)?;
+    let out_sats = total - fee_sats;
+
+    let mut tx = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: utxos
+            .iter()
+            .map(|u| {
+                Ok(TxIn {
+                    previous_output: OutPoint::new(u.txid.parse::<Txid>()?, u.vout),
+                    script_sig: ScriptBuf::new(),
+                    sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                    witness: Witness::new(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        output: vec![TxOut {
+            value: Amount::from_sat(out_sats),
+            script_pubkey: dest.script_pubkey(),
+        }],
+    };
+
+    let secp = Secp256k1::new();
+    let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
+    let compressed = CompressedPublicKey(pk);
+    // Each input is signed independently over its own prevout value.
+    let mut witnesses = Vec::with_capacity(utxos.len());
+    for (i, u) in utxos.iter().enumerate() {
+        let sighash = SighashCache::new(&tx)
+            .p2wpkh_signature_hash(
+                i,
+                &spk,
+                Amount::from_sat(u.value_sats),
+                EcdsaSighashType::All,
+            )
+            .with_context(|| format!("sighash input {i}"))?;
+        let msg = Message::from_digest(sighash.to_byte_array());
+        let sig = secp.sign_ecdsa(&msg, &sk);
+        let mut sig_bytes = sig.serialize_der().to_vec();
+        sig_bytes.push(EcdsaSighashType::All as u8);
+        witnesses.push(Witness::from_slice(&[
+            sig_bytes,
+            compressed.to_bytes().to_vec(),
+        ]));
+    }
+    for (i, w) in witnesses.into_iter().enumerate() {
+        tx.input[i].witness = w;
+    }
+
+    let hex_tx = serialize_hex(&tx);
+    let txid = broadcast_raw(btc, &hex_tx)?;
+    result.swept_sats = out_sats;
+    result.txid = Some(txid.clone());
+    result.explorer_url = Some(format!("{}/tx/{}", btc.explorer_base, txid));
+    Ok(result)
+}
+
+/// Sweep all BTC demo exit addresses back into `to_wallet`.
+pub fn sweep_all_demo_exits(
+    cfg: &Config,
+    btc: &BtcConfig,
+    to_wallet: &str,
+    fee_sats: u64,
+) -> Result<Vec<SweepResult>> {
+    let info = load_wallet_address(cfg, btc, to_wallet)?;
+    let mut out = Vec::new();
+    for label in BTC_DEMO_EXIT_LABELS {
+        match sweep_demo_exit(btc, label, &info.address, fee_sats) {
+            Ok(r) => out.push(r),
+            Err(e) => out.push(SweepResult {
+                label: label.to_string(),
+                address: String::new(),
+                utxo_count: 0,
+                swept_sats: 0,
+                fee_sats,
+                txid: None,
+                explorer_url: None,
+                skipped_reason: Some(format!("error: {e}")),
+            }),
+        }
+    }
+    Ok(out)
 }

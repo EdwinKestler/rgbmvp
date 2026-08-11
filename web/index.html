@@ -176,7 +176,7 @@
     <div class="shell">
       <a class="brand" href="/">rgbmvp</a>
       <nav class="site-nav" aria-label="Primary navigation">
-        <a href="/status">Proofs</a><a href="#lab" aria-current="page">Lab</a><a href="/demo">Board</a><a href="/audit">Audit</a><a href="https://github.com/EdwinKestler/rgbmvp" target="_blank" rel="noopener noreferrer">Docs ↗</a>
+        <a href="/status">Proofs</a><a href="#lab" aria-current="page">Lab</a><a href="/demo">Board</a><a href="/swap">Swap</a><a href="/audit">Audit</a><a href="https://github.com/EdwinKestler/rgbmvp" target="_blank" rel="noopener noreferrer">Docs ↗</a>
       </nav>
       <span class="network-badge">TESTNET ONLY</span>
     </div>
@@ -240,8 +240,11 @@
   </div>
 
   <div id="public-banner" class="public-banner" role="status">
-    <strong>Public read-only surface.</strong>
-    This host serves evidence and GET <code>/v1</code> only. Issue, Transfer, Swap, and mutations return 403.
+    <strong>Public read-only surface — with one exception.</strong>
+    This host serves evidence and GET <code>/v1</code>. Issue, Transfer, and the operator Swap
+    wizard all return 403. The single public action is the bounded
+    <a href="/swap">demo swap</a>, which runs a real testnet HTLC between the lab's own wallets
+    under fixed amounts and quotas — and only where it has been explicitly enabled.
     Full operator lab (wallets, fund/claim) runs on localhost — see
     <a href="https://github.com/EdwinKestler/rgbmvp/blob/main/docs/PUBLIC_LAUNCH.md">PUBLIC_LAUNCH.md</a>
     and <a href="https://github.com/EdwinKestler/rgbmvp/blob/main/docs/S3_RGB_WRAP.md">S3 runbook</a>.
@@ -250,10 +253,11 @@
 
   <div id="public-evidence-only" class="card">
     <h2>Evidence-only console</h2>
-    <p class="muted">Operator tabs are hidden on public deployments. Use these read-only surfaces:</p>
+    <p class="muted">Operator tabs are hidden on public deployments. Use these surfaces:</p>
     <ul class="muted">
       <li><a href="/status">/status</a> — scenario proofs &amp; manifest</li>
       <li><a href="/demo">/demo</a> — board (read-only)</li>
+      <li><a href="/swap">/swap</a> — bounded live demo swap (when enabled)</li>
       <li><a href="/audit">/audit</a> — BFA samples (load/copy; server audit is local-only)</li>
       <li><a href="/v1">/v1</a> · <a href="/v1/security">/v1/security</a> · <a href="/v1/health">/v1/health</a></li>
     </ul>

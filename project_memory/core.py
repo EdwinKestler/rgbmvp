@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import contextlib
 import hashlib
@@ -10,9 +11,11 @@ import json
 import math
 import os
 import re
+import secrets
 import socket
 import struct
 import sys
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import pairwise
@@ -21,6 +24,9 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 SCHEMA = "project-memory:v2"
+BUNDLE_VERSION = "2.3.0"
+GRAPH_SCHEMA = "project-memory:code-graph:v3"
+GRAPH_RECORD_SCHEMA = "project-memory:graph-record:v1"
 EMBEDDING_ID = "feature-hash-sha256-unigram-bigram-v1"
 DIMENSIONS = 384
 DEFAULT_URL = "redis://localhost:6379/0"
@@ -89,6 +95,110 @@ EXCLUDED_PARTS = {
 }
 ENV_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
 ALLOWED_DOT_DIRS = {".github", ".claude", ".agents", ".codex"}
+SENSITIVE_NAME_PATTERNS = (
+    re.compile(r"(^|[._/-])credentials?([._/-]|$)", re.IGNORECASE),
+    re.compile(r"(^|[._/-])secrets?([._/-]|$)", re.IGNORECASE),
+    re.compile(r"(^|[._/-])private[_-]?keys?([._/-]|$)", re.IGNORECASE),
+    re.compile(r"(^|[._/-])api[_-]?keys?([._/-]|$)", re.IGNORECASE),
+    re.compile(r"(^|[._/-])access[_-]?tokens?([._/-]|$)", re.IGNORECASE),
+    re.compile(r"(^|[._/-])service[_-]?accounts?([._/-]|$)", re.IGNORECASE),
+)
+SENSITIVE_SUFFIXES = {
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".jks",
+    ".keystore",
+}
+SENSITIVE_EXACT_NAMES = {
+    "authorized_keys",
+    "credentials.json",
+    "id_ed25519",
+    "id_rsa",
+    "known_hosts",
+    "service-account.json",
+}
+TEXT_SUFFIXES = {
+    ".avsc",
+    ".bash",
+    ".c",
+    ".cfg",
+    ".conf",
+    ".cpp",
+    ".css",
+    ".graphql",
+    ".h",
+    ".hpp",
+    ".htm",
+    ".html",
+    ".ini",
+    ".java",
+    ".js",
+    ".json",
+    ".jsonl",
+    ".jsx",
+    ".kt",
+    ".kts",
+    ".less",
+    ".md",
+    ".mk",
+    ".proto",
+    ".py",
+    ".pyi",
+    ".rs",
+    ".rst",
+    ".scss",
+    ".sh",
+    ".sql",
+    ".svelte",
+    ".tf",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".vue",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".zsh",
+}
+TEXT_EXACT_NAMES = {
+    ".env.example",
+    ".gitignore",
+    "dockerfile",
+    "license",
+    "makefile",
+    "readme",
+}
+TEXT_PROBE_BYTES = 8192
+MGET_BATCH_SIZE = 1_000
+INDEX_LOCK_MS = 60_000
+SENSITIVE_DATA_SUFFIXES = {
+    ".json",
+    ".jsonl",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".txt",
+}
+SENSITIVE_TOKEN_PATTERNS = (
+    re.compile(
+        r"(^|[._/-])(?:access|refresh|auth|bearer|oauth)?[_-]?tokens?([._/-]|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(^|[._/-])client[_-]?secrets?([._/-]|$)", re.IGNORECASE),
+)
+RUST_DEFINITION_RE = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+|unsafe\s+)?"
+    r"(fn|struct|enum|trait|mod|type|const|static)\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
+RUST_USE_RE = re.compile(r"^\s*(?:pub\s+)?use\s+([^;]+);")
+RUST_CALL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)\s*\(")
+RUST_CALL_EXCLUSIONS = {"fn", "if", "while", "for", "loop", "match", "return", "Some", "Ok", "Err"}
 
 
 def project_config(root: Path = ROOT) -> dict[str, Any]:
@@ -140,6 +250,41 @@ def namespace(root: Path = ROOT) -> str:
     return f"{project_slug(root)}:{SCHEMA}"
 
 
+def is_sensitive_path(path: Path, relative: str) -> bool:
+    """Reject secret-bearing path names independently of repository configuration."""
+    name = path.name.lower()
+    normalized = relative.replace("\\", "/").lower()
+    sensitive_data_name = path.suffix.lower() in SENSITIVE_DATA_SUFFIXES and any(
+        pattern.search(name) or pattern.search(normalized) for pattern in SENSITIVE_TOKEN_PATTERNS
+    )
+    return (
+        name in SENSITIVE_EXACT_NAMES
+        or path.suffix.lower() in SENSITIVE_SUFFIXES
+        or any(pattern.search(name) or pattern.search(normalized) for pattern in SENSITIVE_NAME_PATTERNS)
+        or sensitive_data_name
+    )
+
+
+def is_text_source_path(path: Path) -> bool:
+    """Admit known text source types and reject binary/non-UTF-8 payloads."""
+    name = path.name.lower()
+    type_allowed = (
+        path.suffix.lower() in TEXT_SUFFIXES
+        or name in TEXT_EXACT_NAMES
+        or name.startswith(("dockerfile.", "makefile."))
+    )
+    if not type_allowed:
+        return False
+    try:
+        sample = path.read_bytes()[:TEXT_PROBE_BYTES]
+        if b"\x00" in sample:
+            return False
+        sample.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return True
+
+
 def included_files(root: Path = ROOT) -> list[Path]:
     """Return deterministic, privacy-conscious source corpus paths."""
     exact = [
@@ -178,6 +323,8 @@ def included_files(root: Path = ROOT) -> list[Path]:
             or path.name.startswith(".env") and path.name != ".env.example"
             or path.is_symlink()
             or path.stat().st_size > 1_000_000
+            or is_sensitive_path(path, rel)
+            or not is_text_source_path(path)
         ):
             continue
         result.append(path)
@@ -261,6 +408,498 @@ def split_chunks(
         if start + size >= len(lines):
             break
     return chunks
+
+
+def _symbol_id(path: str, qualified_name: str, kind: str, start_line: int) -> str:
+    digest = hashlib.sha256(
+        f"{path}\0{qualified_name}\0{kind}\0{start_line}".encode()
+    ).hexdigest()[:20]
+    return f"symbol:{digest}"
+
+
+def _dotted_python_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Call):
+        return _dotted_python_name(node.func)
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _dotted_python_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return None
+
+
+class _PythonGraphVisitor(ast.NodeVisitor):
+    def __init__(self, path: str):
+        self.path = path
+        self.module_name = path.removesuffix(".py").replace("/", ".")
+        self.scope: list[str] = []
+        self.scope_kinds: list[str] = []
+        self.current_symbols: list[str] = []
+        self.symbols: list[dict[str, Any]] = []
+        self.edges: list[dict[str, Any]] = []
+        self.bindings: dict[str, str] = {}
+        self.module_bindings = self.bindings
+        self.module_id = self._add_symbol(
+            self.module_name, self.module_name, "module", 1, 1
+        )
+
+    def _qualified_name(self, name: str) -> str:
+        return ".".join((self.module_name, *self.scope, name))
+
+    def _canonical_target(self, target: str) -> tuple[str, bool]:
+        head, separator, tail = target.partition(".")
+        canonical = self.bindings.get(head)
+        if canonical is None:
+            return target, False
+        return canonical + (separator + tail if separator else ""), True
+
+    def _relative_import_module(self, module: str | None, level: int) -> str | None:
+        if level == 0:
+            return module or ""
+        path_parts = self.path.removesuffix(".py").split("/")
+        package_parts = path_parts[:-1]
+        ascend = level - 1
+        if ascend > len(package_parts):
+            return None
+        base = package_parts[: len(package_parts) - ascend]
+        if module:
+            base.extend(module.split("."))
+        return ".".join(base)
+
+    def _add_symbol(
+        self, name: str, qualified_name: str, kind: str, start_line: int, end_line: int
+    ) -> str:
+        symbol_id = _symbol_id(self.path, qualified_name, kind, start_line)
+        self.symbols.append(
+            {
+                "id": symbol_id,
+                "name": name,
+                "qualified_name": qualified_name,
+                "kind": kind,
+                "path": self.path,
+                "start_line": start_line,
+                "end_line": end_line,
+                "parser": "python-ast",
+                "confidence": "authoritative",
+            }
+        )
+        return symbol_id
+
+    def _source(self) -> str:
+        return self.current_symbols[-1] if self.current_symbols else self.module_id
+
+    def _edge(self, kind: str, target: str, line: int, *, source_id: str | None = None) -> None:
+        canonical_target, binding_applied = self._canonical_target(target)
+        self.edges.append(
+            {
+                "source_id": source_id or self._source(),
+                "target": canonical_target,
+                "kind": kind,
+                "path": self.path,
+                "line": line,
+                "parser": "python-ast",
+                "extraction_confidence": "authoritative",
+                "binding_applied": binding_applied,
+                "resolution": {
+                    "status": "unresolved",
+                    "confidence": "unknown",
+                    "target_id": None,
+                },
+            }
+        )
+
+    def _visit_definition(self, node: ast.AST, name: str, kind: str) -> None:
+        qualified_name = self._qualified_name(name)
+        symbol_id = self._add_symbol(
+            name,
+            qualified_name,
+            kind,
+            getattr(node, "lineno", 1),
+            getattr(node, "end_lineno", getattr(node, "lineno", 1)),
+        )
+        decorators = getattr(node, "decorator_list", [])
+        for decorator in decorators:
+            target = _dotted_python_name(decorator)
+            if target:
+                self._edge(
+                    "decorated_by",
+                    target,
+                    getattr(decorator, "lineno", getattr(node, "lineno", 1)),
+                    source_id=symbol_id,
+                )
+        self.scope.append(name)
+        self.scope_kinds.append(kind)
+        self.current_symbols.append(symbol_id)
+        previous_bindings = self.bindings
+        self.bindings = dict(
+            self.module_bindings if kind == "method" else previous_bindings
+        )
+        self.generic_visit(node)
+        self.bindings = previous_bindings
+        self.current_symbols.pop()
+        self.scope_kinds.pop()
+        self.scope.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        kind = "method" if self.scope_kinds and self.scope_kinds[-1] == "class" else "function"
+        self._visit_definition(node, node.name, kind)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        kind = "method" if self.scope_kinds and self.scope_kinds[-1] == "class" else "function"
+        self._visit_definition(node, node.name, kind)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        qualified_name = self._qualified_name(node.name)
+        symbol_id = self._add_symbol(
+            node.name,
+            qualified_name,
+            "class",
+            node.lineno,
+            getattr(node, "end_lineno", node.lineno),
+        )
+        for base in node.bases:
+            target = _dotted_python_name(base)
+            if target:
+                self._edge(
+                    "inherits",
+                    target,
+                    getattr(base, "lineno", node.lineno),
+                    source_id=symbol_id,
+                )
+        self.scope.append(node.name)
+        self.scope_kinds.append("class")
+        self.current_symbols.append(symbol_id)
+        previous_bindings = self.bindings
+        self.bindings = dict(previous_bindings)
+        self.generic_visit(node)
+        self.bindings = previous_bindings
+        self.current_symbols.pop()
+        self.scope_kinds.pop()
+        self.scope.pop()
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.asname:
+                self.bindings[alias.asname] = alias.name
+            else:
+                top_level = alias.name.split(".", 1)[0]
+                self.bindings[top_level] = top_level
+            self._edge("imports", alias.name, node.lineno)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        module = self._relative_import_module(node.module, node.level)
+        for alias in node.names:
+            canonical = f"{module}.{alias.name}" if module else alias.name
+            self.bindings[alias.asname or alias.name] = canonical
+            self._edge("imports", canonical, node.lineno)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        target = _dotted_python_name(node.func)
+        if target:
+            self._edge("calls", target, node.lineno)
+        self.generic_visit(node)
+
+
+def _python_file_graph(path: str, text: str) -> dict[str, Any]:
+    try:
+        tree = ast.parse(text, filename=path)
+    except SyntaxError as exc:
+        return {
+            "schema": GRAPH_SCHEMA,
+            "language": "python",
+            "parser": "python-ast",
+            "symbols": [],
+            "edges": [],
+            "diagnostics": [f"syntax error at line {exc.lineno or 0}"],
+        }
+    visitor = _PythonGraphVisitor(path)
+    visitor.visit(tree)
+    return {
+        "schema": GRAPH_SCHEMA,
+        "language": "python",
+        "parser": "python-ast",
+        "symbols": visitor.symbols,
+        "edges": visitor.edges,
+        "diagnostics": [],
+    }
+
+
+def _rust_file_graph(path: str, text: str) -> dict[str, Any]:
+    symbols: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    module_name = path.removesuffix(".rs").replace("/", "::")
+    module_id = _symbol_id(path, module_name, "module", 1)
+    symbols.append(
+        {
+            "id": module_id,
+            "name": module_name.rsplit("::", 1)[-1],
+            "qualified_name": module_name,
+            "kind": "module",
+            "path": path,
+            "start_line": 1,
+            "end_line": max(1, len(text.splitlines())),
+            "parser": "rust-syntax-v1",
+            "confidence": "heuristic",
+        }
+    )
+    current_source = module_id
+    for line_number, line in enumerate(text.splitlines(), 1):
+        definition = RUST_DEFINITION_RE.search(line)
+        if definition:
+            rust_kind, name = definition.groups()
+            kind = "function" if rust_kind == "fn" else rust_kind
+            qualified_name = f"{module_name}::{name}"
+            current_source = _symbol_id(path, qualified_name, kind, line_number)
+            symbols.append(
+                {
+                    "id": current_source,
+                    "name": name,
+                    "qualified_name": qualified_name,
+                    "kind": kind,
+                    "path": path,
+                    "start_line": line_number,
+                    "end_line": line_number,
+                    "parser": "rust-syntax-v1",
+                    "confidence": "heuristic",
+                }
+            )
+        imported = RUST_USE_RE.search(line)
+        if imported:
+            edges.append(
+                {
+                    "source_id": module_id,
+                    "target": imported.group(1).strip(),
+                    "kind": "imports",
+                    "path": path,
+                    "line": line_number,
+                    "parser": "rust-syntax-v1",
+                    "extraction_confidence": "heuristic",
+                    "binding_applied": False,
+                    "resolution": {
+                        "status": "unresolved",
+                        "confidence": "unknown",
+                        "target_id": None,
+                    },
+                }
+            )
+        for target in RUST_CALL_RE.findall(line):
+            if target not in RUST_CALL_EXCLUSIONS and not (
+                definition and target == definition.group(2)
+            ):
+                edges.append(
+                    {
+                        "source_id": current_source,
+                        "target": target,
+                        "kind": "calls",
+                        "path": path,
+                        "line": line_number,
+                        "parser": "rust-syntax-v1",
+                        "extraction_confidence": "heuristic",
+                        "binding_applied": False,
+                        "resolution": {
+                            "status": "unresolved",
+                            "confidence": "unknown",
+                            "target_id": None,
+                        },
+                    }
+                )
+    return {
+        "schema": GRAPH_SCHEMA,
+        "language": "rust",
+        "parser": "rust-syntax-v1",
+        "symbols": symbols,
+        "edges": edges,
+        "diagnostics": ["Rust records use deterministic syntax heuristics, not an AST parser."],
+    }
+
+
+def extract_file_graph(path: str, text: str) -> dict[str, Any]:
+    if path.endswith(".py"):
+        return _python_file_graph(path, text)
+    if path.endswith(".rs"):
+        return _rust_file_graph(path, text)
+    return {
+        "schema": GRAPH_SCHEMA,
+        "language": "text",
+        "parser": "none",
+        "symbols": [],
+        "edges": [],
+        "diagnostics": [],
+    }
+
+
+def _resolve_graph(
+    file_graphs: dict[str, dict[str, Any]],
+) -> tuple[int, int, dict[str, int]]:
+    symbols = [symbol for graph in file_graphs.values() for symbol in graph["symbols"]]
+    symbols_by_id = {symbol["id"]: symbol for symbol in symbols}
+    by_qualified: dict[str, list[str]] = {}
+    by_short: dict[str, list[str]] = {}
+    for symbol in symbols:
+        by_qualified.setdefault(symbol["qualified_name"], []).append(symbol["id"])
+        by_short.setdefault(symbol["name"], []).append(symbol["id"])
+    resolution_counts = {
+        status: 0
+        for status in (
+            "exact_qualified",
+            "lexical_scope",
+            "import_binding",
+            "heuristic_unique_short_name",
+            "ambiguous",
+            "unresolved",
+        )
+    }
+    edge_count = 0
+    for graph in file_graphs.values():
+        for edge in graph["edges"]:
+            target = edge["target"]
+            resolution = {
+                "status": "unresolved",
+                "confidence": "unknown",
+                "target_id": None,
+            }
+            exact_candidates = by_qualified.get(target, [])
+            if len(exact_candidates) == 1:
+                resolution = {
+                    "status": (
+                        "import_binding" if edge.get("binding_applied") else "exact_qualified"
+                    ),
+                    "confidence": "strong",
+                    "target_id": exact_candidates[0],
+                }
+            elif len(exact_candidates) > 1:
+                resolution["status"] = "ambiguous"
+                resolution["confidence"] = "ambiguous"
+            elif graph.get("language") == "python" and "." not in target:
+                source = symbols_by_id.get(edge["source_id"])
+                source_qualified = source["qualified_name"] if source else ""
+                parts = source_qualified.split(".")[:-1]
+                lexical_candidates = []
+                for end in range(len(parts), 0, -1):
+                    candidate = ".".join((*parts[:end], target))
+                    matches = by_qualified.get(candidate, [])
+                    if matches:
+                        lexical_candidates = matches
+                        break
+                if len(lexical_candidates) == 1:
+                    resolution = {
+                        "status": "lexical_scope",
+                        "confidence": "strong",
+                        "target_id": lexical_candidates[0],
+                    }
+                elif len(lexical_candidates) > 1:
+                    resolution["status"] = "ambiguous"
+                    resolution["confidence"] = "ambiguous"
+            allow_short_heuristic = graph.get("language") != "python" or "." not in target
+            if resolution["status"] == "unresolved" and allow_short_heuristic:
+                short_target = re.split(r"[.:]+", target)[-1]
+                short_candidates = by_short.get(short_target, [])
+                if len(short_candidates) == 1:
+                    resolution = {
+                        "status": "heuristic_unique_short_name",
+                        "confidence": "probable",
+                        "target_id": short_candidates[0],
+                    }
+                elif len(short_candidates) > 1:
+                    resolution["status"] = "ambiguous"
+                    resolution["confidence"] = "ambiguous"
+            edge["resolution"] = resolution
+            resolution_counts[resolution["status"]] += 1
+            edge_count += 1
+    return len(symbols), edge_count, resolution_counts
+
+
+def _reset_graph_resolution(file_graphs: dict[str, dict[str, Any]]) -> None:
+    for graph in file_graphs.values():
+        for edge in graph["edges"]:
+            edge["resolution"] = {
+                "status": "unresolved",
+                "confidence": "unknown",
+                "target_id": None,
+            }
+
+
+def _valid_graphs(
+    graphs: dict[str, dict[str, Any]],
+    files: list[str],
+    *,
+    symbol_count: int | None = None,
+    expected_edge_count: int | None = None,
+    resolution_metrics: dict[str, int] | None = None,
+) -> bool:
+    if not isinstance(graphs, dict) or set(graphs) != set(files):
+        return False
+    symbols = []
+    observed_edge_count = 0
+    resolution_counts = {
+        status: 0
+        for status in (
+            "exact_qualified",
+            "lexical_scope",
+            "import_binding",
+            "heuristic_unique_short_name",
+            "ambiguous",
+            "unresolved",
+        )
+    }
+    for path, graph in graphs.items():
+        if (
+            not isinstance(graph, dict)
+            or graph.get("schema") != GRAPH_SCHEMA
+            or not isinstance(graph.get("symbols"), list)
+            or not isinstance(graph.get("edges"), list)
+            or not isinstance(graph.get("diagnostics"), list)
+        ):
+            return False
+        for symbol in graph["symbols"]:
+            if (
+                not isinstance(symbol, dict)
+                or symbol.get("path") != path
+                or not isinstance(symbol.get("id"), str)
+                or not isinstance(symbol.get("name"), str)
+                or not isinstance(symbol.get("qualified_name"), str)
+                or not isinstance(symbol.get("start_line"), int)
+                or not isinstance(symbol.get("end_line"), int)
+            ):
+                return False
+            symbols.append(symbol)
+        for edge in graph["edges"]:
+            resolution = edge.get("resolution")
+            if (
+                not isinstance(edge, dict)
+                or edge.get("path") != path
+                or not isinstance(edge.get("source_id"), str)
+                or not isinstance(edge.get("target"), str)
+                or not isinstance(edge.get("kind"), str)
+                or not isinstance(edge.get("line"), int)
+                or not isinstance(edge.get("extraction_confidence"), str)
+                or not isinstance(resolution, dict)
+                or resolution.get("status") not in {
+                    "exact_qualified",
+                    "lexical_scope",
+                    "import_binding",
+                    "heuristic_unique_short_name",
+                    "ambiguous",
+                    "unresolved",
+                }
+                or resolution.get("confidence")
+                not in {"strong", "probable", "ambiguous", "unknown"}
+                or (
+                    resolution.get("target_id") is not None
+                    and not isinstance(resolution.get("target_id"), str)
+                )
+            ):
+                return False
+            status = resolution["status"]
+            resolution_counts[status] = resolution_counts.get(status, 0) + 1
+            observed_edge_count += 1
+    symbol_ids = [symbol["id"] for symbol in symbols]
+    return (
+        len(set(symbol_ids)) == len(symbol_ids)
+        and (symbol_count is None or symbol_count == len(symbols))
+        and (expected_edge_count is None or expected_edge_count == observed_edge_count)
+        and (resolution_metrics is None or resolution_metrics == resolution_counts)
+    )
 
 
 class RedisError(RuntimeError):
@@ -349,6 +988,229 @@ def _json_load(raw: bytes | None) -> Any:
     return json.loads(raw.decode("utf-8"))
 
 
+def _valid_chunk_value(raw: bytes | None) -> bool:
+    try:
+        chunk = _json_load(raw)
+        if not isinstance(chunk, dict):
+            return False
+        vector = chunk.get("vector")
+        if not isinstance(vector, str):
+            return False
+        decode_vector(vector)
+        return (
+            isinstance(chunk.get("id"), str)
+            and isinstance(chunk.get("path"), str)
+            and isinstance(chunk.get("start_line"), int)
+            and isinstance(chunk.get("end_line"), int)
+            and isinstance(chunk.get("text"), str)
+            and isinstance(chunk.get("tokens"), list)
+            and all(isinstance(token, str) for token in chunk["tokens"])
+        )
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        return False
+
+
+def _validate_chunk(key: str, raw: bytes | None, *, owner_path: str) -> bool:
+    if not _valid_chunk_value(raw):
+        return False
+    try:
+        chunk = _json_load(raw)
+        start_line = chunk["start_line"]
+        end_line = chunk["end_line"]
+        text = chunk["text"]
+        expected_id = hashlib.sha256(
+            f"{owner_path}\0{start_line}\0{end_line}\0".encode() + text.encode()
+        ).hexdigest()[:24]
+        stored_vector = decode_vector(chunk["vector"])
+        expected_vector = embedding(text)
+        return (
+            chunk["path"] == owner_path
+            and start_line >= 1
+            and end_line >= start_line
+            and chunk["id"] == expected_id
+            and key.split(":chunk:", 1)[-1].split(":", 1)[0] == expected_id
+            and chunk["tokens"] == sorted(set(tokenize(text)))
+            and all(
+                math.isclose(a, b, rel_tol=1e-6, abs_tol=1e-7)
+                for a, b in zip(stored_vector, expected_vector, strict=True)
+            )
+        )
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        return False
+
+
+def _graph_identity(path: str, file_hash: str) -> str:
+    return hashlib.sha256(
+        f"{GRAPH_SCHEMA}\0{GRAPH_RECORD_SCHEMA}\0{path}\0{file_hash}".encode()
+    ).hexdigest()
+
+
+def _graph_key(prefix: str, path: str, file_hash: str) -> str:
+    return f"{prefix}:graph:{_graph_identity(path, file_hash)}"
+
+
+def _graph_payload(path: str, file_hash: str, graph: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "path": path,
+            "file_hash": file_hash,
+            "graph_schema": GRAPH_SCHEMA,
+            "record_schema": GRAPH_RECORD_SCHEMA,
+            "graph": graph,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _load_graph_record(
+    key: str,
+    raw: bytes | None,
+    *,
+    prefix: str,
+    path: str,
+    file_hash: str,
+) -> dict[str, Any] | None:
+    try:
+        payload = _json_load(raw)
+        if (
+            not isinstance(payload, dict)
+            or key != _graph_key(prefix, path, file_hash)
+            or payload.get("path") != path
+            or payload.get("file_hash") != file_hash
+            or payload.get("graph_schema") != GRAPH_SCHEMA
+            or payload.get("record_schema") != GRAPH_RECORD_SCHEMA
+            or not isinstance(payload.get("graph"), dict)
+            or not _valid_graphs({path: payload["graph"]}, [path])
+        ):
+            return None
+        return payload["graph"]
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        return None
+
+
+def _load_manifest_graphs(
+    client: Any,
+    manifest: dict[str, Any],
+    root: Path,
+    *,
+    resolve: bool = False,
+) -> dict[str, dict[str, Any]]:
+    references = manifest.get("file_graphs")
+    files = manifest.get("files")
+    hashes = manifest.get("file_hashes")
+    if (
+        not isinstance(references, dict)
+        or not isinstance(files, list)
+        or not isinstance(hashes, dict)
+    ):
+        raise TypeError("manifest contains invalid graph references")
+    keys = [references[path] for path in files]
+    values = _mget_batched(client, keys)
+    graphs = {}
+    for path, key, raw in zip(files, keys, values, strict=True):
+        graph = _load_graph_record(
+            key,
+            raw,
+            prefix=namespace(root),
+            path=path,
+            file_hash=hashes[path],
+        )
+        if graph is None:
+            raise ValueError("index contains malformed graph data; re-index required")
+        graphs[path] = graph
+    if resolve:
+        _resolve_graph(graphs)
+    return graphs
+
+
+def _mget_batched(client: Any, keys: list[str]) -> list[Any]:
+    values = []
+    for start in range(0, len(keys), MGET_BATCH_SIZE):
+        batch = keys[start : start + MGET_BATCH_SIZE]
+        response = client.execute("MGET", *batch)
+        if not isinstance(response, list) or len(response) != len(batch):
+            raise ValueError("Redis returned an invalid MGET response")
+        values.extend(response)
+    return values
+
+
+@contextlib.contextmanager
+def _index_lock(client: Any, root: Path):
+    lock_key = f"{namespace(root)}:index-lock"
+    owner = secrets.token_hex(16)
+    acquired = client.execute("SET", lock_key, owner, "NX", "PX", str(INDEX_LOCK_MS))
+    if acquired != "OK":
+        raise ValueError("another Project Memory indexer is active")
+    try:
+        yield owner
+    finally:
+        active_exception = sys.exc_info()[0] is not None
+        try:
+            client.execute(
+                "EVAL",
+                "if redis.call('get',KEYS[1]) == ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end",
+                "1",
+                lock_key,
+                owner,
+            )
+        except Exception:
+            if not active_exception:
+                raise
+
+
+def _refresh_index_lock(client: Any, root: Path, owner: str) -> None:
+    refreshed = client.execute(
+        "EVAL",
+        "if redis.call('get',KEYS[1]) == ARGV[1] then return redis.call('pexpire',KEYS[1],ARGV[2]) else return 0 end",
+        "1",
+        f"{namespace(root)}:index-lock",
+        owner,
+        str(INDEX_LOCK_MS),
+    )
+    if refreshed != 1:
+        raise ValueError("Project Memory index lock ownership was lost")
+
+
+def _activate_generation(client: Any, root: Path, owner: str, manifest_key: str) -> None:
+    activated = client.execute(
+        "EVAL",
+        "if redis.call('get',KEYS[1]) == ARGV[1] then redis.call('set',KEYS[2],ARGV[2]); return 1 else return 0 end",
+        "2",
+        f"{namespace(root)}:index-lock",
+        f"{namespace(root)}:active-generation",
+        owner,
+        manifest_key,
+    )
+    if activated != 1:
+        raise ValueError("Project Memory index lock ownership was lost before activation")
+
+
+def _registered_keys(client: Any, prefix: str) -> tuple[set[str], set[str], set[str]]:
+    try:
+        value = _json_load(client.execute("GET", f"{prefix}:chunk-registry"))
+    except (ValueError, UnicodeError, json.JSONDecodeError):
+        return set(), set(), set()
+    if not isinstance(value, dict):
+        return set(), set(), set()
+    chunks = {
+        key
+        for key in value.get("chunk_keys", [])
+        if isinstance(key, str) and key.startswith(prefix + ":chunk:")
+    }
+    manifests = {
+        key
+        for key in value.get("manifest_keys", [])
+        if isinstance(key, str) and key.startswith(prefix + ":generation:")
+    }
+    graphs = {
+        key
+        for key in value.get("graph_keys", [])
+        if isinstance(key, str) and key.startswith(prefix + ":graph:")
+    }
+    return chunks, manifests, graphs
+
+
 def _execute_many(client: Any, commands: list[tuple[str | bytes, ...]]) -> list[Any]:
     pipeline = getattr(client, "execute_many", None)
     if pipeline is not None:
@@ -370,7 +1232,7 @@ def _active_manifest(client: Any, root: Path) -> dict[str, Any] | None:
 
 
 def _manifest_state(
-    client: RedisClient, root: Path = ROOT
+    client: RedisClient, root: Path = ROOT, *, deep: bool = False
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     files = included_files(root)
     current = {
@@ -401,8 +1263,10 @@ def _manifest_state(
             or manifest["dimensions"] != DIMENSIONS
         ):
             return current, None
+        generation = manifest["generation"]
         if (
-            manifest["generation"] != manifest["fingerprint"]
+            not isinstance(generation, str)
+            or not generation.startswith(manifest["fingerprint"])
             or not isinstance(manifest["file_hashes"], dict)
             or set(manifest["file_hashes"]) != set(manifest["files"])
         ):
@@ -411,26 +1275,101 @@ def _manifest_state(
         if (
             not isinstance(keys, list)
             or len(keys) != manifest["chunk_count"]
+            or len(set(keys)) != len(keys)
             or any(
                 not isinstance(k, str) or not k.startswith(namespace(root) + ":chunk:")
                 for k in keys
             )
         ):
             return current, None
-        if keys:
-            values = client.execute("MGET", *keys)
-            if not isinstance(values, list) or any(value is None for value in values):
+        file_chunks = manifest.get("file_chunks")
+        if file_chunks is not None and (
+            not isinstance(file_chunks, dict)
+            or set(file_chunks) != set(manifest["files"])
+            or any(not isinstance(value, list) for value in file_chunks.values())
+            or [key for path in manifest["files"] for key in file_chunks[path]] != keys
+        ):
+            return current, None
+        bundle_version = manifest.get("bundle_version", "2.0.0")
+        if isinstance(bundle_version, str) and bundle_version.startswith("2.2"):
+            embedded_graphs = manifest.get("file_graphs")
+            if not isinstance(embedded_graphs, dict) or not _valid_graphs(
+                embedded_graphs,
+                manifest["files"],
+                symbol_count=manifest.get("symbol_count"),
+                expected_edge_count=manifest.get("edge_count"),
+                resolution_metrics=manifest.get("resolution_metrics"),
+            ):
                 return current, None
-            for value in values:
-                chunk = _json_load(value)
-                decode_vector(chunk["vector"])
+            if deep:
+                expected_graphs = {
+                    path.relative_to(root).as_posix(): extract_file_graph(
+                        path.relative_to(root).as_posix(), path.read_text(encoding="utf-8")
+                    )
+                    for path in files
+                }
+                _resolve_graph(expected_graphs)
+                if expected_graphs != embedded_graphs:
+                    return current, None
+        elif isinstance(bundle_version, str) and bundle_version.startswith("2.3"):
+            graph_references = manifest.get("file_graphs")
+            if (
+                not isinstance(graph_references, dict)
+                or set(graph_references) != set(manifest["files"])
+                or any(
+                    not isinstance(key, str)
+                    or key
+                    != _graph_key(namespace(root), path, manifest["file_hashes"][path])
+                    for path, key in graph_references.items()
+                )
+                or not isinstance(manifest.get("symbol_count"), int)
+                or not isinstance(manifest.get("edge_count"), int)
+                or not isinstance(manifest.get("resolution_metrics"), dict)
+            ):
+                return current, None
+            if deep:
+                stored_graphs = _load_manifest_graphs(client, manifest, root)
+                expected_graphs = {
+                    path.relative_to(root).as_posix(): extract_file_graph(
+                        path.relative_to(root).as_posix(), path.read_text(encoding="utf-8")
+                    )
+                    for path in files
+                }
+                if expected_graphs != stored_graphs:
+                    return current, None
+                _resolve_graph(stored_graphs)
+                if not _valid_graphs(
+                    stored_graphs,
+                    manifest["files"],
+                    symbol_count=manifest["symbol_count"],
+                    expected_edge_count=manifest["edge_count"],
+                    resolution_metrics=manifest["resolution_metrics"],
+                ):
+                    return current, None
+        if deep and keys:
+            values = _mget_batched(client, keys)
+            if any(value is None for value in values):
+                return current, None
+            owner_by_key = (
+                {
+                    key: owner
+                    for owner, owned_keys in file_chunks.items()
+                    for key in owned_keys
+                }
+                if isinstance(file_chunks, dict)
+                else {}
+            )
+            for key, value in zip(keys, values, strict=True):
+                owner = owner_by_key.get(key)
+                if owner is None or not _validate_chunk(key, value, owner_path=owner):
+                    return current, None
         return current, manifest
     except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
         return current, None
 
 
 def status(client: RedisClient, root: Path = ROOT) -> tuple[dict[str, Any], bool]:
-    current, manifest = _manifest_state(client, root)
+    current, manifest = _manifest_state(client, root, deep=False)
     fresh = bool(
         manifest
         and manifest["fingerprint"] == current["fingerprint"]
@@ -446,53 +1385,247 @@ def status(client: RedisClient, root: Path = ROOT) -> tuple[dict[str, Any], bool
     }, fresh
 
 
-def build_index(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
+def validate(client: RedisClient, root: Path = ROOT, *, deep: bool = False) -> tuple[dict[str, Any], bool]:
+    current, manifest = _manifest_state(client, root, deep=deep)
+    fresh = bool(
+        manifest
+        and manifest["fingerprint"] == current["fingerprint"]
+        and manifest["files"] == current["files"]
+    )
+    return {
+        "status": "fresh" if fresh else ("stale" if manifest else "missing_or_invalid"),
+        "fresh": fresh,
+        "namespace": namespace(root),
+        "schema": SCHEMA,
+        "current_fingerprint": current["fingerprint"],
+        "manifest": manifest,
+        "validation": "passed" if fresh else "failed",
+        "deep": deep,
+    }, fresh
+
+
+def _build_index_locked(
+    client: RedisClient, root: Path, *, build_id: str, repair_deep: bool
+) -> dict[str, Any]:
+    started = time.monotonic()
     files = included_files(root)
-    all_chunks: list[Chunk] = []
-    file_hashes: dict[str, str] = {}
-    for path in files:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError(f"indexed file is not UTF-8: {path.relative_to(root)}") from exc
-        relative = path.relative_to(root).as_posix()
-        file_hashes[relative] = file_fingerprint(path)
-        all_chunks.extend(split_chunks(relative, text))
     prefix = namespace(root)
     fingerprint = corpus_fingerprint(files, root)
-    generation = fingerprint
+    generation = f"{fingerprint}:{BUNDLE_VERSION}:{build_id[:16]}"
     manifest_key = f"{prefix}:generation:{generation}:manifest"
-    active_key = f"{prefix}:active-generation"
     old_manifest: dict[str, Any] | None = None
     with contextlib.suppress(ValueError, UnicodeError, json.JSONDecodeError):
         old_manifest = _active_manifest(client, root)
-    chunk_keys = []
-    writes: list[tuple[str | bytes, ...]] = []
-    for chunk in all_chunks:
-        key = f"{prefix}:chunk:{chunk.chunk_id}"
-        payload = {
-            "id": chunk.chunk_id,
-            "path": chunk.path,
-            "start_line": chunk.start_line,
-            "end_line": chunk.end_line,
-            "text": chunk.text,
-            "tokens": sorted(set(tokenize(chunk.text))),
-            "vector": encode_vector(embedding(chunk.text)),
+    registered_chunks, registered_manifests, registered_graphs = _registered_keys(client, prefix)
+    old_hashes = old_manifest.get("file_hashes", {}) if isinstance(old_manifest, dict) else {}
+    old_file_chunks = old_manifest.get("file_chunks", {}) if isinstance(old_manifest, dict) else {}
+    old_file_graph_refs = old_manifest.get("file_graphs", {}) if isinstance(old_manifest, dict) else {}
+    old_file_graphs: dict[str, dict[str, Any]] = {}
+    if isinstance(old_file_graph_refs, dict):
+        embedded = {
+            path: graph
+            for path, graph in old_file_graph_refs.items()
+            if isinstance(path, str) and isinstance(graph, dict)
         }
-        # Content-addressed chunk keys make unchanged chunks reusable across generations.
-        if client.execute("GET", key) is None:
-            writes.append(
-                ("SET", key, json.dumps(payload, sort_keys=True, separators=(",", ":")))
+        old_file_graphs.update(embedded)
+        referenced = [
+            (path, key)
+            for path, key in old_file_graph_refs.items()
+            if isinstance(path, str) and isinstance(key, str)
+        ]
+        referenced_values = _mget_batched(client, [key for _, key in referenced])
+        for (path, key), raw in zip(referenced, referenced_values, strict=True):
+            file_hash = old_hashes.get(path)
+            if not isinstance(file_hash, str):
+                continue
+            graph = _load_graph_record(
+                key, raw, prefix=prefix, path=path, file_hash=file_hash
             )
-        chunk_keys.append(key)
+            if graph is not None:
+                old_file_graphs[path] = graph
+    can_reuse_files = (
+        isinstance(old_hashes, dict)
+        and isinstance(old_file_chunks, dict)
+        and set(old_hashes) == set(old_file_chunks)
+    )
+    file_hashes = {
+        path.relative_to(root).as_posix(): file_fingerprint(path) for path in files
+    }
+    current_names = set(file_hashes)
+    old_names = set(old_hashes) if isinstance(old_hashes, dict) else set()
+    unchanged = {
+        name
+        for name, digest in file_hashes.items()
+        if can_reuse_files and old_hashes.get(name) == digest
+    }
+    new = current_names - old_names
+    changed = current_names & old_names - unchanged
+    deleted = old_names - current_names
+
+    reusable_keys = [key for name in sorted(unchanged) for key in old_file_chunks[name]]
+    reusable_values = _mget_batched(client, reusable_keys)
+    reusable_owners = {
+        key: owner for owner in unchanged for key in old_file_chunks[owner]
+    }
+    invalid_reusable = {
+        key
+        for key, value in zip(reusable_keys, reusable_values, strict=True)
+        if not (
+            _validate_chunk(key, value, owner_path=reusable_owners[key])
+            if repair_deep
+            else _valid_chunk_value(value)
+        )
+    }
+    repair = {
+        name for name in unchanged if invalid_reusable.intersection(old_file_chunks[name])
+    }
+    unchanged -= repair
+    changed |= repair
+    _refresh_index_lock(client, root, build_id)
+
+    file_chunks: dict[str, list[str]] = {}
+    file_graphs: dict[str, dict[str, Any]] = {}
+    generated_payloads: dict[str, str] = {}
+    generated_count = 0
+    graph_generated_files = 0
+    graph_repaired_files = 0
+    graph_force_write_paths: set[str] = set()
+    for path in files:
+        relative = path.relative_to(root).as_posix()
+        text: str | None = None
+        expected_graph: dict[str, Any] | None = None
+        chunks_reusable = relative in unchanged
+        graph_reusable = (
+            old_hashes.get(relative) == file_hashes[relative]
+            and isinstance(old_file_graphs.get(relative), dict)
+            and old_file_graphs[relative].get("schema") == GRAPH_SCHEMA
+        )
+        if graph_reusable and repair_deep:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"indexed file is not UTF-8: {relative}") from exc
+            expected_graph = extract_file_graph(relative, text)
+            _reset_graph_resolution({relative: expected_graph})
+            if old_file_graphs[relative] != expected_graph:
+                graph_reusable = False
+                graph_repaired_files += 1
+                graph_force_write_paths.add(relative)
+        if chunks_reusable:
+            file_chunks[relative] = list(old_file_chunks[relative])
+        if graph_reusable:
+            file_graphs[relative] = old_file_graphs[relative]
+        if chunks_reusable and graph_reusable:
+            continue
+        if text is None:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"indexed file is not UTF-8: {relative}") from exc
+        if not chunks_reusable:
+            keys = []
+            for chunk in split_chunks(relative, text):
+                key = f"{prefix}:chunk:{chunk.chunk_id}:{build_id[:16]}"
+                payload = {
+                    "id": chunk.chunk_id,
+                    "path": chunk.path,
+                    "start_line": chunk.start_line,
+                    "end_line": chunk.end_line,
+                    "text": chunk.text,
+                    "tokens": sorted(set(tokenize(chunk.text))),
+                    "vector": encode_vector(embedding(chunk.text)),
+                }
+                generated_payloads[key] = json.dumps(
+                    payload, sort_keys=True, separators=(",", ":")
+                )
+                keys.append(key)
+                generated_count += 1
+            file_chunks[relative] = keys
+        if not graph_reusable:
+            file_graphs[relative] = expected_graph or extract_file_graph(relative, text)
+            graph_generated_files += 1
+
+    _reset_graph_resolution(file_graphs)
+    resolved_graphs = json.loads(json.dumps(file_graphs))
+    symbol_count, edge_count, resolution_metrics = _resolve_graph(resolved_graphs)
+
+    file_graph_references = {
+        path: _graph_key(prefix, path, file_hashes[path]) for path in file_hashes
+    }
+    graph_payloads = {
+        file_graph_references[path]: _graph_payload(path, file_hashes[path], file_graphs[path])
+        for path in file_hashes
+    }
+
+    chunk_keys = [key for path in file_hashes for key in file_chunks[path]]
+    writes: list[tuple[str | bytes, ...]] = []
+    generated_keys = list(generated_payloads)
+    existing = _mget_batched(client, generated_keys)
+    for key, value in zip(generated_keys, existing, strict=True):
+        if not _valid_chunk_value(value):
+            writes.append(("SET", key, generated_payloads[key]))
+    graph_keys = list(file_graph_references.values())
+    existing_graph_values = _mget_batched(client, graph_keys)
+    graph_write_count = 0
+    for path, key, value in zip(file_hashes, graph_keys, existing_graph_values, strict=True):
+        if path in graph_force_write_paths or (
+            _load_graph_record(
+                key,
+                value,
+                prefix=prefix,
+                path=path,
+                file_hash=file_hashes[path],
+            )
+            is None
+        ):
+            writes.append(("SET", key, graph_payloads[key]))
+            graph_write_count += 1
+    old_chunk_keys = set(old_manifest.get("chunk_keys", [])) if old_manifest else set()
+    deleted_chunk_keys = (old_chunk_keys | registered_chunks) - set(chunk_keys)
+    old_graph_keys = {
+        key for key in old_file_graph_refs.values() if isinstance(key, str)
+    } if isinstance(old_file_graph_refs, dict) else set()
+    deleted_graph_keys = (old_graph_keys | registered_graphs) - set(graph_keys)
+    reused_chunk_count = len(chunk_keys) - generated_count
+    metrics = {
+        "files": {
+            "total": len(file_hashes),
+            "new": len(new),
+            "changed": len(changed),
+            "unchanged": len(unchanged),
+            "deleted": len(deleted),
+        },
+        "chunks": {
+            "total": len(chunk_keys),
+            "generated": generated_count,
+            "reused": reused_chunk_count,
+            "deleted": len(deleted_chunk_keys),
+        },
+        "graph": {
+            "symbols": symbol_count,
+            "edges": edge_count,
+            "resolution": resolution_metrics,
+            "generated_files": graph_generated_files,
+            "repaired_files": graph_repaired_files,
+            "reused_files": len(file_graphs) - graph_generated_files,
+            "written_records": graph_write_count,
+            "deleted_records": len(deleted_graph_keys),
+        },
+    }
     manifest = {
         "schema": SCHEMA,
+        "bundle_version": BUNDLE_VERSION,
         "namespace": prefix,
         "embedding_id": EMBEDDING_ID,
         "dimensions": DIMENSIONS,
         "generation": generation,
         "files": [path.relative_to(root).as_posix() for path in files],
         "file_hashes": file_hashes,
+        "file_chunks": file_chunks,
+        "file_graphs": file_graph_references,
+        "symbol_count": symbol_count,
+        "edge_count": edge_count,
+        "resolution_metrics": resolution_metrics,
         "chunk_count": len(chunk_keys),
         "fingerprint": fingerprint,
         "chunk_keys": chunk_keys,
@@ -500,13 +1633,16 @@ def build_index(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
     writes.append(
         ("SET", manifest_key, json.dumps(manifest, sort_keys=True, separators=(",", ":")))
     )
-    _execute_many(client, writes)
-
-    # Register the staged generation before the commit point so an interrupted build is cleanable.
-    staged_chunk_keys = set(chunk_keys)
-    staged_manifest_keys = {manifest_key}
+    # Register every old and staged key before any staged write can create an orphan.
+    staged_chunk_keys = registered_chunks | set(chunk_keys)
+    staged_graph_keys = registered_graphs | set(graph_keys)
+    staged_manifest_keys = registered_manifests | {manifest_key}
     if old_manifest:
         staged_chunk_keys.update(old_manifest.get("chunk_keys", []))
+        if isinstance(old_file_graph_refs, dict):
+            staged_graph_keys.update(
+                key for key in old_file_graph_refs.values() if isinstance(key, str)
+            )
         old_generation = old_manifest.get("generation")
         if isinstance(old_generation, str):
             staged_manifest_keys.add(f"{prefix}:generation:{old_generation}:manifest")
@@ -516,31 +1652,93 @@ def build_index(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
         json.dumps(
             {
                 "chunk_keys": sorted(staged_chunk_keys),
+                "graph_keys": sorted(staged_graph_keys),
                 "manifest_keys": sorted(staged_manifest_keys),
             },
             separators=(",", ":"),
         ),
     )
+    _refresh_index_lock(client, root, build_id)
+    _execute_many(client, writes)
+    staged_values = _mget_batched(client, chunk_keys)
+    if any(
+        not _valid_chunk_value(value) for value in staged_values
+    ):
+        raise ValueError("staged generation failed chunk validation")
+    staged_graph_values = _mget_batched(client, graph_keys)
+    for path, key, raw in zip(file_hashes, graph_keys, staged_graph_values, strict=True):
+        if (
+            _load_graph_record(
+                key,
+                raw,
+                prefix=prefix,
+                path=path,
+                file_hash=file_hashes[path],
+            )
+            is None
+        ):
+            raise ValueError("staged generation failed graph validation")
+    write_finished = time.monotonic()
+
+    final_files = included_files(root)
+    final_names = [path.relative_to(root).as_posix() for path in final_files]
+    final_fingerprint = corpus_fingerprint(final_files, root)
+    if final_names != manifest["files"] or final_fingerprint != fingerprint:
+        raise ValueError("repository changed during indexing; staged generation was not activated")
+    _refresh_index_lock(client, root, build_id)
 
     # Commit point: readers continue using the old complete generation until this SET succeeds.
-    client.execute("SET", active_key, manifest_key)
+    activation_started = time.monotonic()
+    _activate_generation(client, root, build_id, manifest_key)
+    activation_finished = time.monotonic()
+
+    # Garbage collection happens only after the new generation is active.
+    garbage_collection_started = time.monotonic()
+    obsolete = sorted(deleted_chunk_keys)
+    obsolete_graphs = sorted(deleted_graph_keys)
+    obsolete_manifests = sorted(staged_manifest_keys - {manifest_key})
+    if obsolete:
+        client.execute("DEL", *obsolete)
+    if obsolete_graphs:
+        client.execute("DEL", *obsolete_graphs)
+    if obsolete_manifests:
+        client.execute("DEL", *obsolete_manifests)
+    garbage_collection_finished = time.monotonic()
+
+    # Shrink the registry only after obsolete keys have actually been removed.
     client.execute(
         "SET",
         f"{prefix}:chunk-registry",
         json.dumps(
-            {"chunk_keys": chunk_keys, "manifest_keys": [manifest_key]}, separators=(",", ":")
+            {
+                "chunk_keys": chunk_keys,
+                "graph_keys": graph_keys,
+                "manifest_keys": [manifest_key],
+            },
+            separators=(",", ":"),
         ),
     )
+    finished = time.monotonic()
+    metrics.update(
+        {
+            "indexing_ms": round((write_finished - started) * 1000),
+            "activation_ms": round((activation_finished - activation_started) * 1000),
+            "garbage_collection_ms": round(
+                (garbage_collection_finished - garbage_collection_started) * 1000
+            ),
+            "total_ms": round((finished - started) * 1000),
+        }
+    )
+    return {"manifest": manifest, "metrics": metrics}
 
-    # Garbage collection happens only after the new generation is active.
-    if old_manifest and old_manifest.get("generation") != generation:
-        obsolete = sorted(set(old_manifest.get("chunk_keys", [])) - set(chunk_keys))
-        old_generation = old_manifest.get("generation")
-        if obsolete:
-            client.execute("DEL", *obsolete)
-        if isinstance(old_generation, str):
-            client.execute("DEL", f"{prefix}:generation:{old_generation}:manifest")
-    return manifest
+
+def build_index(
+    client: RedisClient, root: Path = ROOT, *, repair_deep: bool = False
+) -> dict[str, Any]:
+    with _index_lock(client, root) as build_id:
+        return _build_index_locked(
+            client, root, build_id=build_id, repair_deep=repair_deep
+        )
 
 
 def search(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> dict[str, Any]:
@@ -548,9 +1746,13 @@ def search(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> di
     if not fresh:
         raise ValueError(f"index is {state['status']}; run index before search")
     manifest = state["manifest"]
-    values = client.execute("MGET", *manifest["chunk_keys"])
+    values = _mget_batched(client, manifest["chunk_keys"])
     qvec = embedding(query)
     qtokens = set(tokenize(query))
+    query_normalized = query.strip().lower()
+    symbols_by_path: dict[str, list[dict[str, Any]]] = {}
+    for path, graph in _load_manifest_graphs(client, manifest, root).items():
+        symbols_by_path[path] = graph.get("symbols", [])
     results = []
     for raw in values:
         try:
@@ -559,7 +1761,19 @@ def search(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> di
             cosine = sum(a * b for a, b in zip(qvec, vector, strict=True))
             tokens = set(chunk["tokens"])
             lexical = len(qtokens & tokens) / len(qtokens) if qtokens else 0.0
-            score = 0.82 * cosine + 0.18 * lexical
+            matching_symbols = [
+                symbol
+                for symbol in symbols_by_path.get(chunk["path"], [])
+                if symbol["start_line"] <= chunk["end_line"]
+                and symbol["end_line"] >= chunk["start_line"]
+                and (
+                    symbol["name"].lower() == query_normalized
+                    or symbol["qualified_name"].lower() == query_normalized
+                    or symbol["name"].lower() in qtokens
+                )
+            ]
+            symbol_boost = 0.2 if matching_symbols else 0.0
+            score = 0.72 * cosine + 0.18 * lexical + symbol_boost
             results.append(
                 {
                     "path": chunk["path"],
@@ -568,6 +1782,21 @@ def search(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> di
                     "score": round(score, 6),
                     "pointer": f"{chunk['path']}:{chunk['start_line']}-{chunk['end_line']}",
                     "text": chunk["text"],
+                    "matches": [
+                        {
+                            "type": "symbol",
+                            "name": symbol["qualified_name"],
+                            "kind": symbol["kind"],
+                            "parser": symbol["parser"],
+                            "confidence": symbol["confidence"],
+                        }
+                        for symbol in matching_symbols
+                    ],
+                    "explanation": {
+                        "cosine": round(cosine, 6),
+                        "lexical": round(lexical, 6),
+                        "symbol_boost": symbol_boost,
+                    },
                 }
             )
         except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
@@ -576,7 +1805,140 @@ def search(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> di
     return {"query": query, "fresh": True, "results": results[:limit]}
 
 
-def clear(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
+def symbols(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> dict[str, Any]:
+    state, fresh = status(client, root)
+    if not fresh:
+        raise ValueError(f"index is {state['status']}; run index before symbol lookup")
+    normalized = query.strip().lower()
+    results = []
+    graphs = _load_manifest_graphs(client, state["manifest"], root)
+    for graph in graphs.values():
+        for symbol in graph.get("symbols", []):
+            name = symbol["name"].lower()
+            qualified = symbol["qualified_name"].lower()
+            rank = 0 if normalized in {name, qualified} else (1 if normalized in qualified else 2)
+            if normalized in name or normalized in qualified:
+                results.append(
+                    {
+                        **symbol,
+                        "pointer": f"{symbol['path']}:{symbol['start_line']}-{symbol['end_line']}",
+                        "explanation": "exact symbol" if rank == 0 else "symbol substring",
+                        "_rank": rank,
+                    }
+                )
+    results.sort(key=lambda item: (item["_rank"], item["qualified_name"], item["path"]))
+    for result in results:
+        result.pop("_rank")
+    return {"query": query, "fresh": True, "results": results[:limit]}
+
+
+def impact(client: RedisClient, query: str, limit: int, root: Path = ROOT) -> dict[str, Any]:
+    state, fresh = status(client, root)
+    if not fresh:
+        raise ValueError(f"index is {state['status']}; run index before impact lookup")
+    manifest = state["manifest"]
+    graphs = _load_manifest_graphs(client, manifest, root, resolve=True)
+    all_symbols = [
+        symbol
+        for graph in graphs.values()
+        for symbol in graph.get("symbols", [])
+    ]
+    normalized = query.strip().lower()
+    targets = {
+        symbol["id"]
+        for symbol in all_symbols
+        if normalized in {symbol["name"].lower(), symbol["qualified_name"].lower()}
+    }
+    symbols_by_id = {symbol["id"]: symbol for symbol in all_symbols}
+    results = []
+    for graph in graphs.values():
+        for edge in graph.get("edges", []):
+            edge_target = edge.get("target", "").lower()
+            short_target = re.split(r"[.:]+", edge_target)[-1]
+            resolution = edge["resolution"]
+            resolved_match = resolution.get("target_id") in targets
+            name_match = normalized in {edge_target, short_target}
+            if not resolved_match and not name_match:
+                continue
+            source = symbols_by_id.get(edge["source_id"])
+            if source:
+                results.append(
+                    {
+                        "source": source,
+                        "edge": edge,
+                        "pointer": f"{edge['path']}:{edge['line']}",
+                        "explanation": (
+                            f"{edge['kind']} edge via {edge['parser']} "
+                            f"(extraction={edge['extraction_confidence']}; "
+                            f"resolution={resolution['status']}/{resolution['confidence']}; "
+                            f"{'target id match' if resolved_match else 'exact target name'})"
+                        ),
+                    }
+                )
+    results.sort(key=lambda item: (item["edge"]["kind"], item["pointer"]))
+    distinct_results = []
+    seen_sources = set()
+    for result in results:
+        source_id = result["source"]["id"]
+        if source_id in seen_sources:
+            continue
+        seen_sources.add(source_id)
+        distinct_results.append(result)
+    return {
+        "query": query,
+        "fresh": True,
+        "target_ids": sorted(targets),
+        "results": distinct_results[:limit],
+    }
+
+
+def evaluate(client: RedisClient, limit: int, root: Path = ROOT) -> dict[str, Any]:
+    cases = project_config(root).get("evaluation_queries", [])
+    if not isinstance(cases, list) or not cases:
+        raise ValueError(f"{CONFIG_FILE} evaluation_queries must be a non-empty list")
+    outcomes = []
+    for case in cases:
+        if (
+            not isinstance(case, dict)
+            or case.get("mode") not in {"search", "symbols", "impact"}
+            or not isinstance(case.get("query"), str)
+            or not isinstance(case.get("expected_paths"), list)
+            or not all(isinstance(path, str) for path in case["expected_paths"])
+        ):
+            raise ValueError(f"{CONFIG_FILE} contains an invalid evaluation query")
+        mode = case["mode"]
+        response = {
+            "search": search,
+            "symbols": symbols,
+            "impact": impact,
+        }[mode](client, case["query"], limit, root)
+        if mode in {"search", "symbols"}:
+            returned_paths = {item["path"] for item in response["results"]}
+        else:
+            returned_paths = {item["source"]["path"] for item in response["results"]}
+        missing = sorted(set(case["expected_paths"]) - returned_paths)
+        outcomes.append(
+            {
+                "mode": mode,
+                "query": case["query"],
+                "expected_paths": case["expected_paths"],
+                "returned_paths": sorted(returned_paths),
+                "missing_paths": missing,
+                "passed": not missing,
+            }
+        )
+    passed = sum(outcome["passed"] for outcome in outcomes)
+    return {
+        "status": "passed" if passed == len(outcomes) else "failed",
+        "cases": len(outcomes),
+        "passed": passed,
+        "recall_at_limit": passed / len(outcomes),
+        "limit": limit,
+        "outcomes": outcomes,
+    }
+
+
+def _clear_locked(client: RedisClient, root: Path) -> dict[str, Any]:
     prefix = namespace(root)
     registry_key = f"{prefix}:chunk-registry"
     active_key = f"{prefix}:active-generation"
@@ -597,6 +1959,15 @@ def clear(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
                 if isinstance(candidate, str) and candidate.startswith(prefix + ":chunk:")
             )
             if isinstance(value, dict):
+                graph_candidates = list(value.get("graph_keys", []))
+                file_graphs = value.get("file_graphs", {})
+                if isinstance(file_graphs, dict):
+                    graph_candidates.extend(file_graphs.values())
+                keys.extend(
+                    candidate
+                    for candidate in graph_candidates
+                    if isinstance(candidate, str) and candidate.startswith(prefix + ":graph:")
+                )
                 keys.extend(
                     candidate
                     for candidate in value.get("manifest_keys", [])
@@ -608,6 +1979,11 @@ def clear(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
     unique = sorted(set(keys))
     deleted = client.execute("DEL", *unique)
     return {"status": "cleared", "namespace": prefix, "deleted_keys": deleted}
+
+
+def clear(client: RedisClient, root: Path = ROOT) -> dict[str, Any]:
+    with _index_lock(client, root):
+        return _clear_locked(client, root)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -628,10 +2004,28 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="reuse unchanged content-addressed chunks (the v2 default)",
     )
-    commands.add_parser("validate")
+    index_parser.add_argument(
+        "--repair-deep",
+        action="store_true",
+        help="semantically validate reused chunks and regenerate affected files",
+    )
+    validate_parser = commands.add_parser("validate")
+    validate_parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="verify every active chunk and encoded vector",
+    )
     search_parser = commands.add_parser("search")
     search_parser.add_argument("query")
     search_parser.add_argument("--limit", type=int, default=5)
+    symbols_parser = commands.add_parser("symbols")
+    symbols_parser.add_argument("query")
+    symbols_parser.add_argument("--limit", type=int, default=20)
+    impact_parser = commands.add_parser("impact")
+    impact_parser.add_argument("query")
+    impact_parser.add_argument("--limit", type=int, default=20)
+    evaluate_parser = commands.add_parser("evaluate")
+    evaluate_parser.add_argument("--limit", type=int, default=10)
     commands.add_parser("clear")
     return result
 
@@ -641,21 +2035,34 @@ def main(argv: list[str] | None = None) -> int:
     try:
         client = RedisClient(args.url)
         if args.command in {"status", "validate"}:
-            output, fresh = status(client)
-            if args.command == "validate":
-                output = {**output, "validation": "passed" if fresh else "failed"}
+            output, fresh = (
+                validate(client, deep=args.deep) if args.command == "validate" else status(client)
+            )
             print(json.dumps(output, sort_keys=True))
             return 0 if fresh else 2
         if args.command == "index":
             print(
-                json.dumps({"status": "indexed", "manifest": build_index(client)}, sort_keys=True)
+                json.dumps(
+                    {
+                        "status": "indexed",
+                        **build_index(client, repair_deep=args.repair_deep),
+                    },
+                    sort_keys=True,
+                )
             )
             return 0
-        if args.command == "search":
+        if args.command in {"search", "symbols", "impact"}:
             if args.limit < 1 or args.limit > 100:
                 raise ValueError("--limit must be between 1 and 100")
-            print(json.dumps(search(client, args.query, args.limit), sort_keys=True))
+            lookup = {"search": search, "symbols": symbols, "impact": impact}[args.command]
+            print(json.dumps(lookup(client, args.query, args.limit), sort_keys=True))
             return 0
+        if args.command == "evaluate":
+            if args.limit < 1 or args.limit > 100:
+                raise ValueError("--limit must be between 1 and 100")
+            output = evaluate(client, args.limit)
+            print(json.dumps(output, sort_keys=True))
+            return 0 if output["status"] == "passed" else 2
         print(json.dumps(clear(client), sort_keys=True))
         return 0
     except (RedisError, TypeError, ValueError) as exc:
