@@ -169,7 +169,7 @@ Not a new consensus phase—**UX only**.
 | U3 | Hardware / Marina path (optional) | Deferred |
 | **U4** | Public hosting security gate | **Implemented** — [U4_PUBLIC_HOSTING.md](./U4_PUBLIC_HOSTING.md); public read-only + Bearer mutations; deploy sketches in `deploy/` |
 | **U5** | labd Axum/Hyper platform | **Implemented** — [U5_AXUM.md](./U5_AXUM.md); default `rgbmvp serve`; `LABD_HTTP=legacy` retained through first soak as rollback insurance; does **not** reopen U4 or P3 |
-| **T1** | Bounded public demo swaps | **In tree, OFF by default, never deployed** — [TESTNET_PUBLIC_SWAPS.md](./TESTNET_PUBLIC_SWAPS.md). Adds ONE public mutation (`POST /v1/demo/swap`) behind Turnstile + quotas + fee budget + custody preflight. Deliberately narrows ADR-U4: the service holds spendable **testnet** keys when enabled. First live swap proven **operator-side / CLI** — [T1_FIRST_SWAP.md](./T1_FIRST_SWAP.md); the automated `POST /v1/demo/swap` driver has still not completed one. |
+| **T1** | Bounded public demo swaps | **In tree, OFF by default, never deployed** — [TESTNET_PUBLIC_SWAPS.md](./TESTNET_PUBLIC_SWAPS.md). Adds ONE public mutation (`POST /v1/demo/swap`) behind Turnstile + quotas + fee budget + custody preflight. Deliberately narrows ADR-U4: the service holds spendable **testnet** keys when enabled. Two live swaps proven — [T1_FIRST_SWAP.md](./T1_FIRST_SWAP.md) — including one driven end-to-end by the automated `POST /v1/demo/swap` orchestrator. Turnstile, the refund watcher and the CSV refund path remain unexercised live. |
 
 **UI refresh (2026-07-24):** implemented and validated across `U0`–`U2`,
 `U4`, `R4`–`R6`, `S3`, and `C3`; presentation only, with no `/v1` or protocol

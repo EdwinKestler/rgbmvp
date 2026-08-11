@@ -1,4 +1,19 @@
-# T1 — first live swap (evidence)
+# T1 — live swap evidence
+
+Two live swaps, both complete:
+
+| # | Session | Path | Result |
+|---|---|---|---|
+| 1 | `live-20260810-2325` | Operator CLI, step by step | ✅ `done` — §1–§5 |
+| 2 | `demo-1786427249-0` | **Automated `POST /v1/demo/swap` driver** | ✅ `done` — §6 |
+
+Run 2 is the more significant: it is the first swap completed by the **W1
+orchestrator** with no human in the loop, and it exercised failure paths that a
+step-by-step run cannot reach.
+
+---
+
+# Run 1 — first live swap (operator, CLI)
 
 **Date:** 2026-08-10 · **Session:** `live-20260810-2325` · **Operator-run, CLI**
 **Result:** ✅ complete — phase `done`, first attempt, no retries, no stuck funds.
@@ -96,7 +111,7 @@ bleeds the scarce BTC wallet.
 
 ---
 
-## 5. What this run does and does not prove
+## 5. What run 1 does and does not prove
 
 **Proven**
 - The value-only HTLC swap completes end to end on live testnet.
@@ -104,12 +119,80 @@ bleeds the scarce BTC wallet.
 - The fee defaults confirm comfortably.
 - The demo-exit drain is real, and the sweep recovers it.
 
-**Still unproven**
-- The **W1 automated driver** — this run was CLI, step by step. The
-  `POST /v1/demo/swap` orchestration path has still never completed a swap.
-- Turnstile in front of a real request.
-- The **W5 refund watcher** and CSV refund path.
-- Behaviour under a slow-block stretch, and W4 budget persistence across a
-  restart *during* a live swap.
+**Not proven by run 1** — the W1 automated driver (this was CLI, step by step),
+Turnstile, the W5 refund watcher, or the CSV refund path. Run 2 closes the first
+of those.
 
-A public run needs at minimum the automated driver exercised end to end.
+---
+
+# Run 2 — automated driver (`POST /v1/demo/swap`)
+
+**Date:** 2026-08-10 · **Session:** `demo-1786427249-0`
+**Result:** ✅ complete — phase `done`, **no human in the loop after the POST**.
+
+Local labd with `LABD_DEMO_SWAPS=1`. The request body was `{}` — no amounts, no
+wallets, no fees; every protocol parameter came from the server.
+
+## 6. Transactions
+
+| Step | Chain | Txid |
+|---|---|---|
+| Fund HTLC | BTC | [`446653ca…9944`](https://blockstream.info/testnet/tx/446653cab1198d7a3172e63dd9f2d33a614ea3da5271c906f69d4d7d7f6e9944) |
+| Fund HTLC | Liquid | [`ab04251a…6af2`](https://blockstream.info/liquidtestnet/tx/ab04251a61ec3480133af431db109d8ef364dd75fd66c9361ccd4315c5786af2) — block 2,567,850 |
+| Claim (preimage) | Liquid | [`d5ad8453…4470`](https://blockstream.info/liquidtestnet/tx/d5ad84533afc9396479210fb15861edbeee4d74ff24c4a277a577d7d02734470) — block 2,567,851 |
+| Claim from witness | BTC | [`a11c0880…d24f`](https://blockstream.info/testnet/tx/a11c0880f019f2547ec63040dbeea330052beaa7549e46f95edcb63db691d24f) |
+
+## 7. The retry loop earned its keep — twice
+
+The driver hit two genuine failures and recovered from both unattended:
+
+```
+demo: swap demo-1786427249-0 step claim_lq  pending/failed: no UTXO ≥ 999 on tex1q2tun6w…
+demo: swap demo-1786427249-0 step claim_btc pending/failed: HTTP 404 for
+      .../liquidtestnet/api/tx/d5ad8453…/hex
+```
+
+1. **`claim_lq`** — the Liquid funding tx had not confirmed yet.
+2. **`claim_btc`** — a *propagation race*: the Liquid claim had broadcast, but was
+   not yet fetchable from the Esplora API, so witness extraction 404'd.
+
+The second is the more valuable finding. It is invisible in a step-by-step run
+where a human naturally waits between commands, and it is exactly the class of
+failure the retry loop exists for. Both resolved on the next 60 s poll.
+
+## 8. Governor behaviour observed live
+
+| Moment | `in_flight` | `reserved` | `spent` | `remaining_est` |
+|---|---|---|---|---|
+| Mid-swap | 1 | 1,300 | 0 | 20 |
+| After completion | 0 | 0 | 1,300 | 20 |
+
+The W2 worst-case reservation converted cleanly into actual spend, and the
+in-flight slot released. **W4 persistence confirmed live**: after completion
+`.rgbmvp/demo_budget.json` held `fee_spent_sats: 1300`, so the ceiling now
+survives a restart.
+
+**Preimage redaction held throughout.** While the swap was mid-flight the public
+`GET /v1/swap/{id}` returned `preimage_hex: null`, `preimage_redacted: true`.
+
+## 9. Drain pattern, third confirmation
+
+After run 2, `bob-claimer` held **1,000 sats** — 500 from each swap — and
+`btc-alice` was down to 165,931. The value-flow model in
+[TESTNET_PUBLIC_SWAPS.md §1a](./TESTNET_PUBLIC_SWAPS.md) has now reproduced on
+three independent occasions (historical strandings, run 1, run 2). The W5 sweep
+is load-bearing, not a nicety.
+
+---
+
+## 10. Still unproven after both runs
+
+- **Turnstile against a real request.** Run 2 used
+  `LABD_DEMO_TURNSTILE_REQUIRED=0` (no secret available locally). The
+  fail-closed path is unit-tested; the pass path is not exercised live.
+- **W5 refund watcher and the CSV refund path** — both swaps completed, so no
+  refund ever fired, and the 900 s watcher timer did not elapse during the run.
+- **Liquid-side exit sweep** is not implemented (BTC only).
+- Behaviour under a slow-block stretch, and a restart *during* a live swap.
+
+A public run should additionally exercise Turnstile and the refund watcher.

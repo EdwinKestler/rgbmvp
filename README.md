@@ -157,7 +157,7 @@ cp .env.example .env
 | **Demo v0** | Read-only `/demo` board | Done |
 | **P2** | Simplicity + BFA audit | **Closed** (C0+C3; C1 stretch) |
 | **P3** | Browser lab console | **Closed** — [P3_CLOSED.md](docs/P3_CLOSED.md) |
-| **T1** | Bounded public demo swaps | **In tree, OFF by default, not deployed** — [TESTNET_PUBLIC_SWAPS.md](docs/TESTNET_PUBLIC_SWAPS.md); first live swap proven operator-side — [T1_FIRST_SWAP.md](docs/T1_FIRST_SWAP.md) |
+| **T1** | Bounded public demo swaps | **In tree, OFF by default, not deployed** — [TESTNET_PUBLIC_SWAPS.md](docs/TESTNET_PUBLIC_SWAPS.md); two live swaps proven, incl. the automated driver — [T1_FIRST_SWAP.md](docs/T1_FIRST_SWAP.md) |
 
 ---
 
@@ -191,7 +191,7 @@ cp .env.example .env
 | [docs/TESTNET_WALLETS.md](docs/TESTNET_WALLETS.md) | alice/bob/carol/maker + btc-alice |
 | [docs/PROJECT_MEMORY.md](docs/PROJECT_MEMORY.md) | Optional Redis source index |
 | [docs/TESTNET_PUBLIC_SWAPS.md](docs/TESTNET_PUBLIC_SWAPS.md) | **T1** bounded public demo swaps — plan, budget, ADR-T1 (off by default) |
-| [docs/T1_FIRST_SWAP.md](docs/T1_FIRST_SWAP.md) | **T1** first live swap — txids, measured fees, value-flow evidence |
+| [docs/T1_FIRST_SWAP.md](docs/T1_FIRST_SWAP.md) | **T1** live swap evidence — CLI + automated driver runs, measured fees, value flow |
 | [deploy/README.md](deploy/README.md) | Cloud Run / Vercel runbooks, incl. **§5** T1 demo deployment |
 | [SECURITY.md](SECURITY.md) | Vulnerability disclosure policy |
 | [AGENTS.md](AGENTS.md) | Agent instructions |

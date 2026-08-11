@@ -203,13 +203,15 @@ between the lab's own wallets.
 | W8 abuse + chaos tests | Implemented |
 | W9 public UX | **Not started** |
 
-**First live swap: done (operator, CLI)** — [T1_FIRST_SWAP.md](./T1_FIRST_SWAP.md).
-Full BTC↔Liquid value swap completed first attempt; fees measured (5.25 / 3.63
-sat/vB) and the demo-exit drain confirmed live.
+**Two live swaps completed** — [T1_FIRST_SWAP.md](./T1_FIRST_SWAP.md):
+run 1 operator/CLI, run 2 via the **automated `POST /v1/demo/swap` driver** with
+no human in the loop. Fees measured (5.25 / 3.63 sat/vB); the driver's retry
+loop recovered from both an unconfirmed-UTXO wait and an Esplora propagation
+race; W2 reservation→spend and W4 persistence observed live.
 
-**Still not proven:** the **W1 automated driver** has never completed a swap
-(the live run was step-by-step CLI), nor have Turnstile, the W5 refund watcher,
-or the CSV refund path been exercised live. Those gate any public exposure. Mainnet remains refused at
+**Still not proven:** Turnstile against a real request (run 2 ran with the bot
+check disabled locally), the **W5 refund watcher**, the CSV refund path, and the
+Liquid-side exit sweep (not implemented). Those gate any public exposure. Mainnet remains refused at
 config load throughout; §5 of the plan gates it behind a separate program.
 
 ### Post-freeze extension milestone
