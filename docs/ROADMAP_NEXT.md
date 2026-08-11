@@ -203,10 +203,13 @@ between the lab's own wallets.
 | W8 abuse + chaos tests | Implemented |
 | W9 public UX | **Not started** |
 
-**Not yet proven:** no live swap has run through this path. Fee defaults
-(~200 sats/BTC tx) are arithmetic, not measurement, and the driver's
-confirmation-wait loop is untested against real testnet timing. The first swap
-must be operator-run before any public exposure. Mainnet remains refused at
+**First live swap: done (operator, CLI)** — [T1_FIRST_SWAP.md](./T1_FIRST_SWAP.md).
+Full BTC↔Liquid value swap completed first attempt; fees measured (5.25 / 3.63
+sat/vB) and the demo-exit drain confirmed live.
+
+**Still not proven:** the **W1 automated driver** has never completed a swap
+(the live run was step-by-step CLI), nor have Turnstile, the W5 refund watcher,
+or the CSV refund path been exercised live. Those gate any public exposure. Mainnet remains refused at
 config load throughout; §5 of the plan gates it behind a separate program.
 
 ### Post-freeze extension milestone

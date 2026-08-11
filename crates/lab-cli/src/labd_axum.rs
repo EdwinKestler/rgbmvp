@@ -96,6 +96,20 @@ async fn serve_async(cfg: Config, bind: String) -> Result<()> {
         if !p.turnstile_required {
             eprintln!("  WARNING: demo swaps running WITHOUT bot protection (local/testing only)");
         }
+        // Budget accounting reserves `max_fee_per_swap_sats` per swap. If the
+        // fees we actually pay exceed that, the reservation under-counts and the
+        // run can overshoot its ceiling.
+        let fees = DemoFees::from_env();
+        if fees.btc_total_per_swap() > p.max_fee_per_swap_sats {
+            eprintln!(
+                "  WARNING: BTC fees per swap ({} = {} fund + {} claim) exceed \
+                 LABD_DEMO_MAX_FEE_SATS ({}); the fee budget will under-reserve",
+                fees.btc_total_per_swap(),
+                fees.btc_fee_sats,
+                fees.btc_claim_fee_sats,
+                p.max_fee_per_swap_sats
+            );
+        }
         // W3: refuse to sign with image-baked or over-permissive key material.
         // Public = anything not bound to loopback, or explicitly read-only mode.
         let wallets = DemoWallets::from_env();
@@ -147,6 +161,7 @@ async fn serve_async(cfg: Config, bind: String) -> Result<()> {
     if state.demo.enabled() {
         let (interval_secs, min_age_secs) = demo_swap::sweep_config_from_env();
         let sweep_cfg = state.cfg.clone();
+        let sweep_wallets = state.demo_wallets.clone();
         let fees = state.demo_fees;
         eprintln!(
             "  T1 refund watcher: every {interval_secs}s, sweeping swaps older than {min_age_secs}s"
@@ -159,12 +174,13 @@ async fn serve_async(cfg: Config, bind: String) -> Result<()> {
             loop {
                 tick.tick().await;
                 let cfg = sweep_cfg.clone();
+                let wallets = sweep_wallets.clone();
                 match tokio::task::spawn_blocking(move || {
-                    demo_swap::sweep_stuck_demo_swaps_blocking(&cfg, fees, min_age_secs)
+                    demo_swap::sweep_stuck_demo_swaps_blocking(&cfg, &wallets, fees, min_age_secs)
                 })
                 .await
                 {
-                    Ok(rep) if rep.eligible > 0 || rep.errors > 0 => {
+                    Ok(rep) if rep.eligible > 0 || rep.errors > 0 || rep.recycled_sats > 0 => {
                         eprintln!("demo sweep: {rep:?}");
                     }
                     Ok(_) => {}
@@ -945,8 +961,9 @@ mod tests {
                 bob_lq: "bob".into(),
             },
             demo_fees: DemoFees {
-                btc_fee_sats: 200,
-                lq_fee_sats: 100,
+                btc_fee_sats: 800,
+                btc_claim_fee_sats: 500,
+                lq_fee_sats: 300,
             },
             demo_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }

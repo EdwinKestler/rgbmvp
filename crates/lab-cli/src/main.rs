@@ -327,6 +327,15 @@ enum BtcCmd {
         #[arg(long, default_value_t = 500)]
         fee_sats: u64,
     },
+    /// Show the deterministic demo HTLC exit addresses and their balances
+    DemoExits,
+    /// T1/W5: sweep demo HTLC exit addresses back into a funding wallet
+    SweepDemo {
+        #[arg(long, default_value = "btc-alice")]
+        to: String,
+        #[arg(long, default_value_t = 500)]
+        fee_sats: u64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1243,6 +1252,28 @@ fn run() -> Result<()> {
                         "{}",
                         serde_json::to_string_pretty(&lab_btc::balance(&cfg, &btc, &name)?)?
                     );
+                }
+                BtcCmd::DemoExits => {
+                    let mut out = Vec::new();
+                    for label in lab_btc::BTC_DEMO_EXIT_LABELS {
+                        let (_, addr) = lab_btc::demo_exit_address(&btc, label)?;
+                        let a = addr.to_string();
+                        let utxos = lab_btc::address_utxos(&btc, &a).unwrap_or_default();
+                        out.push(serde_json::json!({
+                            "label": label,
+                            "address": a,
+                            "utxo_count": utxos.len(),
+                            "balance_sats": utxos.iter().map(|u| u.value_sats).sum::<u64>(),
+                            "confirmed_sats": utxos.iter().filter(|u| u.confirmed)
+                                .map(|u| u.value_sats).sum::<u64>(),
+                            "explorer": format!("{}/address/{}", btc.explorer_base, a),
+                        }));
+                    }
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                }
+                BtcCmd::SweepDemo { to, fee_sats } => {
+                    let res = lab_btc::sweep_all_demo_exits(&cfg, &btc, &to, fee_sats)?;
+                    println!("{}", serde_json::to_string_pretty(&res)?);
                 }
                 BtcCmd::Utxos { name } => {
                     println!(

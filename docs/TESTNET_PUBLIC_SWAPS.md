@@ -52,36 +52,69 @@ supplies keys or amounts). Live balances at planning time:
 
 **Binding constraint: BTC testnet — specifically btc-alice (~33.6k sats).** BTC
 testnet faucets are slow/dry, so the demo is sized around **BTC fee burn**, not
-Liquid. Every swap permanently loses only *fees + any dust*; the swap *value*
-recycles between our own wallets (see recycle watcher, W5).
+Liquid. With the W5 sweep in place a swap permanently loses only *fees + any
+dust*; without it the leg value strands at a demo exit address (see below).
 
-**Cost-minimization defaults (money-saving):**
-- **Value-only HTLC path (`rgb_wrap=false`) is the public default** — it avoids
-  the tapret commitment dust (~330 sats/leg) and the extra RGB transactions.
-  RGB-wrapped swaps stay operator-only / token-gated for showcase.
-- **Minimal leg size:** ~1,000 sats/leg (just above dust), server-fixed.
-- **Low feerate:** target ≤ ~400 sats total BTC fee per full swap.
-- **Recycle:** sweep swapped value back to the funding wallet after each swap so
-  only fees leave the pool (no directional drift draining btc-alice).
+### Where HTLC value actually goes (corrected 2026-08-11)
+
+An earlier draft of this plan claimed refunds "return value to the original
+funder". **That is wrong.** Every HTLC exit path — claim *and* refund, on both
+chains — pays a P2WPKH address derived from `htlc::demo_keypair(<label>)`
+(i.e. `sha256(label)`), never the funding wallet:
+
+| Path | Destination | Chain |
+|---|---|---|
+| BTC claim | `P2WPKH(sha256("bob-claimer"))` | BTC |
+| BTC refund | `P2WPKH(sha256("alice-refund"))` | BTC |
+| Liquid claim | `P2WPKH(sha256("alice-claimer"))` | Liquid |
+| Liquid refund | `P2WPKH(sha256("bob-refund"))` | Liquid |
+
+Consequences:
+- **`btc-alice` drains on every swap regardless of outcome.** A completed swap
+  costs it `leg + fund_fee`; the leg value lands at `bob-claimer`.
+- The keys are deterministic, so nothing is *lost* — but recovery requires an
+  explicit sweep, which is now implemented (`lab_btc::sweep_all_demo_exits`,
+  CLI `rgbmvp btc sweep-demo`, and automatically in the W5 watcher).
+
+### Cost model per completed swap (repo-proven fees)
+
+| Flow | Sats |
+|---|---|
+| `btc-alice` pays | **1,800** (1,000 leg + 800 fund fee) |
+| Burned to miners | 1,300 (800 fund + 500 claim) |
+| Recovered by sweep from `bob-claimer` | 500 |
+| **Net drain on btc-alice after sweep** | **1,300** |
+
+**Cost-minimization defaults:**
+- **Value-only HTLC path (`rgb_wrap=false`)** — avoids tapret commitment dust
+  (~330 sats/leg) and extra RGB transactions. RGB-wrapped stays operator-only.
+- **Minimal leg size:** 1,000 sats/leg, server-fixed.
+- **Fees are the repo's proven values** (fund 800 / claim 500 / LQ 300), not the
+  ~200-sat vbyte estimate an earlier draft used. Now **measured live** at 5.25
+  and 3.63 sat/vB — see [T1_FIRST_SWAP.md](./T1_FIRST_SWAP.md). There is room to
+  lower them (~450/300 ≈ 3.0/2.2 sat/vB) but one sample is not a fee policy;
+  gather 2–3 more swaps first.
+- **Recycle:** the W5 watcher sweeps the demo exit addresses back to `btc-alice`
+  every cycle, so only fees leave the pool.
 
 ### Budget-grounded quota table (starting values — tune during soak)
 
 | Control | Value | Rationale |
 |---|---|---|
 | Leg size (BTC & LQ) | 1,000 sats | Just above dust; minimal footprint |
-| Target BTC fee/swap | ≤ 400 sats | Low feerate, value-only path |
-| **2-week BTC fee budget** | **~28,000 sats** | ~of btc-alice’s 33.6k, leaves buffer |
-| **Total swaps / 2 weeks** | **~70** | 28,000 / 400 |
-| Daily cap | 6 swaps | ~70 over 12 active days + margin |
+| BTC fee/swap | 1,300 sats | 800 fund + 500 claim (repo-proven) |
+| **BTC fee budget** | **28,000 sats** | of btc-alice's 33.6k, leaves buffer |
+| **Total swaps** | **~21** | 28,000 / 1,300 — *not* the ~70 an earlier 400-sat estimate implied |
+| Daily cap | 6 swaps | ~21 over the run with margin |
 | Global rate | 1 concurrent · 1 new / 10 min | Prevents bursts / mempool spam |
-| Per-IP quota | 1 / hour · max 2 / day | One visitor can’t hog the budget |
-| Pause floor — btc-alice | < 5,000 sats | Auto-refill from btc-funder, else pause |
+| Per-IP quota | 1 / hour · max 2 / day | One visitor can't hog the budget |
+| Pause floor — btc-alice | < 5,000 sats | Refill from btc-funder, else pause |
 | Pause floor — bob (LQ) | < 20,000 sats | Comfortable; LQ is plentiful |
 
-These are deliberately conservative. If the soak shows headroom (fees lower than
-budgeted, faucet refills land), raise the daily/global caps via config without a
-redeploy. If BTC runs low, the demo **pauses gracefully** (returns to a
-“demo paused — faucet refill pending” state), never drains or crashes.
+Without the sweep, runway would be 33,607 / 1,800 ≈ **18 swaps**; with it,
+the budget ceiling binds first at ~21. If the soak shows real fees are lower,
+lower `LABD_DEMO_BTC_FEE_SATS` and the runway extends. If BTC runs low the demo
+**pauses gracefully** (503), never drains or crashes.
 
 ---
 
@@ -156,7 +189,9 @@ measured BTC scarcity). Implement each as config so they tune without a redeploy
 
 ### W5 — Refund/liveness safety
 - **Refund watcher:** background task that, after the CSV window, auto-refunds
-  funded-but-unclaimed HTLCs back to the faucet pool so float is recovered.
+  funded-but-unclaimed HTLCs, **then sweeps the demo exit addresses back to the
+  funding wallet** (see the corrected value-flow table in §1a — a refund alone
+  does not return funds to `btc-alice`).
 - Bound the demo to the value path + optional `rgb_wrap`; make CSV delay short
   enough to recover funds within the demo window but valid on testnet.
 - Idempotency: never double-fund (the action path already guards this); make the

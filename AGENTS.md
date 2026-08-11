@@ -68,6 +68,10 @@ Contract: [docs/TESTNET_PUBLIC_SWAPS.md](docs/TESTNET_PUBLIC_SWAPS.md).
   public bind without it, or with a group/world-readable key.
 - The refund watcher may only touch ids it minted (`demo-<epoch>-<seq>`) — never
   an operator's swap session.
+- **HTLC exits do NOT pay the funding wallet.** Claim and refund both pay
+  `P2WPKH(sha256(<label>))` for the four demo labels. Recovering that value
+  requires the sweep (`lab_btc::sweep_all_demo_exits`); without it `btc-alice`
+  drains every swap. Never claim "refunds return value to the funder".
 - `RGBMVP_DATA_DIR` must be persistent in deployment, or the fee budget resets
   on restart and the run can overshoot its ceiling.
 

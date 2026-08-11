@@ -58,21 +58,35 @@ impl DemoWallets {
 
 /// Per-transaction fee the demo is willing to pay on each chain.
 ///
-/// The BTC leg spends two transactions (fund + claim), so the swap's BTC fee is
-/// roughly `2 * btc_fee_sats`; keep that consistent with
-/// `LABD_DEMO_MAX_FEE_SATS` in the governor.
+/// Defaults match the repo's own long-standing action defaults (fund_btc 800,
+/// claim_btc 500), which were chosen from real runs. An earlier T1 draft used
+/// ~200 sats derived from vbyte arithmetic; that is ~1.4 sat/vB and risks
+/// sitting unconfirmed. Measure on a live run before lowering these.
+///
+/// The BTC leg spends two transactions (fund + claim), so a swap's BTC fee is
+/// `btc_fund_fee_sats + btc_claim_fee_sats`; keep `LABD_DEMO_MAX_FEE_SATS`
+/// at or above that sum.
 #[derive(Debug, Clone, Copy)]
 pub struct DemoFees {
+    /// Fee for the BTC funding transaction.
     pub btc_fee_sats: u64,
+    /// Fee for the BTC claim/refund transaction.
+    pub btc_claim_fee_sats: u64,
     pub lq_fee_sats: u64,
 }
 
 impl DemoFees {
     pub fn from_env() -> Self {
         Self {
-            btc_fee_sats: env_u64("LABD_DEMO_BTC_FEE_SATS", 200),
-            lq_fee_sats: env_u64("LABD_DEMO_LQ_FEE_SATS", 100),
+            btc_fee_sats: env_u64("LABD_DEMO_BTC_FEE_SATS", 800),
+            btc_claim_fee_sats: env_u64("LABD_DEMO_BTC_CLAIM_FEE_SATS", 500),
+            lq_fee_sats: env_u64("LABD_DEMO_LQ_FEE_SATS", 300),
         }
+    }
+
+    /// Total BTC fee a completed swap burns (fund + claim).
+    pub fn btc_total_per_swap(&self) -> u64 {
+        self.btc_fee_sats + self.btc_claim_fee_sats
     }
 }
 
@@ -310,7 +324,7 @@ fn driver_steps(leg_sats: u64, fees: DemoFees) -> Vec<(&'static str, Value)> {
             "claim_btc",
             json!({
                 "action": "claim_btc",
-                "fee_sats": fees.btc_fee_sats,
+                "fee_sats": fees.btc_claim_fee_sats,
                 "from_witness": true,
                 "rgb_wrap": false,
             }),
@@ -345,8 +359,10 @@ pub fn drive_demo_swap_blocking(
             }
             match crate::http_api::handle_swap_action_post(cfg, &store, swap_id, &body) {
                 Ok(_) => {
-                    if name == "fund_btc" || name == "claim_btc" {
-                        btc_fee_committed += fees.btc_fee_sats;
+                    match name {
+                        "fund_btc" => btc_fee_committed += fees.btc_fee_sats,
+                        "claim_btc" => btc_fee_committed += fees.btc_claim_fee_sats,
+                        _ => {}
                     }
                     break;
                 }
@@ -474,6 +490,39 @@ pub struct SweepReport {
     pub refunded_lq: usize,
     pub skipped_young: usize,
     pub errors: usize,
+    /// Sats recovered from demo exit addresses back into the funding wallet.
+    pub recycled_sats: u64,
+}
+
+/// Sweep the BTC demo exit addresses back into the funding wallet.
+///
+/// Runs after the refund pass: refunds land at `alice-refund` and completed
+/// swaps at `bob-claimer`, neither of which is the funding wallet. Skips
+/// silently when there is nothing to recover.
+fn recycle_btc_exits_blocking(cfg: &Config, wallets: &DemoWallets, fee_sats: u64) -> u64 {
+    let btc = lab_btc::BtcConfig::from_env();
+    if btc.ensure_testnet().is_err() {
+        return 0;
+    }
+    match lab_btc::sweep_all_demo_exits(cfg, &btc, &wallets.alice_btc, fee_sats) {
+        Ok(results) => {
+            let mut total = 0;
+            for r in results {
+                if let Some(txid) = &r.txid {
+                    total += r.swept_sats;
+                    eprintln!(
+                        "demo recycle: swept {} sats from {} -> {} ({txid})",
+                        r.swept_sats, r.label, wallets.alice_btc
+                    );
+                }
+            }
+            total
+        }
+        Err(e) => {
+            eprintln!("demo recycle: sweep failed: {e:#}");
+            0
+        }
+    }
 }
 
 /// True when a session still has value parked in an HTLC.
@@ -485,17 +534,20 @@ fn needs_lq_refund(s: &lab_rgb::swap::SwapSession) -> bool {
     s.lq_fund_txid.is_some() && s.lq_claim_txid.is_none()
 }
 
-/// Refund stuck demo swaps so the faucet float is recovered.
+/// Refund stuck demo swaps, then sweep the recovered value back to the funder.
 ///
-/// This is the "only fees burn" guarantee: HTLC refunds return value to the
-/// original funder (BTC refunds to Alice, Liquid to Bob), so a swap that never
-/// completed does not permanently drain the pool.
+/// IMPORTANT: an HTLC refund does **not** pay the funding wallet. Both refund
+/// and claim paths pay a P2WPKH address derived from `demo_keypair(<label>)`
+/// (`sha256(label)`) — four fixed addresses in total. Without the sweep below,
+/// `btc-alice` drains on every swap regardless of outcome and the value strands
+/// there. The keys are deterministic, so this is recovery, not rescue.
 ///
 /// **Blocking and network-bound**: run on a blocking task. Failures are counted
 /// and retried on the next sweep — a refund rejected because the CSV window has
 /// not elapsed is expected, not an error condition.
 pub fn sweep_stuck_demo_swaps_blocking(
     cfg: &Config,
+    wallets: &DemoWallets,
     fees: DemoFees,
     min_age_secs: u64,
 ) -> SweepReport {
@@ -560,7 +612,8 @@ pub fn sweep_stuck_demo_swaps_blocking(
             }
         }
         if btc {
-            let body = json!({"action": "refund_btc", "fee_sats": fees.btc_fee_sats}).to_string();
+            let body =
+                json!({"action": "refund_btc", "fee_sats": fees.btc_claim_fee_sats}).to_string();
             match crate::http_api::handle_swap_action_post(cfg, &store, &id, &body) {
                 Ok(_) => {
                     report.refunded_btc += 1;
@@ -573,6 +626,11 @@ pub fn sweep_stuck_demo_swaps_blocking(
             }
         }
     }
+
+    // Recover value from the demo exit addresses back into the funding wallet.
+    // Runs every sweep, not only when a refund fired: completed swaps also pay
+    // out to `bob-claimer` and would otherwise strand there.
+    report.recycled_sats = recycle_btc_exits_blocking(cfg, wallets, fees.btc_claim_fee_sats);
     report
 }
 
@@ -631,7 +689,7 @@ mod tests {
     /// The driver must never emit an RGB-wrapped or oversized leg.
     #[test]
     fn driver_steps_are_value_only_and_fixed() {
-        let steps = driver_steps(1_000, DemoFees { btc_fee_sats: 200, lq_fee_sats: 100 });
+        let steps = driver_steps(1_000, DemoFees { btc_fee_sats: 800, btc_claim_fee_sats: 500, lq_fee_sats: 300 });
         assert_eq!(steps.len(), 4);
         for (name, payload) in &steps {
             assert_eq!(
@@ -652,7 +710,7 @@ mod tests {
 
     #[test]
     fn driver_steps_follow_htlc_order() {
-        let steps = driver_steps(1_000, DemoFees { btc_fee_sats: 200, lq_fee_sats: 100 });
+        let steps = driver_steps(1_000, DemoFees { btc_fee_sats: 800, btc_claim_fee_sats: 500, lq_fee_sats: 300 });
         let names: Vec<&str> = steps.iter().map(|(n, _)| *n).collect();
         // Alice must claim Liquid (revealing the preimage) before Bob claims BTC.
         assert_eq!(names, vec!["fund_btc", "fund_lq", "claim_lq", "claim_btc"]);
@@ -798,7 +856,10 @@ mod tests {
         let st = gov2.status(now_epoch());
         assert_eq!(st.fee_spent_sats, 400, "spend ceiling survived the restart");
         assert_eq!(st.in_flight, 0, "in-flight never survives a restart");
-        assert_eq!(gov2.swaps_remaining_in_budget(), (28_000 - 400) / 400);
+        // Derived from the constants so this cannot drift when fees change.
+        let per_swap = lab_core::demo::DEFAULT_MAX_FEE_PER_SWAP_SATS;
+        let budget = lab_core::demo::DEFAULT_FEE_BUDGET_SATS;
+        assert_eq!(gov2.swaps_remaining_in_budget(), (budget - 400) / per_swap);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -873,7 +934,12 @@ mod tests {
         assert_eq!(v["enabled"], json!(true));
         assert_eq!(v["rgb_wrap"], json!(false));
         assert_eq!(v["leg_sats"], json!(1_000));
-        assert_eq!(v["budget"]["swaps_remaining_est"], json!(70));
+        let expected = lab_core::demo::DEFAULT_FEE_BUDGET_SATS
+            / lab_core::demo::DEFAULT_MAX_FEE_PER_SWAP_SATS;
+        assert_eq!(v["budget"]["swaps_remaining_est"], json!(expected));
+        // At repo-proven fees (800 fund + 500 claim) the run is ~21 swaps,
+        // not the ~70 an earlier 400-sat estimate implied.
+        assert_eq!(expected, 21);
         assert_eq!(v["floats"]["btc_sats"], json!(33_607));
     }
 }
