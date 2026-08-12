@@ -50,7 +50,7 @@ jobs:
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.gate.outputs.skip != 'true'
       - uses: google-github-actions/auth@v2
         if: steps.gate.outputs.skip != 'true'
