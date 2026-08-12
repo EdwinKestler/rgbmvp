@@ -201,7 +201,7 @@ between the lab's own wallets.
 | W6 deploy profile + persistent volume | `deploy/cloudrun-demo.yaml` + runbook |
 | W7 observability / alert thresholds | Documented; quota field contract pinned by test |
 | W8 abuse + chaos tests | Implemented |
-| W9 public UX | **Not started** |
+| W9 public UX | **Implemented** — Turnstile browser pass still unproven |
 
 **Two live swaps completed** — [T1_FIRST_SWAP.md](./T1_FIRST_SWAP.md):
 run 1 operator/CLI, run 2 via the **automated `POST /v1/demo/swap` driver** with
