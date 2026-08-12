@@ -1,6 +1,7 @@
 # Testnet public swaps — live demo plan (bounded public trigger)
 
-**Status:** Proposed · 2026-08-10
+**Status:** Implemented in tree, OFF by default; Turnstile browser pass and
+public deployment pending · 2026-08-11
 **Goal:** Let public visitors trigger **real Liquid/Bitcoin testnet HTLC swaps**
 from the hosted site, run that live for **~2 weeks**, then use the evidence to
 open a separate mainnet-readiness program.
@@ -271,7 +272,7 @@ apart and means nothing already shipping in the read-only freeze is edited.
 
 #### W9.1 — CSP (blocking prerequisite, and a U4 decision)
 
-The current header (`labd_axum.rs`, `apply_security_headers`) is:
+Before W9, the header (`labd_axum.rs`, `apply_security_headers`) was:
 
 ```
 default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self';
@@ -279,18 +280,18 @@ frame-ancestors 'none'; …
 ```
 
 Turnstile loads a script from `challenges.cloudflare.com` **and renders inside an
-iframe from that origin**. There is no `frame-src` directive, so it falls back to
-`default-src 'self'` — widget script *and* iframe are both blocked. **W9 cannot
-work until this changes.**
+iframe from that origin**. With no `frame-src` directive, it fell back to
+`default-src 'self'`, blocking both the widget script and iframe. W9 therefore
+required the following narrow CSP change.
 
-Surgical change only:
+Implemented change:
 - `script-src`: add `https://challenges.cloudflare.com`
 - add `frame-src https://challenges.cloudflare.com`
 - **`connect-src` stays `'self'`** — siteverify is server-side, so the browser
   never talks to Cloudflare directly.
 
-Extend `security_headers_on_v1_get` to pin the exact allowed origin, so a later
-edit cannot quietly widen the policy.
+`security_headers_on_v1_get` now pins the exact allowed origin, so a later edit
+cannot quietly widen the policy.
 
 #### W9.2–W9.7 — the page
 
