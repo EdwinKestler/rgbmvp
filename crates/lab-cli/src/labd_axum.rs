@@ -101,12 +101,13 @@ async fn serve_async(cfg: Config, bind: String) -> Result<()> {
         // run can overshoot its ceiling.
         let fees = DemoFees::from_env();
         if fees.btc_total_per_swap() > p.max_fee_per_swap_sats {
-            eprintln!(
-                "  WARNING: BTC fees per swap ({} = {} fund + {} claim) exceed \
-                 LABD_DEMO_MAX_FEE_SATS ({}); the fee budget will under-reserve",
+            anyhow::bail!(
+                "T1 refused: BTC fees per swap ({} = {} fund + {} claim/refund + {} sweep) exceed \
+                 LABD_DEMO_MAX_FEE_SATS ({}); budget reservation would be unsound",
                 fees.btc_total_per_swap(),
                 fees.btc_fee_sats,
                 fees.btc_claim_fee_sats,
+                fees.btc_sweep_fee_sats,
                 p.max_fee_per_swap_sats
             );
         }
@@ -117,6 +118,10 @@ async fn serve_async(cfg: Config, bind: String) -> Result<()> {
         let required = vec![
             (wallets.alice_btc.clone(), lab_core::KIND_WIF.to_string()),
             (wallets.bob_lq.clone(), lab_core::KIND_MNEMONIC.to_string()),
+            (
+                lab_core::DEMO_EXIT_SECRET_NAME.to_string(),
+                lab_core::KIND_EXIT_SEED.to_string(),
+            ),
         ];
         let issues = lab_core::custody::preflight(&lab_core::CustodyCheck {
             required: &required,
@@ -141,7 +146,8 @@ async fn serve_async(cfg: Config, bind: String) -> Result<()> {
             public
         );
         // W4: recover the spend ceiling so a restart cannot silently reset it.
-        demo_swap::restore_budget(&cfg, &demo);
+        demo_swap::restore_budget(&cfg, &demo)
+            .context("demo swaps refused to start (W4 budget recovery)")?;
     }
     let state = AppState {
         cfg: cfg.clone(),
@@ -889,6 +895,27 @@ async fn v1_demo_swap(
         return demo_denial_response(&d);
     }
 
+    // The worst-case fee reservation must reach persistent storage before any
+    // session is created or transaction can be broadcast. If storage is
+    // unavailable, release only the unspent in-memory reservation and refuse.
+    let persist_cfg = s.cfg.clone();
+    let persist_gov = s.demo.clone();
+    let persisted = tokio::task::spawn_blocking(move || {
+        demo_swap::persist_budget(&persist_cfg, &persist_gov)
+    })
+    .await;
+    match persisted {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            s.demo.abort();
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, e);
+        }
+        Err(e) => {
+            s.demo.abort();
+            return err_json(StatusCode::SERVICE_UNAVAILABLE, e);
+        }
+    }
+
     // Admitted — create the session with server-fixed parameters.
     let seq = s
         .demo_seq
@@ -903,10 +930,16 @@ async fn v1_demo_swap(
         Ok(Ok(id)) => id,
         Ok(Err(e)) => {
             s.demo.abort();
+            if let Err(save_err) = demo_swap::persist_budget(&s.cfg, &s.demo) {
+                eprintln!("demo: failed to persist unspent admission abort: {save_err:#}");
+            }
             return err_json(StatusCode::INTERNAL_SERVER_ERROR, e);
         }
         Err(e) => {
             s.demo.abort();
+            if let Err(save_err) = demo_swap::persist_budget(&s.cfg, &s.demo) {
+                eprintln!("demo: failed to persist unspent admission abort: {save_err:#}");
+            }
             return err_json(StatusCode::INTERNAL_SERVER_ERROR, e);
         }
     };
@@ -920,16 +953,19 @@ async fn v1_demo_swap(
         let fees = s.demo_fees;
         tokio::task::spawn_blocking(move || {
             match demo_swap::drive_demo_swap_blocking(&cfg, &id, leg, fees) {
-                Ok(fee) => gov.finish(fee),
+                Ok(fee) => gov.finish_with_liability(fee, fees.btc_sweep_fee_sats),
                 Err(e) => {
                     eprintln!("demo: swap {id} failed: {e}");
-                    // Counters are intentionally retained (anti retry-spam);
-                    // only the in-flight slot and fee reservation are released.
-                    gov.abort();
+                    // Execution may already have broadcast a funding tx. The
+                    // exact fee is unknown, so charge the full reservation.
+                    gov.fail_closed();
                 }
             }
-            // W4: settle to disk immediately, so spend survives a restart.
-            demo_swap::persist_budget(&cfg, &gov);
+            // The prior durable state still holds the full reservation, so a
+            // failed settlement write remains conservative across restart.
+            if let Err(e) = demo_swap::persist_budget(&cfg, &gov) {
+                eprintln!("demo: failed to persist budget settlement: {e:#}");
+            }
         });
     }
 
@@ -1000,6 +1036,7 @@ mod tests {
             demo_fees: DemoFees {
                 btc_fee_sats: 800,
                 btc_claim_fee_sats: 500,
+                btc_sweep_fee_sats: 500,
                 lq_fee_sats: 300,
                 lq_sweep_fee_sats: 400,
             },

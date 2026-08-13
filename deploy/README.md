@@ -213,8 +213,16 @@ gcloud iam service-accounts create rgbmvp-demo-run \
 
 ### 5.2 Persistent state bucket (W4)
 
-Without this the fee budget resets on every restart and the run can overshoot
-its ceiling. Versioning on, so a bad write is recoverable.
+Admission is fail-closed until its 1,800-sat worst-case reservation is durable.
+The data mount is therefore mandatory; corrupt or unavailable budget state
+refuses T1 startup rather than resetting the ceiling. Object versioning makes
+operator deletion or a bad external write recoverable. See
+[`docs/T1_FEE_BUDGET_REMEDIATION.md`](../docs/T1_FEE_BUDGET_REMEDIATION.md).
+
+The application uses a synced pending object followed by a synced primary
+object; it does not rely on rename semantics. This matches Cloud Storage FUSE's
+documented non-POSIX behavior, but the isolated T1 deployment still requires
+the interruption drill in the remediation record before public exposure.
 
 ```bash
 gcloud storage buckets create "gs://${BUCKET}" \
@@ -226,10 +234,11 @@ gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
   --role=roles/storage.objectAdmin
 ```
 
-### 5.3 Wallet secrets (W3)
+### 5.3 Wallet and exit-key secrets (W3)
 
-The demo signs with **btc-alice** (WIF) and **bob** (mnemonic). Startup refuses
-to run if these are not mounted on a public bind.
+The demo signs with **btc-alice** (WIF), **bob** (mnemonic), and a dedicated
+256-bit root seed for the four HTLC exit keys. Startup refuses to run if any is
+not mounted on a public bind.
 
 > Pipe from your local files — do **not** paste key material into shell history.
 > These are testnet keys with a small float, but treat them as real anyway.
@@ -245,11 +254,16 @@ gcloud secrets create rgbmvp-demo-bob-mnemonic --project "$PROJECT" \
 gcloud secrets versions add rgbmvp-demo-bob-mnemonic --project "$PROJECT" \
   --data-file=.rgbmvp/wallets/bob/mnemonic
 
+# Generate the demo-exit root without placing it in a shell variable or file.
+# Never reuse a wallet seed or a production/mainnet secret here.
+openssl rand -hex 32 | gcloud secrets create rgbmvp-demo-exit-seed \
+  --project "$PROJECT" --replication-policy=automatic --data-file=-
+
 # Turnstile secret (from the Cloudflare dashboard).
 printf '%s' "$TURNSTILE_SECRET" | gcloud secrets create rgbmvp-demo-turnstile-secret \
   --project "$PROJECT" --replication-policy=automatic --data-file=-
 
-for S in rgbmvp-demo-btc-alice-wif rgbmvp-demo-bob-mnemonic rgbmvp-demo-turnstile-secret; do
+for S in rgbmvp-demo-btc-alice-wif rgbmvp-demo-bob-mnemonic rgbmvp-demo-exit-seed rgbmvp-demo-turnstile-secret; do
   gcloud secrets add-iam-policy-binding "$S" --project "$PROJECT" \
     --member="serviceAccount:rgbmvp-demo-run@${PROJECT}.iam.gserviceaccount.com" \
     --role=roles/secretmanager.secretAccessor
@@ -314,9 +328,16 @@ gcloud run services replace deploy/cloudrun.yaml --project "$PROJECT" --region "
 
 ### 5.7 Key rotation
 
+First disable T1, finish or refund every active demo session, sweep all four
+current exit addresses, and independently verify their balances are zero.
+Rotating earlier makes the current seed unavailable to the watcher and strands
+its outputs. Retain the prior Secret Manager version until that check passes.
+
 ```bash
 gcloud secrets versions add rgbmvp-demo-bob-mnemonic --project "$PROJECT" \
   --data-file=/path/to/new/mnemonic
+openssl rand -hex 32 | gcloud secrets versions add rgbmvp-demo-exit-seed \
+  --project "$PROJECT" --data-file=-
 gcloud run services update rgbmvp-demo --project "$PROJECT" --region "$REGION"  # restart to remount
 ```
 

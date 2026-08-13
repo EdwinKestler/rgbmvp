@@ -207,7 +207,11 @@ between the lab's own wallets.
 run 1 operator/CLI, run 2 via the **automated `POST /v1/demo/swap` driver** with
 no human in the loop. Fees measured (5.25 / 3.63 sat/vB); the driver's retry
 loop recovered from both an unconfirmed-UTXO wait and an Esplora propagation
-race; W2 reservation→spend and W4 persistence observed live.
+race. That run observed W2 reservation→spend and completed-state persistence;
+it did **not** prove crash durability. Write-ahead admission and fail-closed
+recovery are now implemented in
+[T1_FEE_BUDGET_REMEDIATION.md](./T1_FEE_BUDGET_REMEDIATION.md), with the isolated
+deployment interruption drill still pending.
 
 Run 3 exercised the **W5 refund watcher** and CSV refund path unattended, and
 the Liquid-side exit sweep was implemented and proven live (118,624 sats
