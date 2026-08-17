@@ -45,7 +45,7 @@ bitcoin = { version = "0.32", features = ["std", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "sync", "time"] }
 axum = { version = "0.8", features = ["tokio", "http1"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["trace", "limit"] }
+tower-http = { version = "0.7", features = ["trace", "limit"] }
 bytes = "1"
 # elements version: keep aligned with LWK 0.18 (0.25.x)
 
