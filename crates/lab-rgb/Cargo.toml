@@ -21,7 +21,7 @@ elements = "0.25"
 rgb-consensus = { version = "=0.11.1-rc.10" }
 rgb-ops = { version = "=0.11.1-rc.10" }
 rgb-schemas = { version = "=0.11.1-rc.10" }
-rgb-strict-encoding = { version = "=1.0.1" }
+rgb-strict-encoding = { version = "=1.0.2" }
 rgb-strict-types = { version = "=1.0.1" }
 
 [dev-dependencies]
