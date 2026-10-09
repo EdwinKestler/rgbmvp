@@ -13,11 +13,9 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/docker-public.yml"
+  # `build` is a required branch-protection check. Run it for every PR so
+  # path-filtered changes cannot remain permanently blocked with no check.
   pull_request:
-    paths:
-      - "Dockerfile.public"
-      - "web/**"
-      - "artifacts/public/**"
   workflow_dispatch:
 
 permissions:
@@ -29,9 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Build public image (no push on PR)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.public
@@ -59,8 +57,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -72,7 +70,7 @@ jobs:
           echo "IMAGE_OWNER=${owner}" >> "$GITHUB_ENV"
           echo "Will push ghcr.io/${owner}/rgbmvp-public"
       - name: Build and push GHCR
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.public

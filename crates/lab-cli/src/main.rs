@@ -6,18 +6,19 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use lab_core::Config;
+use lab_rgb::htlc;
 use lab_rgb::storage::RgbStore;
 use lab_rgb::swap::{self, SwapStore};
 use lab_rgb::{
     issue_nia, plan_transfer, verify_against_witness, IssueRequest, DEMO_INTERNAL_XONLY_HEX,
 };
-use lab_rgb::htlc;
 
 mod demo_swap;
 mod http_api;
 mod labd_axum;
 mod labd_legacy;
-
+mod wallet_watch;
+mod rgb_demo;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -411,6 +412,20 @@ enum WalletCmd {
         #[arg(long)]
         amount_sats: u64,
     },
+    /// Plan or apply the fixed Alice -> Bob public RGB-demo rebalance
+    RebalanceDemo {
+        #[arg(long, default_value_t = crate::rgb_demo::REBALANCE_TRIGGER_SATS)]
+        trigger_below_sats: u64,
+        #[arg(long, default_value_t = crate::rgb_demo::REBALANCE_TARGET_SATS)]
+        target_sats: u64,
+        #[arg(long, default_value_t = crate::rgb_demo::REBALANCE_SOURCE_FLOOR_SATS)]
+        source_floor_sats: u64,
+        #[arg(long, default_value_t = crate::rgb_demo::REBALANCE_MAX_TRANSFER_SATS)]
+        max_transfer_sats: u64,
+        /// Broadcast the bounded transfer; omitted means dry-run
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -522,7 +537,9 @@ fn run() -> Result<()> {
     store.ensure()?;
 
     match cli.command {
-        Commands::Net { cmd: NetCmd::Status } => {
+        Commands::Net {
+            cmd: NetCmd::Status,
+        } => {
             let report = lab_chain::network_status(&cfg)?;
             println!(
                 "{}",
@@ -596,9 +613,7 @@ fn run() -> Result<()> {
             WalletCmd::Address { name, index } => {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&lab_chain::wallet_address(
-                        &cfg, &name, index
-                    )?)?
+                    serde_json::to_string_pretty(&lab_chain::wallet_address(&cfg, &name, index)?)?
                 );
             }
             WalletCmd::Balance { name } => {
@@ -636,6 +651,60 @@ fn run() -> Result<()> {
                     )?)?
                 );
             }
+            WalletCmd::RebalanceDemo {
+                trigger_below_sats,
+                target_sats,
+                source_floor_sats,
+                max_transfer_sats,
+                apply,
+            } => {
+                anyhow::ensure!(
+                    target_sats >= trigger_below_sats,
+                    "target-sats must be at least trigger-below-sats"
+                );
+                let policy = crate::rgb_demo::RebalancePolicy {
+                    trigger_below_sats,
+                    target_sats,
+                    source_floor_sats,
+                    max_transfer_sats,
+                };
+                let alice = lab_chain::wallet_balance(&cfg, crate::rgb_demo::RECEIVER_WALLET)?;
+                let bob = lab_chain::wallet_balance(&cfg, crate::rgb_demo::SENDER_WALLET)?;
+                let plan = crate::rgb_demo::rebalance_plan(
+                    Some(alice.lbtc_sats),
+                    Some(bob.lbtc_sats),
+                    policy,
+                );
+                if !apply || plan.recommended_amount_sats == 0 {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "mode": "dry-run",
+                            "broadcast": false,
+                            "plan": plan,
+                            "apply_hint": "Re-run with --apply only after reviewing this plan."
+                        }))?
+                    );
+                } else {
+                    let destination =
+                        lab_chain::wallet_receive_address(&cfg, crate::rgb_demo::SENDER_WALLET)?;
+                    let result = lab_chain::send_lbtc(
+                        &cfg,
+                        crate::rgb_demo::RECEIVER_WALLET,
+                        &destination,
+                        plan.recommended_amount_sats,
+                    )?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "mode": "apply",
+                            "broadcast": true,
+                            "plan": plan,
+                            "result": result
+                        }))?
+                    );
+                }
+            }
         },
         Commands::Rgb { cmd } => match cmd {
             RgbCmd::Issue {
@@ -648,7 +717,10 @@ fn run() -> Result<()> {
             } => {
                 let seal = match seal {
                     Some(s) => s,
-                    None if chain.starts_with("bitcoin") || chain == "testnet" || chain == "testnet3" => {
+                    None if chain.starts_with("bitcoin")
+                        || chain == "testnet"
+                        || chain == "testnet3" =>
+                    {
                         let btc = lab_btc::BtcConfig::from_env();
                         lab_btc::pick_largest_utxo(&cfg, &btc, &wallet)?.outpoint
                     }
@@ -822,7 +894,8 @@ fn run() -> Result<()> {
             }
             RgbCmd::Consign { cmd } => match cmd {
                 ConsignCmd::Put { id, file } => {
-                    let bytes = fs::read(&file).with_context(|| format!("read {}", file.display()))?;
+                    let bytes =
+                        fs::read(&file).with_context(|| format!("read {}", file.display()))?;
                     let path = store.save_consignment_blob(&id, &bytes)?;
                     println!(
                         "{}",
@@ -861,7 +934,9 @@ fn run() -> Result<()> {
                     lq_contract,
                     rgb_wrap,
                 } => {
+                    let keyring = htlc::DemoKeyring::new(cfg.demo_exit_seed()?)?;
                     let session = swap::init_swap(
+                        &keyring,
                         &id,
                         csv_delay,
                         &alice_btc,
@@ -879,7 +954,8 @@ fn run() -> Result<()> {
                     ];
                     if rgb_wrap {
                         next = vec![
-                            "rgbmvp swap fund-btc --id … --rgb-wrap  # value + RGB→HTLC seal".into(),
+                            "rgbmvp swap fund-btc --id … --rgb-wrap  # value + RGB→HTLC seal"
+                                .into(),
                             "rgbmvp swap fund-lq --id … --rgb-wrap".into(),
                             "rgbmvp swap claim-lq --id …  # preimage + re-anchor + verify".into(),
                             "rgbmvp swap claim-btc --id … --from-witness".into(),
@@ -960,7 +1036,8 @@ fn run() -> Result<()> {
                         amount_sats.saturating_sub(1),
                     )
                     .ok();
-                    let (bc_val, ftxid, fvout, fval, reused) = if let Some((tx, vo, va)) = existing {
+                    let (bc_val, ftxid, fvout, fval, reused) = if let Some((tx, vo, va)) = existing
+                    {
                         (
                             serde_json::json!({
                                 "txid": tx,
@@ -1056,8 +1133,7 @@ fn run() -> Result<()> {
                 } => {
                     let svc = lab_api::SwapService::new(&cfg.data_dir);
                     let mut s = store.load(&id)?;
-                    let mut out =
-                        svc.claim_lq(&cfg, &mut s, fee_sats, commitment_sats, entropy)?;
+                    let mut out = svc.claim_lq(&cfg, &mut s, fee_sats, commitment_sats, entropy)?;
                     svc.recompute_and_save(&mut s)?;
                     out["phase"] = serde_json::json!(s.phase);
                     println!("{}", serde_json::to_string_pretty(&out)?);
@@ -1085,8 +1161,12 @@ fn run() -> Result<()> {
                 }
                 SwapCmd::RefundBtc { id, fee_sats } => {
                     let mut s = store.load(&id)?;
+                    lab_rgb::swap::hydrate_legacy_refund_txids(&mut s);
                     if s.btc_claim_txid.is_some() {
                         anyhow::bail!("BTC already claimed; cannot refund");
+                    }
+                    if s.btc_refund_txid.is_some() {
+                        anyhow::bail!("BTC already refunded");
                     }
                     let btc = lab_btc::BtcConfig::from_env();
                     let amount = s.btc_fund_sats.context("btc not funded")?;
@@ -1095,7 +1175,9 @@ fn run() -> Result<()> {
                         &s.htlc_btc.address_btc,
                         amount.saturating_sub(1),
                     )?;
-                    let (refund_sk, _) = htlc::demo_keypair(&s.htlc_btc.refund_label)?;
+                    let keyring = htlc::DemoKeyring::new(cfg.demo_exit_seed()?)?;
+                    let (refund_sk, _) =
+                        keyring.derive_for_session(&s.htlc_btc, &s.htlc_btc.refund_label)?;
                     let ws = hex::decode(&s.htlc_btc.witness_script_hex)?;
                     use bitcoin::key::{CompressedPublicKey, Secp256k1};
                     use bitcoin::{Address, Network};
@@ -1116,8 +1198,7 @@ fn run() -> Result<()> {
                         &refund_sk,
                     )?;
                     let txid = lab_btc::broadcast_raw(&btc, &raw)?;
-                    s.notes.push(format!("btc_refund_txid={txid}"));
-                    s.phase = lab_rgb::swap::SwapPhase::Refunded;
+                    lab_rgb::swap::record_btc_refund(&mut s, txid.clone());
                     store.save(&s)?;
                     println!(
                         "{}",
@@ -1133,8 +1214,12 @@ fn run() -> Result<()> {
                 }
                 SwapCmd::RefundLq { id, fee_sats } => {
                     let mut s = store.load(&id)?;
+                    lab_rgb::swap::hydrate_legacy_refund_txids(&mut s);
                     if s.lq_claim_txid.is_some() {
                         anyhow::bail!("Liquid already claimed; cannot refund");
+                    }
+                    if s.lq_refund_txid.is_some() {
+                        anyhow::bail!("Liquid already refunded");
                     }
                     let amount = s.lq_fund_sats.context("lq not funded")?;
                     let (txid, vout, value) = lab_chain::find_address_utxo(
@@ -1142,7 +1227,9 @@ fn run() -> Result<()> {
                         &s.htlc_lq.address_liquid_unconf,
                         amount.saturating_sub(1),
                     )?;
-                    let (refund_sk, _) = htlc::demo_keypair(&s.htlc_lq.refund_label)?;
+                    let keyring = htlc::DemoKeyring::new(cfg.demo_exit_seed()?)?;
+                    let (refund_sk, _) =
+                        keyring.derive_for_session(&s.htlc_lq, &s.htlc_lq.refund_label)?;
                     let ws = hex::decode(&s.htlc_lq.witness_script_hex)?;
                     use bitcoin::key::{CompressedPublicKey, Secp256k1};
                     use bitcoin::{Address, Network};
@@ -1166,8 +1253,7 @@ fn run() -> Result<()> {
                         &refund_sk,
                     )?;
                     let claim_txid = lab_chain::broadcast_raw_hex(&cfg, &raw)?;
-                    s.notes.push(format!("lq_refund_txid={claim_txid}"));
-                    s.phase = lab_rgb::swap::SwapPhase::Refunded;
+                    lab_rgb::swap::record_lq_refund(&mut s, claim_txid.clone());
                     store.save(&s)?;
                     println!(
                         "{}",
@@ -1192,7 +1278,9 @@ fn run() -> Result<()> {
                         anyhow::bail!("hash must be 32 bytes");
                     }
                     h.copy_from_slice(&b);
-                    let info = htlc::build_htlc_addresses(&h, &claimer, &refund, csv_delay)?;
+                    let keyring = htlc::DemoKeyring::new(cfg.demo_exit_seed()?)?;
+                    let info =
+                        htlc::build_htlc_addresses(&keyring, &h, &claimer, &refund, csv_delay)?;
                     println!("{}", serde_json::to_string_pretty(&info)?);
                 }
                 SwapCmd::ExtractPreimage { chain, txid, id } => {
@@ -1261,6 +1349,7 @@ fn run() -> Result<()> {
                     );
                 }
                 BtcCmd::DemoExits => {
+                    let keyring = htlc::DemoKeyring::new(cfg.demo_exit_seed()?)?;
                     let mut out = Vec::new();
                     // Liquid-side exits: inspection only (no sweep implemented).
                     for label in lab_chain::LQ_DEMO_EXIT_LABELS {
@@ -1279,7 +1368,7 @@ fn run() -> Result<()> {
                         }
                     }
                     for label in lab_btc::BTC_DEMO_EXIT_LABELS {
-                        let (_, addr) = lab_btc::demo_exit_address(&btc, label)?;
+                        let (_, addr) = lab_btc::demo_exit_address(&btc, &keyring, label)?;
                         let a = addr.to_string();
                         let utxos = lab_btc::address_utxos(&btc, &a).unwrap_or_default();
                         out.push(serde_json::json!({
@@ -1305,8 +1394,7 @@ fn run() -> Result<()> {
                     let btc_res = lab_btc::sweep_all_demo_exits(&cfg, &btc, &to, fee_sats)?;
                     let mut out = serde_json::json!({ "bitcoin": btc_res });
                     if include_liquid {
-                        let lq_res =
-                            lab_chain::sweep_all_demo_exits_lq(&cfg, &lq_to, lq_fee_sats)?;
+                        let lq_res = lab_chain::sweep_all_demo_exits_lq(&cfg, &lq_to, lq_fee_sats)?;
                         out["liquid"] = serde_json::to_value(&lq_res)?;
                     }
                     println!("{}", serde_json::to_string_pretty(&out)?);
@@ -1343,6 +1431,10 @@ fn run() -> Result<()> {
             // U5 Axum is default; LABD_HTTP=legacy restores handwritten TCP server.
             let backend = std::env::var("LABD_HTTP").unwrap_or_else(|_| "axum".into());
             if backend.eq_ignore_ascii_case("legacy") {
+                anyhow::ensure!(
+                    !rgb_demo::policy_from_env().enabled,
+                    "LABD_RGB_DEMO requires the default Axum HTTP backend"
+                );
                 labd_legacy::serve_labd_legacy(&cfg, &bind)?;
             } else {
                 labd_axum::serve(&cfg, &bind)?;
@@ -1463,10 +1555,7 @@ fn run() -> Result<()> {
                 )?;
                 println!("{}", serde_json::to_string_pretty(&json)?);
             }
-            BfaCmd::Audit {
-                history,
-                fetch_rpc,
-            } => {
+            BfaCmd::Audit { history, fetch_rpc } => {
                 let s = fs::read_to_string(&history)
                     .with_context(|| format!("read {}", history.display()))?;
                 let hist: lab_rgb::bfa::BfaHistory = serde_json::from_str(&s)?;
@@ -1513,6 +1602,5 @@ fn run() -> Result<()> {
     }
     Ok(())
 }
-
 
 // S3 fund-wrap / claim / extract-preimage live in lab_api::s3 + SwapService.

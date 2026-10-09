@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::htlc::{self, HtlcAddressInfo};
@@ -19,6 +19,9 @@ pub enum SwapPhase {
     ClaimedLq,
     ClaimedBtc,
     Done,
+    /// At least one funded leg was refunded, while another funded leg still
+    /// needs its own refund after CSV maturity.
+    Refunding,
     Refunded,
 }
 
@@ -77,6 +80,12 @@ pub struct SwapSession {
     pub lq_fund_sats: Option<u64>,
     pub lq_claim_txid: Option<String>,
     pub btc_claim_txid: Option<String>,
+    /// Refunds are tracked per leg. Older sessions recorded these only in
+    /// `notes`; [`hydrate_legacy_refund_txids`] upgrades them on load.
+    #[serde(default)]
+    pub lq_refund_txid: Option<String>,
+    #[serde(default)]
+    pub btc_refund_txid: Option<String>,
     pub notes: Vec<String>,
 }
 
@@ -107,14 +116,48 @@ impl SwapStore {
     pub fn save(&self, s: &SwapSession) -> Result<PathBuf> {
         self.ensure()?;
         let p = self.path(&s.id);
-        fs::write(&p, serde_json::to_vec_pretty(s)?)?;
+        let bytes = serde_json::to_vec_pretty(s)?;
         #[cfg(unix)]
         {
+            use std::io::Write;
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&p)?.permissions();
-            perms.set_mode(0o600);
-            fs::set_permissions(&p, perms)?;
+            use std::os::unix::fs::OpenOptionsExt;
+
+            // Set the private mode at creation time and verify it before any
+            // preimage bytes are written. Cloud Storage FUSE applies one mode
+            // at mount time and does not provide normal per-object chmod
+            // semantics, so an insecure mount must fail before persistence.
+            let existed = p.exists();
+            if existed {
+                let current = fs::metadata(&p)?.permissions().mode() & 0o777;
+                ensure!(
+                    current == 0o600,
+                    "swap session {} has insecure mode {current:04o}; expected 0600",
+                    p.display()
+                );
+            }
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .mode(0o600)
+                .open(&p)?;
+            let effective = file.metadata()?.permissions().mode() & 0o777;
+            if effective != 0o600 {
+                drop(file);
+                if !existed {
+                    let _ = fs::remove_file(&p);
+                }
+                bail!(
+                    "swap session {} has insecure mode {effective:04o}; expected 0600",
+                    p.display()
+                );
+            }
+            file.write_all(&bytes)?;
+            file.sync_all()?;
         }
+        #[cfg(not(unix))]
+        fs::write(&p, bytes)?;
         Ok(p)
     }
 
@@ -130,6 +173,7 @@ impl SwapStore {
 }
 
 pub fn init_swap(
+    keyring: &htlc::DemoKeyring,
     id: &str,
     csv_delay: u32,
     alice_btc_wallet: &str,
@@ -149,9 +193,11 @@ pub fn init_swap(
     let hash = htlc::sha256_preimage(&preimage);
 
     // BTC: Bob claims Alice's locked coins; Alice refunds after CSV
-    let htlc_btc = htlc::build_htlc_addresses(&hash, "bob-claimer", "alice-refund", csv_delay)?;
+    let htlc_btc =
+        htlc::build_htlc_addresses(keyring, &hash, "bob-claimer", "alice-refund", csv_delay)?;
     // LQ: Alice claims Bob's locked L-BTC; Bob refunds after CSV
-    let htlc_lq = htlc::build_htlc_addresses(&hash, "alice-claimer", "bob-refund", csv_delay)?;
+    let htlc_lq =
+        htlc::build_htlc_addresses(keyring, &hash, "alice-claimer", "bob-refund", csv_delay)?;
 
     let btc_rgb = btc_contract_id.as_ref().map(|cid| SwapLegRgb {
         contract_id: cid.clone(),
@@ -199,6 +245,8 @@ pub fn init_swap(
         lq_fund_sats: None,
         lq_claim_txid: None,
         btc_claim_txid: None,
+        lq_refund_txid: None,
+        btc_refund_txid: None,
         notes,
     })
 }
@@ -299,7 +347,17 @@ pub fn check_leg_contract_matches_session(
 }
 
 pub fn recompute_phase(s: &mut SwapSession) {
-    if matches!(s.phase, SwapPhase::Refunded) {
+    let any_refund = s.btc_refund_txid.is_some() || s.lq_refund_txid.is_some();
+    if any_refund {
+        let btc_resolved =
+            s.btc_fund_txid.is_none() || s.btc_claim_txid.is_some() || s.btc_refund_txid.is_some();
+        let lq_resolved =
+            s.lq_fund_txid.is_none() || s.lq_claim_txid.is_some() || s.lq_refund_txid.is_some();
+        s.phase = if btc_resolved && lq_resolved {
+            SwapPhase::Refunded
+        } else {
+            SwapPhase::Refunding
+        };
         return;
     }
     let btc = s.btc_fund_txid.is_some();
@@ -315,6 +373,51 @@ pub fn recompute_phase(s: &mut SwapSession) {
         (false, true, _, _) => SwapPhase::FundedLq,
         _ => SwapPhase::Created,
     };
+}
+
+/// Upgrade sessions written before refund txids had dedicated fields.
+///
+/// Returns true when the session changed and should be persisted. This keeps a
+/// crash between two leg refunds recoverable instead of treating the first
+/// refund as terminal for the whole swap.
+pub fn hydrate_legacy_refund_txids(s: &mut SwapSession) -> bool {
+    let before_btc = s.btc_refund_txid.clone();
+    let before_lq = s.lq_refund_txid.clone();
+    if s.btc_refund_txid.is_none() {
+        s.btc_refund_txid = refund_txid_from_notes(&s.notes, "btc_refund_txid=");
+    }
+    if s.lq_refund_txid.is_none() {
+        s.lq_refund_txid = refund_txid_from_notes(&s.notes, "lq_refund_txid=");
+    }
+    let changed = s.btc_refund_txid != before_btc || s.lq_refund_txid != before_lq;
+    if changed || matches!(s.phase, SwapPhase::Refunded | SwapPhase::Refunding) {
+        let before_phase = s.phase.clone();
+        recompute_phase(s);
+        return changed || s.phase != before_phase;
+    }
+    false
+}
+
+fn refund_txid_from_notes(notes: &[String], prefix: &str) -> Option<String> {
+    notes
+        .iter()
+        .rev()
+        .find_map(|note| note.strip_prefix(prefix))
+        .map(str::trim)
+        .filter(|txid| !txid.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+pub fn record_btc_refund(s: &mut SwapSession, txid: String) {
+    s.notes.push(format!("btc_refund_txid={txid}"));
+    s.btc_refund_txid = Some(txid);
+    recompute_phase(s);
+}
+
+pub fn record_lq_refund(s: &mut SwapSession, txid: String) {
+    s.notes.push(format!("lq_refund_txid={txid}"));
+    s.lq_refund_txid = Some(txid);
+    recompute_phase(s);
 }
 
 /// Mark both value claims complete (test / offline helper). Does not set RGB verifies.
@@ -340,6 +443,7 @@ mod tests {
 
     fn dual_wrap_session() -> SwapSession {
         init_swap(
+            &htlc::test_keyring(),
             "s3-neg",
             6,
             "btc-alice",
@@ -370,11 +474,70 @@ mod tests {
         assert!(!s.rgb_wrap);
         assert_eq!(s.version, 1);
         assert!(s.btc_rgb.is_none());
+        assert!(s.btc_refund_txid.is_none());
+        assert!(s.lq_refund_txid.is_none());
+    }
+
+    #[test]
+    fn partial_refund_is_not_terminal_until_every_funded_leg_resolves() {
+        let mut s = init_swap(
+            &htlc::test_keyring(),
+            "partial-refund",
+            6,
+            "btc-alice",
+            "bob",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        s.btc_fund_txid = Some("btc-fund".into());
+        s.lq_fund_txid = Some("lq-fund".into());
+
+        record_lq_refund(&mut s, "lq-refund".into());
+        assert_eq!(s.phase, SwapPhase::Refunding);
+        assert!(s.btc_refund_txid.is_none());
+
+        record_btc_refund(&mut s, "btc-refund".into());
+        assert_eq!(s.phase, SwapPhase::Refunded);
+    }
+
+    #[test]
+    fn legacy_refund_note_hydrates_partial_state_for_retry() {
+        let mut s = init_swap(
+            &htlc::test_keyring(),
+            "legacy-partial-refund",
+            6,
+            "btc-alice",
+            "bob",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        s.btc_fund_txid = Some("btc-fund".into());
+        s.lq_fund_txid = Some("lq-fund".into());
+        s.notes.push("lq_refund_txid=legacy-lq-refund".into());
+        s.phase = SwapPhase::Refunded;
+
+        assert!(hydrate_legacy_refund_txids(&mut s));
+        assert_eq!(s.lq_refund_txid.as_deref(), Some("legacy-lq-refund"));
+        assert_eq!(s.phase, SwapPhase::Refunding);
     }
 
     #[test]
     fn value_only_done_without_rgb_fields() {
-        let mut s = init_swap("vo", 6, "btc-alice", "bob", None, None, false).unwrap();
+        let mut s = init_swap(
+            &htlc::test_keyring(),
+            "vo",
+            6,
+            "btc-alice",
+            "bob",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         assert!(!s.rgb_wrap);
         mark_value_claims_complete(&mut s);
         assert_eq!(s.phase, SwapPhase::Done);
@@ -462,7 +625,17 @@ mod tests {
 
     #[test]
     fn rgb_done_requires_verify_when_wrap() {
-        let mut s = init_swap("x", 6, "btc-alice", "bob", Some("c1".into()), None, true).unwrap();
+        let mut s = init_swap(
+            &htlc::test_keyring(),
+            "x",
+            6,
+            "btc-alice",
+            "bob",
+            Some("c1".into()),
+            None,
+            true,
+        )
+        .unwrap();
         s.btc_fund_txid = Some("a".into());
         s.lq_fund_txid = Some("b".into());
         s.lq_claim_txid = Some("c".into());
@@ -481,11 +654,65 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rgbmvp-swap-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = SwapStore::new(&dir);
-        let s = init_swap("id1", 6, "a", "b", None, None, false).unwrap();
+        let s = init_swap(
+            &htlc::test_keyring(),
+            "id1",
+            6,
+            "a",
+            "b",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        store.save(&s).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = store.path("id1");
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        // Rewriting a file that is already 0600 exercises the GCSFUSE-safe
+        // path that never relies on per-object chmod.
         store.save(&s).unwrap();
         let loaded = store.load("id1").unwrap();
         assert_eq!(loaded.preimage_hex, s.preimage_hex);
         assert_eq!(loaded.hash_hex, s.hash_hex);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn store_refuses_insecure_existing_session_before_overwrite() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "rgbmvp-swap-insecure-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = SwapStore::new(&dir);
+        store.ensure().unwrap();
+        let path = store.path("id1");
+        std::fs::write(&path, b"sentinel").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let s = init_swap(
+            &htlc::test_keyring(),
+            "id1",
+            6,
+            "a",
+            "b",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        let err = store.save(&s).unwrap_err();
+        assert!(err.to_string().contains("insecure mode 0644"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"sentinel");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

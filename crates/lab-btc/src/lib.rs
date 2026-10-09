@@ -648,16 +648,20 @@ pub fn find_htlc_utxo(btc: &BtcConfig, address: &str, min_sats: u64) -> Result<B
 // T1/W5 — sweep demo HTLC exit addresses back into the funding wallet.
 //
 // Every HTLC exit path (claim AND refund, both chains) pays a P2WPKH address
-// derived from `htlc::demo_keypair(<label>)`, i.e. `sha256(label)` — NOT back to
-// the wallet that funded the leg. Without a sweep, btc-alice drains on every
-// swap regardless of outcome and the value strands at four fixed addresses.
-//
-// The keys are deterministic, so recovery is always possible; this just
-// automates it.
+// derived from the custody-backed demo-exit seed plus a public role label — NOT
+// back to the wallet that funded the leg. Without a sweep, btc-alice drains on
+// every swap regardless of outcome and the value strands at four addresses
+// fixed for the lifetime of that seed.
 // ---------------------------------------------------------------------------
 
 /// Labels every BTC-side HTLC exit pays out to.
 pub const BTC_DEMO_EXIT_LABELS: [&str; 2] = ["bob-claimer", "alice-refund"];
+
+/// Minimum standard P2WPKH output retained after a demo-exit sweep.
+///
+/// Kept public so T1 startup can reject a leg/fee combination that would
+/// strand the output from a single swap until another exit accumulates.
+pub const DEMO_EXIT_DUST_THRESHOLD_SATS: u64 = 294;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SweepResult {
@@ -672,8 +676,12 @@ pub struct SweepResult {
 }
 
 /// P2WPKH address a demo label receives at.
-pub fn demo_exit_address(btc: &BtcConfig, label: &str) -> Result<(SecretKey, Address)> {
-    let (sk, _) = lab_rgb::htlc::demo_keypair(label)?;
+pub fn demo_exit_address(
+    btc: &BtcConfig,
+    keyring: &lab_rgb::htlc::DemoKeyring,
+    label: &str,
+) -> Result<(SecretKey, Address)> {
+    let (sk, _) = keyring.derive(label)?;
     let secp = Secp256k1::new();
     let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
     let compressed = CompressedPublicKey(pk);
@@ -687,6 +695,7 @@ pub fn demo_exit_address(btc: &BtcConfig, label: &str) -> Result<(SecretKey, Add
 /// is nothing to sweep or the balance cannot cover the fee.
 pub fn sweep_demo_exit(
     btc: &BtcConfig,
+    keyring: &lab_rgb::htlc::DemoKeyring,
     label: &str,
     to_address: &str,
     fee_sats: u64,
@@ -700,7 +709,7 @@ pub fn sweep_demo_exit(
     use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
 
     btc.ensure_testnet()?;
-    let (sk, from_addr) = demo_exit_address(btc, label)?;
+    let (sk, from_addr) = demo_exit_address(btc, keyring, label)?;
     let spk = from_addr.script_pubkey();
     let address = from_addr.to_string();
 
@@ -726,7 +735,7 @@ pub fn sweep_demo_exit(
         return Ok(result);
     }
     // Dust guard: sweeping for less than the fee would destroy value.
-    if total <= fee_sats + 294 {
+    if total <= fee_sats + DEMO_EXIT_DUST_THRESHOLD_SATS {
         result.skipped_reason = Some(format!(
             "balance {total} does not cover fee {fee_sats} plus dust threshold"
         ));
@@ -799,9 +808,10 @@ pub fn sweep_all_demo_exits(
     fee_sats: u64,
 ) -> Result<Vec<SweepResult>> {
     let info = load_wallet_address(cfg, btc, to_wallet)?;
+    let keyring = lab_rgb::htlc::DemoKeyring::new(cfg.demo_exit_seed()?)?;
     let mut out = Vec::new();
     for label in BTC_DEMO_EXIT_LABELS {
-        match sweep_demo_exit(btc, label, &info.address, fee_sats) {
+        match sweep_demo_exit(btc, &keyring, label, &info.address, fee_sats) {
             Ok(r) => out.push(r),
             Err(e) => out.push(SweepResult {
                 label: label.to_string(),
