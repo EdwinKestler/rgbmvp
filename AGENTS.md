@@ -50,9 +50,14 @@ Full contract: [docs/PROJECT_MEMORY.md](docs/PROJECT_MEMORY.md) · protocol: [do
 
 ## T1 demo swaps — invariants (do not regress)
 
-`POST /v1/demo/swap` is the **only** endpoint an unauthenticated visitor may use
-to cause a state change, and only when `LABD_DEMO_SWAPS=1` (off by default).
+`POST /v1/demo/swap` and `POST /v1/demo/rgb/run` are the **only** endpoints an
+unauthenticated visitor may use to cause a state change, and only when their
+independent flags are enabled (both off by default).
 Contract: [docs/TESTNET_PUBLIC_SWAPS.md](docs/TESTNET_PUBLIC_SWAPS.md).
+
+- The RGB demo accepts only `turnstile_token`, requires action
+  `rgbmvp_rgb_lab`, fixes `bob → alice` and every chain/asset/amount/broadcast
+  parameter server-side, and uses a quota ledger separate from T1.
 
 - The demo endpoint accepts **only** a bot-check token. Amounts, fees, CSV delay,
   wallet names, and `rgb_wrap=false` are server-fixed — never read them from the
@@ -63,19 +68,45 @@ Contract: [docs/TESTNET_PUBLIC_SWAPS.md](docs/TESTNET_PUBLIC_SWAPS.md).
   network, no filesystem) so they remain deterministically testable.
 - Admission **reserves** the worst-case fee; failures release the slot but keep
   day/IP quota (anti retry-spam). Unknown balances **fail closed**.
+- The full reservation must be durably committed before a demo session is
+  created. Recovered reservations and unknown execution outcomes remain charged;
+  corrupt/unreadable budget state blocks startup. Only a proven pre-execution
+  failure may release a reservation. The maximum must include the BTC funding,
+  claim/refund, and exit-sweep fees. Startup refuses under-reservation, and
+  runtime settlement records actual fees without clamping them to the reserve.
+- The fixed BTC leg must be individually recyclable: after the claim/refund and
+  exit-sweep fees, its return output must remain above the P2WPKH dust threshold.
+  Startup refuses a leg/fee combination that would strand a single exit.
 - Custody (`lab_core::custody`) resolves keys from `RGBMVP_SECRET_DIR`
   (colon-separated) before local wallet dirs, and labd refuses to start on a
   public bind without it, or with a group/world-readable key.
 - The refund watcher may only touch ids it minted (`demo-<epoch>-<seq>`) — never
   an operator's swap session.
-- **HTLC exits do NOT pay the funding wallet.** Claim and refund both pay
-  `P2WPKH(sha256(<label>))` for the four demo labels. Recovering that value
-  requires the sweep — `lab_btc::sweep_all_demo_exits` (BTC) and
+- Refund completion is per leg: a first-chain refund leaves the session
+  `refunding`; the watcher must keep retrying the other funded leg after its
+  independent CSV maturity. Only both resolved legs may become `refunded`.
+- **HTLC exits do NOT pay the funding wallet.** Claim and refund both pay one
+  of four P2WPKH addresses whose private keys are hardened children of the
+  custody-backed demo-exit seed. Public labels must never determine a signing
+  key. Recovering that value requires the sweep —
+  `lab_btc::sweep_all_demo_exits` (BTC) and
   `lab_chain::sweep_all_demo_exits_lq` (Liquid, explicit L-BTC only). Without it
   both `btc-alice` and `bob` drain every swap. Never claim "refunds return value
   to the funder".
-- `RGBMVP_DATA_DIR` must be persistent in deployment, or the fee budget resets
-  on restart and the run can overshoot its ceiling.
+- Never rotate the demo-exit seed while its sessions or exit outputs remain;
+  disable T1, finish/refund legacy sessions, sweep all exits, then rotate.
+- `RGBMVP_DATA_DIR` must be persistent in deployment. Follow
+  `docs/T1_FEE_BUDGET_REMEDIATION.md`; never bypass a budget-recovery refusal.
+- T1 rollback must target the live `rgbmvp-demo` service with
+  `deploy/cloudrun-demo-freeze.yaml`. `deploy/cloudrun.yaml` names the separate
+  `rgbmvp-public` service and cannot disable or replace T1.
+- Per-IP quotas use `LABD_XFF_TRUSTED_HOPS`, the exact trusted right-edge XFF
+  suffix length. Never restore the Boolean `LABD_TRUST_XFF`, select the
+  rightmost entry, accept invalid IP tokens, or trust XFF on an unverified path.
+- `/v1/demo/wallets` may publish aggregate testnet L-BTC only from the dedicated
+  watch-only bundle (`RGBMVP_LIQUID_WATCH_BUNDLE`). Keep that mount outside
+  `RGBMVP_SECRET_DIR`, reject spending private keys and address mismatches, and
+  never feed its display/stale cache into T1 admission or signing paths.
 
 ## Local development
 
