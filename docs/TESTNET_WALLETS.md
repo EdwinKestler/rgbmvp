@@ -44,6 +44,13 @@ Mnemonics live in that JSON (testnet-only public fixtures). On disk after bootst
 .rgbmvp/wallet_registry.json        # addresses only (safe to share locally)
 ```
 
+The public `/demo` board never receives these files. Bitcoin balances come
+from Esplora. Confidential Liquid amounts require blinding material, so the
+Cloud Run board uses a separately mounted bundle of watch-only descriptors
+(public derivation keys + SLIP77) and returns only aggregate testnet L-BTC with
+`balance_status` and `balance_as_of_epoch`. Fixture mnemonics are not uploaded
+for this purpose. See `deploy/README.md` §5.3.1.
+
 ---
 
 ## Bootstrap (every machine / CI)
@@ -89,6 +96,8 @@ mnemonics are fixed.
 | `wallet balance --name bob` | Sync + balances |
 | `wallet utxos --name alice` | Seal candidates |
 | `wallet send --from alice --to bob --amount-sats N` | Rebalance |
+| `wallet rebalance-demo` | Dry-run the threshold-based fixed Alice → Bob RGB demo rebalance |
+| `wallet rebalance-demo --apply` | Broadcast only the bounded amount shown by a fresh plan |
 | `wallet send --from alice --to-address tlq1… --amount-sats N` | External pay |
 
 RGB commands should pass `--wallet alice` (or bob) explicitly:
