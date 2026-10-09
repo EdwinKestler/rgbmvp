@@ -23,6 +23,7 @@ RUN rustc --version && cargo build --release -p lab-cli
 
 FROM debian:bookworm-slim
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
