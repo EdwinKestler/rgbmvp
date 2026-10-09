@@ -81,7 +81,7 @@ Map every feature to a scenario id (e.g. `R4`, `S3`, `C0`, `U2`).
 |----------|--------|
 | Authoritative truth | **Never** Redis — always open the file |
 | Hit meaning | Pointer only: `path` + line range + score + snippet |
-| Storage | Local Redis, default `redis://localhost:6379/0` |
+| Storage | Local Redis, default `redis://127.0.0.1:6379/0` |
 | Tool | **Canonical:** `project-memory.py`; `scripts/project_memory.py` is compatibility-only |
 | Namespace | `rgbmvp:project-memory:v2:*` (configured project slug) |
 | Schema | `project-memory:v2` |
@@ -103,13 +103,14 @@ python3 project-memory.py validate --deep    # full active chunk/vector verifica
 python3 project-memory.py search "QUERY" --limit 5
 python3 project-memory.py symbols "SYMBOL" --limit 20
 python3 project-memory.py impact "SYMBOL" --limit 20
+python3 project-memory.py path "SOURCE" "TARGET" --edge-kind calls
 python3 project-memory.py evaluate --limit 10
 python3 project-memory.py clear    # this namespace only — never FLUSHDB
 ```
 
-v2.3 keeps graph extraction breadth unchanged while storing per-file extraction graphs as
-content-addressed records referenced by a compact transactional manifest. Graph consumers load
-records lazily; repository files remain authoritative.
+v2.4 keeps the v2 schema and v3 graph format unchanged, stores per-file extraction graphs as
+content-addressed records, and adds read-only minimum-hop dependency paths. Path traversal uses
+strong resolutions by default; repository files remain authoritative.
 
 | Env / flag | Purpose |
 |------------|---------|
@@ -175,13 +176,15 @@ rgbmvp serve --bind 127.0.0.1:8080
 | GET | `/v1` | Catalog JSON |
 | GET | `/v1/health` | Network + `rgb_ready` |
 | GET | `/v1/phases` | Ladder chip statuses |
-| GET | `/v1/demo/wallets` · `/v1/demo/activity` | Board |
+| GET | `/v1/demo/wallets` · `/v1/demo/activity` | Board; BTC via Esplora, confidential L-BTC via server-side watch-only LWK sync with explicit live/stale metadata |
+| GET | `/v1/demo/rgb/quota` | Fixed RGB lab parameters, limits, and usage |
+| POST | `/v1/demo/rgb/run` | Anonymous Turnstile-gated fixed `bob → alice` Issue → Transfer → Verify |
 | POST | `/v1/rgb/issue` · `/v1/rgb/transfer` · `/v1/rgb/verify` | Server-side lab wallets |
 | GET | `/v1/rgb/contracts` · `/v1/rgb/plans/{id}` | Stored artifacts |
 | POST | `/v1/swap/init` | Create session |
 | GET | `/v1/swap/{id}` | Public view; **preimage null** |
 | POST | `/v1/swap/{id}/action` | `fund_btc\|fund_lq\|claim_lq\|claim_btc\|refund_*\|set_contracts` |
-| POST | `/v1/audit/bfa` | BFA history body |
+| POST | `/v1/audit/bfa` | BFA history body; public compute-only mode requires embedded witness hex |
 
 Static: `/`, `/status`, `/demo`, `/audit`.
 

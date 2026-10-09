@@ -11,8 +11,8 @@ use lab_core::{write_secret_file, Config, HealthCheck, HealthReport};
 use lwk_common::Signer;
 use lwk_signer::SwSigner;
 use lwk_wollet::{
-    full_scan_with_electrum_client, ElectrumClient, ElectrumUrl, Network, Wollet,
-    WolletBuilder, WolletDescriptor,
+    full_scan_with_electrum_client, ElectrumClient, ElectrumUrl, Network, Wollet, WolletBuilder,
+    WolletDescriptor,
 };
 use serde::{Deserialize, Serialize};
 
@@ -91,8 +91,7 @@ fn probe_electrum(cfg: &Config) -> Result<()> {
         cfg.electrum_validate_domain,
     )
     .map_err(|e| anyhow::anyhow!("ElectrumUrl: {e}"))?;
-    let _client =
-        ElectrumClient::new(&url).map_err(|e| anyhow::anyhow!("ElectrumClient: {e}"))?;
+    let _client = ElectrumClient::new(&url).map_err(|e| anyhow::anyhow!("ElectrumClient: {e}"))?;
     Ok(())
 }
 
@@ -129,7 +128,11 @@ pub struct WalletBalanceResult {
 /// Create a new singlesig Liquid Testnet wallet (mnemonic written under data dir).
 pub fn wallet_create(cfg: &Config, name: &str, force: bool) -> Result<WalletCreateResult> {
     cfg.ensure_dirs()?;
-    let name = if name.is_empty() { DEFAULT_WALLET } else { name };
+    let name = if name.is_empty() {
+        DEFAULT_WALLET
+    } else {
+        name
+    };
     let dir = cfg.wallet_path(name);
     let mnemonic_path = dir.join("mnemonic");
     let descriptor_path = dir.join("descriptor");
@@ -180,8 +183,26 @@ pub fn wallet_create(cfg: &Config, name: &str, force: bool) -> Result<WalletCrea
 }
 
 pub fn wallet_address(cfg: &Config, name: &str, index: Option<u32>) -> Result<WalletAddressResult> {
-    let name = if name.is_empty() { DEFAULT_WALLET } else { name };
+    let name = if name.is_empty() {
+        DEFAULT_WALLET
+    } else {
+        name
+    };
     let descriptor = load_descriptor(cfg, name)?;
+    wallet_address_from_descriptor(cfg, name, &descriptor, index)
+}
+
+/// Derive a Liquid Testnet address from an already-loaded watch descriptor.
+///
+/// This is intentionally read-only: callers get a `Wollet`, never a signer.
+/// Public deployments use it for the demo board's Secret Manager-backed
+/// watch-only descriptor bundle.
+pub fn wallet_address_from_descriptor(
+    cfg: &Config,
+    name: &str,
+    descriptor: &str,
+    index: Option<u32>,
+) -> Result<WalletAddressResult> {
     let wollet = open_wollet(&descriptor)?;
     let addr = wollet
         .address(index)
@@ -196,8 +217,24 @@ pub fn wallet_address(cfg: &Config, name: &str, index: Option<u32>) -> Result<Wa
 }
 
 pub fn wallet_balance(cfg: &Config, name: &str) -> Result<WalletBalanceResult> {
-    let name = if name.is_empty() { DEFAULT_WALLET } else { name };
+    let name = if name.is_empty() {
+        DEFAULT_WALLET
+    } else {
+        name
+    };
     let descriptor = load_descriptor(cfg, name)?;
+    wallet_balance_from_descriptor(cfg, name, &descriptor)
+}
+
+/// Synchronize and aggregate a Liquid Testnet wallet from a watch descriptor.
+///
+/// The descriptor may contain SLIP77 blinding material so controlled outputs
+/// can be unblinded, but this path constructs no signer and cannot spend.
+pub fn wallet_balance_from_descriptor(
+    cfg: &Config,
+    name: &str,
+    descriptor: &str,
+) -> Result<WalletBalanceResult> {
     let mut wollet = open_wollet(&descriptor)?;
 
     let url = ElectrumUrl::new(
@@ -236,13 +273,18 @@ pub fn wallet_balance(cfg: &Config, name: &str) -> Result<WalletBalanceResult> {
 }
 
 fn load_descriptor(cfg: &Config, name: &str) -> Result<String> {
-    let path = cfg.wallet_path(name).join("descriptor");
-    if !path.exists() {
-        bail!(
-            "wallet {name:?} not found (missing {}); run: rgbmvp wallet create --name {name}",
-            path.display()
-        );
-    }
+    let fallback = cfg.wallet_path(name);
+    let path = lab_core::resolve_secret_path(
+        &lab_core::secret_dirs(),
+        &fallback,
+        name,
+        lab_core::KIND_DESCRIPTOR,
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+        "wallet {name:?} not found (missing descriptor); run: rgbmvp wallet create --name {name}"
+    )
+    })?;
     lab_core::read_trimmed(&path)
 }
 
@@ -272,7 +314,6 @@ pub fn load_mnemonic(cfg: &Config, name: &str) -> Result<String> {
     lab_core::read_trimmed(&path)
 }
 
-
 /// Create wallet from an explicit mnemonic (import / fixtures).
 pub fn wallet_import(
     cfg: &Config,
@@ -282,7 +323,11 @@ pub fn wallet_import(
     role: Option<&str>,
 ) -> Result<WalletCreateResult> {
     cfg.ensure_dirs()?;
-    let name = if name.is_empty() { DEFAULT_WALLET } else { name };
+    let name = if name.is_empty() {
+        DEFAULT_WALLET
+    } else {
+        name
+    };
     let dir = cfg.wallet_path(name);
     let mnemonic_path = dir.join("mnemonic");
     if mnemonic_path.exists() && !force {
@@ -320,8 +365,7 @@ pub fn wallet_import(
         address: addr.address().to_string(),
         address_index: addr.index(),
         mnemonic_path: mnemonic_path.display().to_string(),
-        warning: "TESTNET ONLY. Fixture/imported mnemonic."
-            .into(),
+        warning: "TESTNET ONLY. Fixture/imported mnemonic.".into(),
     })
 }
 
@@ -352,10 +396,11 @@ pub fn wallet_list(cfg: &Config, sync_balances: bool) -> Result<Vec<WalletListEn
         let role = std::fs::read_to_string(&meta_path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v.get("role").and_then(|r| r.as_str().map(|s| s.to_string())));
-        let address0 = wallet_address(cfg, &name, Some(0))
-            .ok()
-            .map(|a| a.address);
+            .and_then(|v| {
+                v.get("role")
+                    .and_then(|r| r.as_str().map(|s| s.to_string()))
+            });
+        let address0 = wallet_address(cfg, &name, Some(0)).ok().map(|a| a.address);
         let lbtc_sats = if sync_balances {
             wallet_balance(cfg, &name).ok().map(|b| b.lbtc_sats)
         } else {
@@ -427,11 +472,14 @@ pub fn write_wallet_registry(cfg: &Config) -> Result<std::path::PathBuf> {
         }));
     }
     let path = cfg.data_dir.join("wallet_registry.json");
-    std::fs::write(&path, serde_json::to_vec_pretty(&serde_json::json!({
-        "network": cfg.network.to_string(),
-        "updated": true,
-        "wallets": reg,
-    }))?)?;
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "network": cfg.network.to_string(),
+            "updated": true,
+            "wallets": reg,
+        }))?,
+    )?;
     // Also copy a non-secret mirror under fixtures if writable (best-effort)
     let mirror = Path::new("fixtures/wallet_registry.local.json");
     if let Some(parent) = mirror.parent() {
@@ -472,8 +520,8 @@ pub fn send_lbtc(
     let mnemonic = load_mnemonic(cfg, name)?;
     let signer = SwSigner::new(&mnemonic, false).map_err(|e| anyhow::anyhow!("signer: {e}"))?;
     let wollet = load_synced_wollet(cfg, name)?;
-    let dest = elements::Address::from_str(to_address)
-        .map_err(|e| anyhow::anyhow!("to_address: {e}"))?;
+    let dest =
+        elements::Address::from_str(to_address).map_err(|e| anyhow::anyhow!("to_address: {e}"))?;
     let policy = *Network::TestnetLiquid.policy_asset();
 
     let builder = if dest.blinding_pubkey.is_some() {
@@ -505,11 +553,7 @@ pub fn send_lbtc(
         to_address: to_address.into(),
         amount_sats,
         txid: txid.to_string(),
-        explorer_url: format!(
-            "{}/tx/{}",
-            cfg.explorer_base.trim_end_matches('/'),
-            txid
-        ),
+        explorer_url: format!("{}/tx/{}", cfg.explorer_base.trim_end_matches('/'), txid),
     })
 }
 
@@ -517,7 +561,6 @@ pub fn send_lbtc(
 pub fn wallet_receive_address(cfg: &Config, name: &str) -> Result<String> {
     Ok(wallet_address(cfg, name, Some(0))?.address)
 }
-
 
 // ── P0: UTXOs, Esplora witness fetch, LWK spend-to-tapret ─────────────────
 
@@ -530,7 +573,11 @@ pub struct UtxoInfo {
 }
 
 pub fn wallet_utxos(cfg: &Config, name: &str) -> Result<Vec<UtxoInfo>> {
-    let name = if name.is_empty() { DEFAULT_WALLET } else { name };
+    let name = if name.is_empty() {
+        DEFAULT_WALLET
+    } else {
+        name
+    };
     let wollet = load_synced_wollet(cfg, name)?;
     let mut out = Vec::new();
     for u in wollet.utxos().map_err(|e| anyhow::anyhow!("utxos: {e}"))? {
@@ -644,6 +691,11 @@ pub struct BroadcastResult {
     pub txid: String,
     pub explorer_url: String,
     pub commitment_address: String,
+    pub fee_sats: u64,
+    pub commitment_sats: u64,
+    pub controlled_transfer_sats: u64,
+    pub nonrecoverable_cost_sats: u64,
+    pub sender_debit_sats: u64,
     pub note: String,
 }
 
@@ -708,13 +760,18 @@ pub fn broadcast_commitment_tx(
         }
     }
 
-    let mut pset = builder.finish().map_err(|e| anyhow::anyhow!("pset finish: {e}"))?;
+    let mut pset = builder
+        .finish()
+        .map_err(|e| anyhow::anyhow!("pset finish: {e}"))?;
     let _sigs = signer
         .sign(&mut pset)
         .map_err(|e| anyhow::anyhow!("sign: {e}"))?;
     let tx = wollet
         .finalize(&mut pset)
         .map_err(|e| anyhow::anyhow!("finalize: {e}"))?;
+    let fee_sats = tx.fee_in(policy);
+    let nonrecoverable_cost_sats = commitment_sats.saturating_add(fee_sats);
+    let sender_debit_sats = nonrecoverable_cost_sats.saturating_add(bob_sats);
 
     let client = electrum_client(cfg)?;
     let txid = client
@@ -723,14 +780,16 @@ pub fn broadcast_commitment_tx(
 
     Ok(BroadcastResult {
         txid: txid.to_string(),
-        explorer_url: format!(
-            "{}/tx/{}",
-            cfg.explorer_base.trim_end_matches('/'),
-            txid
-        ),
+        explorer_url: format!("{}/tx/{}", cfg.explorer_base.trim_end_matches('/'), txid),
         commitment_address: tapret_address.into(),
-        note: "Broadcast ok. TapretFirst requires commitment as first P2TR; verify with rgb verify."
-            .into(),
+        fee_sats,
+        commitment_sats,
+        controlled_transfer_sats: bob_sats,
+        nonrecoverable_cost_sats,
+        sender_debit_sats,
+        note:
+            "Broadcast ok. TapretFirst requires commitment as first P2TR; verify with rgb verify."
+                .into(),
     })
 }
 
@@ -800,19 +859,16 @@ pub fn address_spk_hex(address: &str) -> Result<Vec<u8>> {
 // T1/W5 — Liquid demo HTLC exit addresses.
 //
 // Mirror of `lab_btc::demo_exit_address` for the Liquid legs. Both Liquid exit
-// paths (Alice's claim, Bob's refund) pay a P2WPKH derived from
-// `htlc::demo_keypair(<label>)`, never the funding wallet — same defect class
-// documented in docs/TESTNET_PUBLIC_SWAPS.md §1a.
+// paths (Alice's claim, Bob's refund) pay a P2WPKH derived from a custody-backed
+// root seed plus the public role label, never the funding wallet.
 // ---------------------------------------------------------------------------
 
 /// Labels every Liquid-side HTLC exit pays out to.
 pub const LQ_DEMO_EXIT_LABELS: [&str; 2] = ["alice-claimer", "bob-refund"];
 
 /// Unconfidential Liquid P2WPKH address a demo label receives at.
-pub fn demo_exit_address_lq(label: &str) -> Result<String> {
-    // demo_keypair already hands back the 33-byte compressed pubkey, so no
-    // secp dependency is needed here.
-    let (_, pk_bytes) = lab_rgb::htlc::demo_keypair(label)?;
+pub fn demo_exit_address_lq(keyring: &lab_rgb::htlc::DemoKeyring, label: &str) -> Result<String> {
+    let (_, pk_bytes) = keyring.derive(label)?;
     // Same witness program as the Bitcoin form; Liquid testnet encodes it with
     // the `tex` HRP as an unconfidential address.
     let wpkh = elements::bitcoin::PublicKey::from_slice(&pk_bytes)
@@ -823,12 +879,8 @@ pub fn demo_exit_address_lq(label: &str) -> Result<String> {
         .push_int(0)
         .push_slice(&wpkh[..])
         .into_script();
-    let addr = elements::Address::from_script(
-        &spk,
-        None,
-        &elements::AddressParams::LIQUID_TESTNET,
-    )
-    .context("liquid address from script")?;
+    let addr = elements::Address::from_script(&spk, None, &elements::AddressParams::LIQUID_TESTNET)
+        .context("liquid address from script")?;
     Ok(addr.to_string())
 }
 
@@ -845,7 +897,8 @@ pub struct LqExitBalance {
 /// Only counts the explicit policy asset; confidential outputs are invisible
 /// here and would need a wallet scan.
 pub fn demo_exit_balance_lq(cfg: &Config, label: &str) -> Result<LqExitBalance> {
-    let address = demo_exit_address_lq(label)?;
+    let keyring = lab_rgb::htlc::DemoKeyring::new(cfg.demo_exit_seed()?)?;
+    let address = demo_exit_address_lq(&keyring, label)?;
     let api = esplora_api_base(cfg);
     let url = format!("{api}/address/{address}/utxo");
     let v: serde_json::Value = reqwest::blocking::Client::builder()
@@ -885,6 +938,7 @@ pub struct LqSweepResult {
 /// invisible to this path and are left untouched.
 pub fn sweep_demo_exit_lq(
     cfg: &Config,
+    keyring: &lab_rgb::htlc::DemoKeyring,
     label: &str,
     to_address: &str,
     fee_sats: u64,
@@ -900,8 +954,8 @@ pub fn sweep_demo_exit_lq(
     };
     use std::str::FromStr;
 
-    let (sk_btc, pk_bytes) = lab_rgb::htlc::demo_keypair(label)?;
-    let address = demo_exit_address_lq(label)?;
+    let (sk_btc, pk_bytes) = keyring.derive(label)?;
+    let address = demo_exit_address_lq(keyring, label)?;
     let policy = Network::TestnetLiquid.policy_asset().to_string();
 
     // Collect confirmed, explicit policy-asset UTXOs.
@@ -943,8 +997,7 @@ pub fn sweep_demo_exit_lq(
         return Ok(result);
     }
     if total <= fee_sats {
-        result.skipped_reason =
-            Some(format!("balance {total} does not cover fee {fee_sats}"));
+        result.skipped_reason = Some(format!("balance {total} does not cover fee {fee_sats}"));
         return Ok(result);
     }
 
@@ -1034,9 +1087,10 @@ pub fn sweep_all_demo_exits_lq(
     fee_sats: u64,
 ) -> Result<Vec<LqSweepResult>> {
     let dest = wallet_address(cfg, to_wallet, None)?.address;
+    let keyring = lab_rgb::htlc::DemoKeyring::new(cfg.demo_exit_seed()?)?;
     let mut out = Vec::new();
     for label in LQ_DEMO_EXIT_LABELS {
-        match sweep_demo_exit_lq(cfg, label, &dest, fee_sats) {
+        match sweep_demo_exit_lq(cfg, &keyring, label, &dest, fee_sats) {
             Ok(r) => out.push(r),
             Err(e) => out.push(LqSweepResult {
                 label: label.to_string(),

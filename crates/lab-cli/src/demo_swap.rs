@@ -12,7 +12,7 @@
 //!
 //! See `docs/TESTNET_PUBLIC_SWAPS.md` (ADR-T1).
 
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -29,8 +29,15 @@ const DRIVER_MAX_WALL: Duration = Duration::from_secs(60 * 90);
 const DRIVER_POLL: Duration = Duration::from_secs(60);
 
 /// Cloudflare Turnstile server-side verification endpoint.
-const TURNSTILE_VERIFY_URL: &str =
-    "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+
+/// Context bound into every public demo token. The browser requests this
+/// action and Siteverify must echo it exactly before admission can continue.
+pub const TURNSTILE_ACTION: &str = "rgbmvp_demo_swap";
+pub const RGB_LAB_TURNSTILE_ACTION: &str = "rgbmvp_rgb_lab";
+const TURNSTILE_TOKEN_MAX_BYTES: usize = 2_048;
+
+const TURNSTILE_HOSTNAMES_ENV: &str = "LABD_DEMO_TURNSTILE_HOSTNAMES";
 
 pub fn now_epoch() -> u64 {
     SystemTime::now()
@@ -49,8 +56,7 @@ pub struct DemoWallets {
 impl DemoWallets {
     pub fn from_env() -> Self {
         Self {
-            alice_btc: std::env::var("LABD_DEMO_BTC_WALLET")
-                .unwrap_or_else(|_| "btc-alice".into()),
+            alice_btc: std::env::var("LABD_DEMO_BTC_WALLET").unwrap_or_else(|_| "btc-alice".into()),
             bob_lq: std::env::var("LABD_DEMO_LQ_WALLET").unwrap_or_else(|_| "bob".into()),
         }
     }
@@ -63,9 +69,9 @@ impl DemoWallets {
 /// ~200 sats derived from vbyte arithmetic; that is ~1.4 sat/vB and risks
 /// sitting unconfirmed. Measure on a live run before lowering these.
 ///
-/// The BTC leg spends two transactions (fund + claim), so a swap's BTC fee is
-/// `btc_fund_fee_sats + btc_claim_fee_sats`; keep `LABD_DEMO_MAX_FEE_SATS`
-/// at or above that sum.
+/// The BTC leg spends funding and claim/refund transactions, then the watcher
+/// sweeps the controlled exit. Keep `LABD_DEMO_MAX_FEE_SATS` at or above all
+/// three fees.
 #[derive(Debug, Clone, Copy)]
 pub struct DemoFees {
     /// Fee for the BTC funding transaction.
@@ -74,6 +80,8 @@ pub struct DemoFees {
     pub lq_sweep_fee_sats: u64,
     /// Fee for the BTC claim/refund transaction.
     pub btc_claim_fee_sats: u64,
+    /// Fee retained in the budget for the later BTC demo-exit sweep.
+    pub btc_sweep_fee_sats: u64,
     pub lq_fee_sats: u64,
 }
 
@@ -82,14 +90,44 @@ impl DemoFees {
         Self {
             btc_fee_sats: env_u64("LABD_DEMO_BTC_FEE_SATS", 800),
             btc_claim_fee_sats: env_u64("LABD_DEMO_BTC_CLAIM_FEE_SATS", 500),
+            btc_sweep_fee_sats: env_u64("LABD_DEMO_BTC_SWEEP_FEE_SATS", 500),
             lq_fee_sats: env_u64("LABD_DEMO_LQ_FEE_SATS", 300),
             lq_sweep_fee_sats: env_u64("LABD_DEMO_LQ_SWEEP_FEE_SATS", 400),
         }
     }
 
-    /// Total BTC fee a completed swap burns (fund + claim).
-    pub fn btc_total_per_swap(&self) -> u64 {
-        self.btc_fee_sats + self.btc_claim_fee_sats
+    /// Refuse T1 when its admission reservation cannot cover every configured
+    /// BTC transaction fee controlled by one swap.
+    pub fn validate_reservation(&self, max_fee_per_swap_sats: u64) -> Result<()> {
+        let required = u128::from(self.btc_fee_sats)
+            + u128::from(self.btc_claim_fee_sats)
+            + u128::from(self.btc_sweep_fee_sats);
+        anyhow::ensure!(
+            required <= u128::from(max_fee_per_swap_sats),
+            "configured BTC fees ({required} = {} fund + {} claim/refund + {} sweep) \
+             exceed LABD_DEMO_MAX_FEE_SATS ({max_fee_per_swap_sats})",
+            self.btc_fee_sats,
+            self.btc_claim_fee_sats,
+            self.btc_sweep_fee_sats
+        );
+        Ok(())
+    }
+
+    /// Refuse a BTC leg whose individual claim/refund exit cannot be swept
+    /// with the configured fee while retaining a standard P2WPKH output.
+    pub fn validate_recyclable_btc_exit(&self, leg_sats: u64) -> Result<()> {
+        let required = u128::from(self.btc_claim_fee_sats)
+            + u128::from(self.btc_sweep_fee_sats)
+            + u128::from(lab_btc::DEMO_EXIT_DUST_THRESHOLD_SATS);
+        anyhow::ensure!(
+            u128::from(leg_sats) > required,
+            "LABD_DEMO_LEG_SATS ({leg_sats}) must exceed {required} sats \
+             ({} claim/refund fee + {} sweep fee + {} dust) so one BTC exit is recyclable",
+            self.btc_claim_fee_sats,
+            self.btc_sweep_fee_sats,
+            lab_btc::DEMO_EXIT_DUST_THRESHOLD_SATS
+        );
+        Ok(())
     }
 }
 
@@ -202,19 +240,138 @@ fn turnstile_secret() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+fn valid_hostname(hostname: &str) -> bool {
+    if hostname.is_empty() || hostname.len() > 253 || !hostname.is_ascii() {
+        return false;
+    }
+    hostname.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && label
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })
+}
+
+fn parse_turnstile_hostnames(raw: Option<&str>) -> Result<Vec<String>> {
+    let raw = raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .context("LABD_DEMO_TURNSTILE_HOSTNAMES is unset or empty")?;
+    let mut hostnames = Vec::new();
+    for item in raw.split(',') {
+        let hostname = item.trim().to_ascii_lowercase();
+        if !valid_hostname(&hostname) {
+            anyhow::bail!("invalid hostname in LABD_DEMO_TURNSTILE_HOSTNAMES");
+        }
+        if !hostnames.contains(&hostname) {
+            hostnames.push(hostname);
+        }
+    }
+    anyhow::ensure!(
+        !hostnames.is_empty(),
+        "LABD_DEMO_TURNSTILE_HOSTNAMES contains no hostnames"
+    );
+    Ok(hostnames)
+}
+
+fn turnstile_hostnames() -> Result<Vec<String>> {
+    let raw = std::env::var(TURNSTILE_HOSTNAMES_ENV).ok();
+    parse_turnstile_hostnames(raw.as_deref())
+}
+
+/// Refuse to start a protected T1 service unless both the server secret and
+/// the exact hostname allowlist are configured.
+pub fn validate_turnstile_config() -> Result<()> {
+    anyhow::ensure!(
+        turnstile_secret().is_some(),
+        "LABD_DEMO_TURNSTILE_SECRET is unset or empty"
+    );
+    turnstile_hostnames()?;
+    Ok(())
+}
+
+fn turnstile_response_matches(
+    v: &Value,
+    expected_action: &str,
+    allowed_hostnames: &[String],
+) -> bool {
+    if v.get("success").and_then(Value::as_bool) != Some(true) {
+        return false;
+    }
+    if v.get("action").and_then(Value::as_str) != Some(expected_action) {
+        return false;
+    }
+    let Some(hostname) = v.get("hostname").and_then(Value::as_str) else {
+        return false;
+    };
+    let hostname = hostname.trim().to_ascii_lowercase();
+    valid_hostname(&hostname) && allowed_hostnames.iter().any(|allowed| allowed == &hostname)
+}
+
 /// Verify a Cloudflare Turnstile token server-side.
 ///
 /// **Blocking**: call inside `spawn_blocking`.
 pub fn verify_turnstile_blocking(token: Option<&str>, remote_ip: Option<&str>) -> BotCheck {
-    verify_turnstile_with(turnstile_secret().as_deref(), token, remote_ip)
+    verify_turnstile_action_blocking(token, remote_ip, TURNSTILE_ACTION)
+}
+
+/// Verify a token bound to one exact public action. The widget action is
+/// client-controlled metadata, so admission must compare Siteverify's echo to
+/// the server-selected value rather than trusting the request body.
+pub fn verify_turnstile_action_blocking(
+    token: Option<&str>,
+    remote_ip: Option<&str>,
+    expected_action: &str,
+) -> BotCheck {
+    let hostnames = match turnstile_hostnames() {
+        Ok(hostnames) => hostnames,
+        Err(e) => {
+            eprintln!("demo: turnstile hostname configuration invalid: {e}");
+            return BotCheck::Failed;
+        }
+    };
+    verify_turnstile_with_action(
+        turnstile_secret().as_deref(),
+        token,
+        remote_ip,
+        expected_action,
+        &hostnames,
+    )
 }
 
 /// Verification with an explicit secret, so callers (and tests) never depend on
 /// ambient environment state.
+#[cfg(test)]
 pub fn verify_turnstile_with(
     secret: Option<&str>,
     token: Option<&str>,
     remote_ip: Option<&str>,
+    allowed_hostnames: &[String],
+) -> BotCheck {
+    verify_turnstile_with_action(
+        secret,
+        token,
+        remote_ip,
+        TURNSTILE_ACTION,
+        allowed_hostnames,
+    )
+}
+
+pub fn verify_turnstile_with_action(
+    secret: Option<&str>,
+    token: Option<&str>,
+    remote_ip: Option<&str>,
+    expected_action: &str,
+    allowed_hostnames: &[String],
 ) -> BotCheck {
     // Required but unconfigured: refuse rather than silently allow.
     let secret = match secret.map(str::trim).filter(|s| !s.is_empty()) {
@@ -228,6 +385,9 @@ pub fn verify_turnstile_with(
         Some(t) => t,
         None => return BotCheck::Missing,
     };
+    if token.len() > TURNSTILE_TOKEN_MAX_BYTES {
+        return BotCheck::Failed;
+    }
 
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -243,10 +403,20 @@ pub fn verify_turnstile_with(
     if let Some(ip) = remote_ip {
         form.push(("remoteip", ip));
     }
-    match client.post(TURNSTILE_VERIFY_URL).form(&form).send() {
+    match client
+        .post(TURNSTILE_VERIFY_URL)
+        .form(&form)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+    {
         Ok(resp) => match resp.json::<Value>() {
-            Ok(v) if v.get("success").and_then(|s| s.as_bool()) == Some(true) => BotCheck::Pass,
-            Ok(_) => BotCheck::Failed,
+            Ok(v) if turnstile_response_matches(&v, expected_action, allowed_hostnames) => {
+                BotCheck::Pass
+            }
+            Ok(_) => {
+                eprintln!("demo: turnstile response failed success/action/hostname validation");
+                BotCheck::Failed
+            }
             Err(e) => {
                 eprintln!("demo: turnstile response parse failed: {e}");
                 BotCheck::Failed
@@ -270,16 +440,13 @@ pub fn new_demo_swap_id(seq: u64) -> String {
 /// Create the swap session with fully server-fixed parameters.
 ///
 /// Returns the new swap id. Blocking (writes session state).
-pub fn create_demo_session(
-    cfg: &Config,
-    wallets: &DemoWallets,
-    seq: u64,
-) -> Result<String> {
+pub fn create_demo_session(cfg: &Config, wallets: &DemoWallets, seq: u64) -> Result<String> {
     let policy = lab_core::demo::DemoSwapPolicy::from_env();
     let svc = lab_api::SwapService::new(&cfg.data_dir);
     let id = new_demo_swap_id(seq);
     lab_core::validate_path_id(&id).context("generated demo swap id must be path-safe")?;
     svc.init(
+        cfg,
         &id,
         policy.csv_delay,
         &wallets.alice_btc,
@@ -387,63 +554,172 @@ pub fn drive_demo_swap_blocking(
 
 /// Where the fee-budget counters live. Beside the swap sessions, so a single
 /// persistent volume covers both.
+#[cfg(test)]
 pub fn budget_path(cfg: &Config) -> std::path::PathBuf {
-    cfg.data_dir.join("demo_budget.json")
+    named_budget_path(cfg, "demo_budget")
 }
 
-/// Load persisted budget counters, if any.
-///
-/// A missing or unreadable file is not an error: the caller starts from zero.
-/// A *corrupt* file is reported so the operator notices rather than silently
-/// resetting the spend ceiling.
-pub fn load_budget(cfg: &Config) -> Option<lab_core::DemoStatus> {
-    let p = budget_path(cfg);
-    let bytes = std::fs::read(&p).ok()?;
-    match serde_json::from_slice::<lab_core::DemoStatus>(&bytes) {
-        Ok(st) => Some(st),
+#[cfg(test)]
+fn budget_pending_path(cfg: &Config) -> std::path::PathBuf {
+    named_budget_pending_path(cfg, "demo_budget")
+}
+
+fn valid_budget_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+fn named_budget_path(cfg: &Config, name: &str) -> std::path::PathBuf {
+    assert!(valid_budget_name(name), "invalid internal budget name");
+    cfg.data_dir.join(format!("{name}.json"))
+}
+
+fn named_budget_pending_path(cfg: &Config, name: &str) -> std::path::PathBuf {
+    assert!(valid_budget_name(name), "invalid internal budget name");
+    cfg.data_dir.join(format!("{name}.pending.json"))
+}
+
+fn budget_io_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn read_budget_file(path: &std::path::Path) -> Result<lab_core::DemoStatus> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("read demo budget {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("parse demo budget {}", path.display()))
+}
+
+#[cfg(test)]
+fn load_budget_unlocked(cfg: &Config) -> Result<Option<lab_core::DemoStatus>> {
+    load_named_budget_unlocked(cfg, "demo_budget")
+}
+
+fn load_named_budget_unlocked(cfg: &Config, name: &str) -> Result<Option<lab_core::DemoStatus>> {
+    let pending = named_budget_pending_path(cfg, name);
+    match std::fs::metadata(&pending) {
+        Ok(_) => {
+            // A pending record is written and synced before the primary file.
+            // Its presence means the prior commit was interrupted, so it is
+            // the only safe recovery source. Invalid data is fatal.
+            return read_budget_file(&pending).map(Some);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
-            eprintln!(
-                "demo: budget file {} is unreadable ({e}); starting from zero \
-                 — the fee ceiling for this run is effectively reset",
-                p.display()
-            );
-            None
+            return Err(e).with_context(|| format!("stat demo budget {}", pending.display()));
         }
     }
+
+    let primary = named_budget_path(cfg, name);
+    match std::fs::metadata(&primary) {
+        Ok(_) => read_budget_file(&primary).map(Some),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("stat demo budget {}", primary.display())),
+    }
 }
 
-/// Persist budget counters atomically (write temp + rename), so a crash mid-write
-/// cannot leave a truncated file that would silently reset the spend ceiling.
-pub fn save_budget(cfg: &Config, st: &lab_core::DemoStatus) -> Result<()> {
-    let p = budget_path(cfg);
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir).context("create data dir for demo budget")?;
-    }
-    let tmp = p.with_extension("json.tmp");
+/// Load persisted budget counters. Missing state is allowed only for initial
+/// creation; unreadable or malformed state is a startup-blocking error.
+#[cfg(test)]
+pub fn load_budget(cfg: &Config) -> Result<Option<lab_core::DemoStatus>> {
+    let _guard = budget_io_lock().lock().unwrap_or_else(|e| e.into_inner());
+    load_budget_unlocked(cfg)
+}
+
+fn write_budget_file(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("open demo budget {}", path.display()))?;
+    file.write_all(bytes)
+        .with_context(|| format!("write demo budget {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("sync demo budget {}", path.display()))
+}
+
+fn save_budget_unlocked(cfg: &Config, st: &lab_core::DemoStatus) -> Result<()> {
+    save_named_budget_unlocked(cfg, "demo_budget", st)
+}
+
+fn save_named_budget_unlocked(cfg: &Config, name: &str, st: &lab_core::DemoStatus) -> Result<()> {
+    let p = named_budget_path(cfg, name);
+    let dir = p.parent().context("demo budget path has no parent")?;
+    std::fs::create_dir_all(dir).context("create data dir for demo budget")?;
+    let pending = named_budget_pending_path(cfg, name);
     let bytes = serde_json::to_vec_pretty(st).context("serialize demo budget")?;
-    std::fs::write(&tmp, &bytes).context("write demo budget temp")?;
-    std::fs::rename(&tmp, &p).context("rename demo budget into place")?;
+
+    // Write-ahead protocol: pending is durable before primary is touched. A
+    // crash at any point leaves either the old primary, a valid newer pending,
+    // or an invalid pending that blocks startup instead of resetting to zero.
+    write_budget_file(&pending, &bytes)?;
+    write_budget_file(&p, &bytes)?;
+    std::fs::remove_file(&pending).context("remove committed demo budget pending record")?;
+    #[cfg(unix)]
+    std::fs::File::open(dir)
+        .context("open demo budget directory for sync")?
+        .sync_all()
+        .context("sync demo budget directory")?;
     Ok(())
 }
 
-/// Snapshot the governor and persist it; logs rather than propagating, since a
-/// persistence failure must not abort an otherwise healthy swap.
-pub fn persist_budget(cfg: &Config, gov: &lab_core::DemoGovernor) {
-    let st = gov.status(now_epoch());
-    if let Err(e) = save_budget(cfg, &st) {
-        eprintln!("demo: failed to persist budget: {e:#}");
-    }
+/// Persist one explicit snapshot using the serialized write-ahead protocol.
+#[cfg(test)]
+pub fn save_budget(cfg: &Config, st: &lab_core::DemoStatus) -> Result<()> {
+    let _guard = budget_io_lock().lock().unwrap_or_else(|e| e.into_inner());
+    save_budget_unlocked(cfg, st)
 }
 
-/// Restore persisted counters into a fresh governor at startup.
-pub fn restore_budget(cfg: &Config, gov: &lab_core::DemoGovernor) {
-    if let Some(st) = load_budget(cfg) {
+/// Snapshot the governor while holding the I/O serialization lock, so an older
+/// snapshot can never overwrite a newer concurrent admission or settlement.
+pub fn persist_budget(cfg: &Config, gov: &lab_core::DemoGovernor) -> Result<()> {
+    let _guard = budget_io_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let st = gov.status(now_epoch());
+    save_budget_unlocked(cfg, &st)
+}
+
+/// Restore persisted counters into a fresh governor at startup. Recovered
+/// reservations become conservative commitments, then the normalized state is
+/// durably committed before the public endpoint can accept traffic.
+pub fn restore_budget(cfg: &Config, gov: &lab_core::DemoGovernor) -> Result<()> {
+    restore_named_budget(cfg, gov, "demo_budget", "T1 demo")
+}
+
+/// Persist an independent governor ledger. Names are internal constants only;
+/// callers cannot turn this into a path traversal primitive.
+pub fn persist_named_budget(cfg: &Config, gov: &lab_core::DemoGovernor, name: &str) -> Result<()> {
+    let _guard = budget_io_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let st = gov.status(now_epoch());
+    save_named_budget_unlocked(cfg, name, &st)
+}
+
+pub fn restore_named_budget(
+    cfg: &Config,
+    gov: &lab_core::DemoGovernor,
+    name: &str,
+    label: &str,
+) -> Result<()> {
+    let _guard = budget_io_lock().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(st) = load_named_budget_unlocked(cfg, name)? {
         gov.restore(&st);
+        let recovered = gov.status(now_epoch());
+        save_named_budget_unlocked(cfg, name, &recovered)?;
         eprintln!(
-            "  T1 demo budget restored: spent={}sats swaps_total={} today={}",
-            st.fee_spent_sats, st.swaps_total, st.swaps_today
+            "  {label} budget restored: spent={}sats committed={}sats runs_total={} today={}",
+            recovered.fee_spent_sats,
+            recovered.fee_committed_sats,
+            recovered.swaps_total,
+            recovered.swaps_today
         );
+    } else {
+        // Establish the durable zero state before serving the first request.
+        save_named_budget_unlocked(cfg, name, &gov.status(now_epoch()))?;
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -554,20 +830,19 @@ fn recycle_btc_exits_blocking(cfg: &Config, wallets: &DemoWallets, fee_sats: u64
 
 /// True when a session still has value parked in an HTLC.
 fn needs_btc_refund(s: &lab_rgb::swap::SwapSession) -> bool {
-    s.btc_fund_txid.is_some() && s.btc_claim_txid.is_none()
+    s.btc_fund_txid.is_some() && s.btc_claim_txid.is_none() && s.btc_refund_txid.is_none()
 }
 
 fn needs_lq_refund(s: &lab_rgb::swap::SwapSession) -> bool {
-    s.lq_fund_txid.is_some() && s.lq_claim_txid.is_none()
+    s.lq_fund_txid.is_some() && s.lq_claim_txid.is_none() && s.lq_refund_txid.is_none()
 }
 
 /// Refund stuck demo swaps, then sweep the recovered value back to the funder.
 ///
 /// IMPORTANT: an HTLC refund does **not** pay the funding wallet. Both refund
-/// and claim paths pay a P2WPKH address derived from `demo_keypair(<label>)`
-/// (`sha256(label)`) — four fixed addresses in total. Without the sweep below,
-/// `btc-alice` drains on every swap regardless of outcome and the value strands
-/// there. The keys are deterministic, so this is recovery, not rescue.
+/// and claim paths pay one of four P2WPKH addresses derived from the secret
+/// demo-exit seed and a public role label. Without the sweep below, `btc-alice`
+/// drains on every swap regardless of outcome and the value strands there.
 ///
 /// **Blocking and network-bound**: run on a blocking task. Failures are counted
 /// and retried on the next sweep — a refund rejected because the CSV window has
@@ -602,7 +877,7 @@ pub fn sweep_stuck_demo_swaps_blocking(
             report.skipped_young += 1;
             continue;
         }
-        let s = match store.load(&id) {
+        let mut s = match store.load(&id) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("demo sweep: load {id}: {e:#}");
@@ -610,6 +885,13 @@ pub fn sweep_stuck_demo_swaps_blocking(
                 continue;
             }
         };
+        if lab_rgb::swap::hydrate_legacy_refund_txids(&mut s) {
+            if let Err(e) = store.save(&s) {
+                eprintln!("demo sweep: save upgraded refund state {id}: {e:#}");
+                report.errors += 1;
+                continue;
+            }
+        }
         if matches!(
             s.phase,
             lab_rgb::swap::SwapPhase::Done | lab_rgb::swap::SwapPhase::Refunded
@@ -657,7 +939,7 @@ pub fn sweep_stuck_demo_swaps_blocking(
     // Recover value from the demo exit addresses back into the funding wallet.
     // Runs every sweep, not only when a refund fired: completed swaps also pay
     // out to `bob-claimer` and would otherwise strand there.
-    report.recycled_sats = recycle_btc_exits_blocking(cfg, wallets, fees.btc_claim_fee_sats);
+    report.recycled_sats = recycle_btc_exits_blocking(cfg, wallets, fees.btc_sweep_fee_sats);
     report.recycled_lq_sats = recycle_lq_exits_blocking(cfg, wallets, fees.lq_sweep_fee_sats);
     report
 }
@@ -696,6 +978,10 @@ pub fn quota_json(gov: &DemoGovernor, floats: Option<Floats>) -> Value {
             "fee_budget_sats": p.fee_budget_sats,
             "fee_spent_sats": st.fee_spent_sats,
             "fee_reserved_sats": st.fee_reserved_sats,
+            "fee_committed_sats": st.fee_committed_sats,
+            "fee_accounted_sats": st.fee_spent_sats
+                .saturating_add(st.fee_reserved_sats)
+                .saturating_add(st.fee_committed_sats),
             "swaps_remaining_est": gov.swaps_remaining_in_budget(),
         },
         "usage": {
@@ -716,6 +1002,39 @@ pub fn quota_json(gov: &DemoGovernor, floats: Option<Floats>) -> Value {
 mod tests {
     use super::*;
 
+    fn test_fees() -> DemoFees {
+        DemoFees {
+            btc_fee_sats: 800,
+            btc_claim_fee_sats: 500,
+            btc_sweep_fee_sats: 500,
+            lq_fee_sats: 300,
+            lq_sweep_fee_sats: 400,
+        }
+    }
+
+    #[test]
+    fn fee_reservation_validation_fails_closed() {
+        let fees = test_fees();
+        assert!(fees.validate_reservation(1_800).is_ok());
+        assert!(fees.validate_reservation(1_799).is_err());
+
+        let overflowing = DemoFees {
+            btc_fee_sats: u64::MAX,
+            btc_claim_fee_sats: 1,
+            ..fees
+        };
+        assert!(overflowing.validate_reservation(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn btc_leg_must_be_individually_recyclable() {
+        let fees = test_fees();
+        assert!(fees.validate_recyclable_btc_exit(1_300).is_ok());
+        assert!(fees.validate_recyclable_btc_exit(1_295).is_ok());
+        assert!(fees.validate_recyclable_btc_exit(1_294).is_err());
+        assert!(fees.validate_recyclable_btc_exit(1_000).is_err());
+    }
+
     #[test]
     fn demo_swap_ids_are_path_safe() {
         for seq in [0u64, 1, 42, 99_999] {
@@ -727,10 +1046,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn watcher_retries_only_the_unresolved_leg_after_partial_refund() {
+        let mut s = lab_rgb::swap::init_swap(
+            &lab_rgb::htlc::DemoKeyring::new([0x42; 32]).unwrap(),
+            "demo-partial-refund",
+            6,
+            "btc-alice",
+            "bob",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
+        s.btc_fund_txid = Some("btc-fund".into());
+        s.lq_fund_txid = Some("lq-fund".into());
+        s.notes.push("lq_refund_txid=lq-refund".into());
+        s.phase = lab_rgb::swap::SwapPhase::Refunded;
+
+        assert!(lab_rgb::swap::hydrate_legacy_refund_txids(&mut s));
+
+        assert!(needs_btc_refund(&s));
+        assert!(!needs_lq_refund(&s));
+        assert_eq!(s.phase, lab_rgb::swap::SwapPhase::Refunding);
+    }
+
     /// The driver must never emit an RGB-wrapped or oversized leg.
     #[test]
     fn driver_steps_are_value_only_and_fixed() {
-        let steps = driver_steps(1_000, DemoFees { btc_fee_sats: 800, btc_claim_fee_sats: 500, lq_fee_sats: 300, lq_sweep_fee_sats: 400 });
+        let steps = driver_steps(1_000, test_fees());
         assert_eq!(steps.len(), 4);
         for (name, payload) in &steps {
             assert_eq!(
@@ -751,7 +1095,7 @@ mod tests {
 
     #[test]
     fn driver_steps_follow_htlc_order() {
-        let steps = driver_steps(1_000, DemoFees { btc_fee_sats: 800, btc_claim_fee_sats: 500, lq_fee_sats: 300, lq_sweep_fee_sats: 400 });
+        let steps = driver_steps(1_000, test_fees());
         let names: Vec<&str> = steps.iter().map(|(n, _)| *n).collect();
         // Alice must claim Liquid (revealing the preimage) before Bob claims BTC.
         assert_eq!(names, vec!["fund_btc", "fund_lq", "claim_lq", "claim_btc"]);
@@ -761,9 +1105,13 @@ mod tests {
     #[test]
     fn turnstile_missing_token_is_reported_as_missing() {
         let secret = Some("test-secret");
-        assert_eq!(verify_turnstile_with(secret, None, None), BotCheck::Missing);
+        let hostnames = vec!["demo.example".to_string()];
         assert_eq!(
-            verify_turnstile_with(secret, Some("  "), None),
+            verify_turnstile_with(secret, None, None, &hostnames),
+            BotCheck::Missing
+        );
+        assert_eq!(
+            verify_turnstile_with(secret, Some("  "), None, &hostnames),
             BotCheck::Missing
         );
     }
@@ -772,16 +1120,103 @@ mod tests {
     /// unconfigured server must never wave traffic through.
     #[test]
     fn turnstile_without_secret_fails_closed() {
+        let hostnames = vec!["demo.example".to_string()];
         assert_eq!(
-            verify_turnstile_with(None, Some("some-token"), None),
+            verify_turnstile_with(None, Some("some-token"), None, &hostnames),
             BotCheck::Failed
         );
         assert_eq!(
-            verify_turnstile_with(Some("   "), Some("some-token"), None),
+            verify_turnstile_with(Some("   "), Some("some-token"), None, &hostnames),
             BotCheck::Failed
         );
         // Fails closed even when no token is supplied either.
-        assert_eq!(verify_turnstile_with(None, None, None), BotCheck::Failed);
+        assert_eq!(
+            verify_turnstile_with(None, None, None, &hostnames),
+            BotCheck::Failed
+        );
+    }
+
+    #[test]
+    fn turnstile_response_requires_exact_action_and_allowed_hostname() {
+        let allowed = vec!["rgbmvp-demo.example".to_string()];
+        let valid = json!({
+            "success": true,
+            "action": TURNSTILE_ACTION,
+            "hostname": "rgbmvp-demo.example",
+        });
+        assert!(turnstile_response_matches(
+            &valid,
+            TURNSTILE_ACTION,
+            &allowed
+        ));
+        assert!(!turnstile_response_matches(
+            &valid,
+            RGB_LAB_TURNSTILE_ACTION,
+            &allowed
+        ));
+
+        let rgb_valid = json!({
+            "success": true,
+            "action": RGB_LAB_TURNSTILE_ACTION,
+            "hostname": "rgbmvp-demo.example",
+        });
+        assert!(turnstile_response_matches(
+            &rgb_valid,
+            RGB_LAB_TURNSTILE_ACTION,
+            &allowed
+        ));
+
+        for invalid in [
+            json!({"success": false, "action": TURNSTILE_ACTION, "hostname": "rgbmvp-demo.example"}),
+            json!({"success": true, "hostname": "rgbmvp-demo.example"}),
+            json!({"success": true, "action": "other_action", "hostname": "rgbmvp-demo.example"}),
+            json!({"success": true, "action": TURNSTILE_ACTION}),
+            json!({"success": true, "action": TURNSTILE_ACTION, "hostname": "attacker.example"}),
+        ] {
+            assert!(
+                !turnstile_response_matches(&invalid, TURNSTILE_ACTION, &allowed),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn turnstile_rejects_oversized_token_before_network() {
+        let token = "x".repeat(TURNSTILE_TOKEN_MAX_BYTES + 1);
+        assert_eq!(
+            verify_turnstile_with_action(
+                Some("test-secret"),
+                Some(&token),
+                None,
+                RGB_LAB_TURNSTILE_ACTION,
+                &["demo.example".to_string()],
+            ),
+            BotCheck::Failed
+        );
+    }
+
+    #[test]
+    fn turnstile_hostname_config_rejects_wildcards_urls_ports_and_empty_values() {
+        assert!(parse_turnstile_hostnames(None).is_err());
+        assert!(parse_turnstile_hostnames(Some(" ")).is_err());
+        for invalid in [
+            "*.example.com",
+            "https://example.com",
+            "example.com:443",
+            "example.com/path",
+            "example..com",
+            "-demo.example",
+            "demo-.example",
+        ] {
+            assert!(
+                parse_turnstile_hostnames(Some(invalid)).is_err(),
+                "{invalid}"
+            );
+        }
+        assert_eq!(
+            parse_turnstile_hostnames(Some(" Demo.Example,other.example,demo.example ")).unwrap(),
+            vec!["demo.example", "other.example"]
+        );
     }
 
     #[test]
@@ -789,7 +1224,10 @@ mod tests {
         let c = FloatCache::new();
         assert!(c.get_fresh().is_none());
         assert!(c.peek().is_none());
-        c.store(Floats { btc_sats: 33_607, lq_sats: 146_633 });
+        c.store(Floats {
+            btc_sats: 33_607,
+            lq_sats: 146_633,
+        });
         assert_eq!(c.get_fresh().unwrap().btc_sats, 33_607);
         assert_eq!(c.peek().unwrap().lq_sats, 146_633);
     }
@@ -843,7 +1281,18 @@ mod tests {
     #[test]
     fn refund_eligibility_matches_htlc_state() {
         use lab_rgb::swap::init_swap;
-        let mut s = init_swap("demo-1-0", 6, "btc-alice", "bob", None, None, false).unwrap();
+        let keyring = lab_rgb::htlc::DemoKeyring::new([0x42; 32]).unwrap();
+        let mut s = init_swap(
+            &keyring,
+            "demo-1-0",
+            6,
+            "btc-alice",
+            "bob",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         // Nothing funded yet: nothing to recover.
         assert!(!needs_btc_refund(&s));
         assert!(!needs_lq_refund(&s));
@@ -869,7 +1318,7 @@ mod tests {
         cfg.data_dir = dir.clone();
 
         // Nothing persisted yet.
-        assert!(load_budget(&cfg).is_none());
+        assert!(load_budget(&cfg).unwrap().is_none());
 
         let gov = lab_core::DemoGovernor::new(lab_core::DemoSwapPolicy {
             enabled: true,
@@ -878,14 +1327,17 @@ mod tests {
         gov.try_admit(
             "1.1.1.1",
             now_epoch(),
-            Some(lab_core::Floats { btc_sats: 33_607, lq_sats: 146_633 }),
+            Some(lab_core::Floats {
+                btc_sats: 33_607,
+                lq_sats: 146_633,
+            }),
         )
         .expect("admit");
         gov.finish(400);
-        persist_budget(&cfg, &gov);
+        persist_budget(&cfg, &gov).unwrap();
 
         // A fresh governor (simulating a restart) recovers the spend.
-        let reloaded = load_budget(&cfg).expect("budget file written");
+        let reloaded = load_budget(&cfg).unwrap().expect("budget file written");
         assert_eq!(reloaded.fee_spent_sats, 400);
         assert_eq!(reloaded.swaps_total, 1);
 
@@ -893,7 +1345,7 @@ mod tests {
             enabled: true,
             ..Default::default()
         });
-        restore_budget(&cfg, &gov2);
+        restore_budget(&cfg, &gov2).unwrap();
         let st = gov2.status(now_epoch());
         assert_eq!(st.fee_spent_sats, 400, "spend ceiling survived the restart");
         assert_eq!(st.in_flight, 0, "in-flight never survives a restart");
@@ -905,16 +1357,156 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A corrupt budget file must not crash startup (it degrades to zero, loudly).
     #[test]
-    fn corrupt_budget_file_is_survivable() {
+    fn named_budget_is_independent_from_t1_budget() {
+        let dir =
+            std::env::temp_dir().join(format!("rgbmvp-named-demo-budget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut cfg = Config::load().expect("config");
+        cfg.data_dir = dir.clone();
+        let policy = lab_core::DemoSwapPolicy {
+            enabled: true,
+            ..Default::default()
+        };
+        let gov = lab_core::DemoGovernor::new(policy.clone());
+        gov.try_admit(
+            "1.1.1.1",
+            now_epoch(),
+            Some(lab_core::Floats {
+                btc_sats: u64::MAX,
+                lq_sats: u64::MAX,
+            }),
+        )
+        .unwrap();
+        gov.finish(321);
+        persist_named_budget(&cfg, &gov, "rgb_demo_budget").unwrap();
+
+        assert!(!budget_path(&cfg).exists());
+        assert!(named_budget_path(&cfg, "rgb_demo_budget").exists());
+        let restored = lab_core::DemoGovernor::new(policy);
+        restore_named_budget(&cfg, &restored, "rgb_demo_budget", "RGB demo").unwrap();
+        assert_eq!(restored.status(now_epoch()).fee_spent_sats, 321);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Corrupt primary state blocks startup instead of resetting the ceiling.
+    #[test]
+    fn corrupt_budget_file_fails_closed() {
         let dir = std::env::temp_dir().join(format!("rgbmvp-demo-bad-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut cfg = Config::load().expect("config");
         cfg.data_dir = dir.clone();
         std::fs::write(budget_path(&cfg), b"{ this is not json").unwrap();
-        assert!(load_budget(&cfg).is_none());
+        assert!(load_budget(&cfg).is_err());
+        let gov = lab_core::DemoGovernor::new(lab_core::DemoSwapPolicy {
+            enabled: true,
+            ..Default::default()
+        });
+        assert!(restore_budget(&cfg, &gov).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unavailable_budget_storage_is_an_error() {
+        let root = std::env::temp_dir().join(format!(
+            "rgbmvp-demo-budget-unavailable-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let not_a_directory = root.join("data");
+        std::fs::write(&not_a_directory, b"file").unwrap();
+        let mut cfg = Config::load().expect("config");
+        cfg.data_dir = not_a_directory;
+        let gov = lab_core::DemoGovernor::new(lab_core::DemoSwapPolicy {
+            enabled: true,
+            ..Default::default()
+        });
+        assert!(persist_budget(&cfg, &gov).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A synced pending record is the safe recovery point if the process dies
+    /// before the primary write completes.
+    #[test]
+    fn pending_budget_record_wins_after_interrupted_commit() {
+        let dir = std::env::temp_dir().join(format!("rgbmvp-demo-pending-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = Config::load().expect("config");
+        cfg.data_dir = dir.clone();
+
+        let old = lab_core::DemoStatus {
+            fee_spent_sats: 100,
+            ..Default::default()
+        };
+        save_budget(&cfg, &old).unwrap();
+        let pending = lab_core::DemoStatus {
+            fee_spent_sats: 500,
+            ..Default::default()
+        };
+        std::fs::write(
+            budget_pending_path(&cfg),
+            serde_json::to_vec_pretty(&pending).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(load_budget(&cfg).unwrap().unwrap().fee_spent_sats, 500);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_pending_record_blocks_fallback_to_primary() {
+        let dir =
+            std::env::temp_dir().join(format!("rgbmvp-demo-pending-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut cfg = Config::load().expect("config");
+        cfg.data_dir = dir.clone();
+        save_budget(&cfg, &lab_core::DemoStatus::default()).unwrap();
+        std::fs::write(budget_pending_path(&cfg), b"truncated").unwrap();
+        assert!(load_budget(&cfg).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The exact reported defect: a crash after durable admission must consume
+    /// a full reservation after restart even if completion never persisted.
+    #[test]
+    fn admitted_reservation_is_crash_durable() {
+        let dir =
+            std::env::temp_dir().join(format!("rgbmvp-demo-admit-crash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut cfg = Config::load().expect("config");
+        cfg.data_dir = dir.clone();
+        let policy = lab_core::DemoSwapPolicy {
+            enabled: true,
+            ..Default::default()
+        };
+        let gov = lab_core::DemoGovernor::new(policy.clone());
+        gov.try_admit(
+            "1.1.1.1",
+            now_epoch(),
+            Some(lab_core::Floats {
+                btc_sats: 33_607,
+                lq_sats: 146_633,
+            }),
+        )
+        .unwrap();
+        persist_budget(&cfg, &gov).unwrap();
+
+        let restarted = lab_core::DemoGovernor::new(policy);
+        restore_budget(&cfg, &restarted).unwrap();
+        let st = restarted.status(now_epoch());
+        assert_eq!(st.in_flight, 0);
+        assert_eq!(st.fee_reserved_sats, 0);
+        assert_eq!(
+            st.fee_committed_sats,
+            lab_core::demo::DEFAULT_MAX_FEE_PER_SWAP_SATS
+        );
+        let expected = (lab_core::demo::DEFAULT_FEE_BUDGET_SATS
+            - lab_core::demo::DEFAULT_MAX_FEE_PER_SWAP_SATS)
+            / lab_core::demo::DEFAULT_MAX_FEE_PER_SWAP_SATS;
+        assert_eq!(restarted.swaps_remaining_in_budget(), expected);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -928,10 +1520,16 @@ mod tests {
         });
         let v = quota_json(
             &gov,
-            Some(lab_core::Floats { btc_sats: 33_607, lq_sats: 146_633 }),
+            Some(lab_core::Floats {
+                btc_sats: 33_607,
+                lq_sats: 146_633,
+            }),
         );
         for path in [
             ("budget", "fee_spent_sats"),
+            ("budget", "fee_reserved_sats"),
+            ("budget", "fee_committed_sats"),
+            ("budget", "fee_accounted_sats"),
             ("budget", "fee_budget_sats"),
             ("budget", "swaps_remaining_est"),
             ("usage", "in_flight"),
@@ -971,16 +1569,22 @@ mod tests {
             enabled: true,
             ..Default::default()
         });
-        let v = quota_json(&gov, Some(Floats { btc_sats: 33_607, lq_sats: 146_633 }));
+        let v = quota_json(
+            &gov,
+            Some(Floats {
+                btc_sats: 33_607,
+                lq_sats: 146_633,
+            }),
+        );
         assert_eq!(v["enabled"], json!(true));
         assert_eq!(v["rgb_wrap"], json!(false));
-        assert_eq!(v["leg_sats"], json!(1_000));
-        let expected = lab_core::demo::DEFAULT_FEE_BUDGET_SATS
-            / lab_core::demo::DEFAULT_MAX_FEE_PER_SWAP_SATS;
+        assert_eq!(v["leg_sats"], json!(1_300));
+        let expected =
+            lab_core::demo::DEFAULT_FEE_BUDGET_SATS / lab_core::demo::DEFAULT_MAX_FEE_PER_SWAP_SATS;
         assert_eq!(v["budget"]["swaps_remaining_est"], json!(expected));
-        // At repo-proven fees (800 fund + 500 claim) the run is ~21 swaps,
-        // not the ~70 an earlier 400-sat estimate implied.
-        assert_eq!(expected, 21);
+        // Funding, claim/refund, and sweep consume 1,800 sats of accounting
+        // capacity per admission, so the 28,000-sat run admits at most 15.
+        assert_eq!(expected, 15);
         assert_eq!(v["floats"]["btc_sats"], json!(33_607));
     }
 }
